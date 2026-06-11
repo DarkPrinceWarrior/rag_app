@@ -48,6 +48,7 @@ async def run_babeldoc(
         "--lang-out", "ru",
         "--output", str(out_dir),
         "--qps", str(settings.babeldoc_qps),
+        "--watermark-output-mode", "no_watermark",
     ]
     if ocr_workaround:
         cmd.append("--auto-enable-ocr-workaround")
