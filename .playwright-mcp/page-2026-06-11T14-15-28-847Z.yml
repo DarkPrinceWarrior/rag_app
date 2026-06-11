@@ -1,9 +1,0 @@
-- generic [active] [ref=e1]:
-  - banner [ref=e2]:
-    - link "← документы" [ref=e3] [cursor=pointer]:
-      - /url: /
-    - heading "…" [level=1] [ref=e4]
-    - button "Пересобрать экспорт" [ref=e5] [cursor=pointer]
-  - main [ref=e6]:
-    - generic [ref=e7]: "Правый столбец редактируется: клик → правка → клик вне поля сохраняет. Жёлтая рамка — числовая валидация не сошлась (проверьте числа и единицы)."
-    - generic [ref=e8]: Загрузка…

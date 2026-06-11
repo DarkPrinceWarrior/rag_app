@@ -30,3 +30,6 @@ runs/
 # ОС
 .DS_Store
 Thumbs.db
+
+# Playwright MCP артефакты
+.playwright-mcp/
