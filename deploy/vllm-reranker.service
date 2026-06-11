@@ -1,0 +1,29 @@
+# Reranker BGE-reranker-v2-m3 (cross-encoder) — GPU4, порт 8003 (roadmap § 4.3).
+# Qwen3-Reranker — план апгрейда после стабилизации контура.
+[Unit]
+Description=vLLM BGE-reranker-v2-m3 (GPU4, :8003)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=4
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/bge-reranker-v2-m3 \
+    --served-model-name bge-reranker-v2-m3 \
+    --runner pooling \
+    --host 127.0.0.1 \
+    --port 8003 \
+    --gpu-memory-utilization 0.2 \
+    --max-model-len 4096
+Restart=always
+RestartSec=10
+TimeoutStartSec=600
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

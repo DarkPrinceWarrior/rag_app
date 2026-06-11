@@ -22,6 +22,8 @@ class DocumentOut(BaseModel):
     translated_count: int
     review_count: int = 0  # сегменты с needs_review (числовая валидация)
     exports: list[str] = []  # доступные виды скачивания (kind для /download/{kind})
+    folder_id: uuid.UUID | None = None
+    chunk_count: int = 0  # RAG-индекс
     created_at: datetime
 
     @classmethod

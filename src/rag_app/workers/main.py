@@ -13,8 +13,9 @@ from arq.connections import RedisSettings
 from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.llm.client import Translator
+from rag_app.llm.embeddings import Embedder
 from rag_app.storage.s3 import Storage
-from rag_app.workers.tasks import export_document, parse_document, translate_document
+from rag_app.workers.tasks import export_document, index_document, parse_document, translate_document
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -25,6 +26,7 @@ async def startup(ctx: dict) -> None:
     ctx["storage"] = Storage()
     await ctx["storage"].ensure_buckets()
     ctx["translator"] = Translator()
+    ctx["embedder"] = Embedder()
 
 
 async def shutdown(ctx: dict) -> None:
@@ -32,7 +34,7 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions = [parse_document, translate_document, export_document]
+    functions = [parse_document, translate_document, export_document, index_document]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings(

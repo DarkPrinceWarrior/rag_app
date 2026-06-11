@@ -1,8 +1,8 @@
-"""Схема БД (этап 2): documents + segments + glossary.
+"""Схема БД (этап 3): documents + segments + glossary + chunks(+vector)
++ chat_sessions/messages + folders.
 
-Дальше по roadmap добавятся: users, versions, chat_sessions,
-chunks(+vector), audit_log. Схемой управляет alembic
-(`uv run alembic upgrade head`), create_all больше не используется.
+Дальше по roadmap добавятся: users, versions, audit_log. Схемой управляет
+alembic (`uv run alembic upgrade head`), create_all не используется.
 """
 
 from __future__ import annotations
@@ -12,9 +12,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+EMBEDDING_DIM = 1024  # BGE-M3 dense
 
 
 class Base(DeclarativeBase):
@@ -82,6 +85,14 @@ class Document(Base):
     segment_count: Mapped[int] = mapped_column(Integer, default=0)
     translated_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # RAG-индекс (этап 3)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    index_error: Mapped[str | None] = mapped_column(Text, default=None)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="SET NULL"), default=None
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -112,6 +123,72 @@ class Segment(Base):
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
     document: Mapped[Document] = relationship(back_populates="segments")
+
+
+class Folder(Base):
+    """Папки библиотеки (минимум этапа 3; шаринг/права — этап 5)."""
+
+    __tablename__ = "folders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(256), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Chunk(Base):
+    """RAG-чанк (roadmap § 5 п.1): раздел/таблица со структурными метаданными.
+
+    Двуязычный индекс (§ 5 п.3): text_en/text_ru + два эмбеддинга.
+    tsvector-колонка (BM25-контур) создаётся в миграции как generated column —
+    в модели не маппится, поиск по ней через raw SQL.
+    """
+
+    __tablename__ = "chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    idx: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(16), default="section")  # section | table
+    heading_path: Mapped[str] = mapped_column(Text, default="")  # «4 → 4.3 → Таблица 2»
+    page_start: Mapped[int | None] = mapped_column(Integer, default=None)
+    page_end: Mapped[int | None] = mapped_column(Integer, default=None)
+    text_en: Mapped[str] = mapped_column(Text, default="")
+    text_ru: Mapped[str] = mapped_column(Text, default="")
+    emb_en: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), default=None)
+    emb_ru: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), default=None)
+    # segment_ids, bbox по страницам — для подсветки цитат в оригинале
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(256), default="Новый чат")
+    # None — чат по всей библиотеке
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    # [{n, chunk_id, document_id, filename, heading_path, page_idx, bbox}]
+    citations: Mapped[list[Any] | None] = mapped_column(JSONB, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class GlossaryTerm(Base):

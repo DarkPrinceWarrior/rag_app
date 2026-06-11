@@ -36,6 +36,22 @@ class Settings(BaseSettings):
     translate_concurrency: int = 12
     translate_max_retries: int = 3
 
+    # --- Эмбеддинги и reranker (GPU4, vLLM; roadmap § 4.3) ---
+    embed_base_url: str = "http://127.0.0.1:8002/v1"
+    embed_model: str = "bge-m3"
+    embed_batch_size: int = 32
+    rerank_base_url: str = "http://127.0.0.1:8003"
+    rerank_model: str = "bge-reranker-v2-m3"
+
+    # --- RAG (roadmap § 5) ---
+    rag_dense_top_k: int = 50
+    rag_sparse_top_k: int = 50
+    rag_rerank_top_k: int = 20  # после RRF — в reranker
+    rag_context_top_k: int = 5  # в промпт
+    rag_history_messages: int = 8
+    chunk_max_chars: int = 4000  # ~1K токенов
+    chunk_min_chars: int = 200  # секции короче — клеим к соседней
+
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
     mineru_backend: str = "pipeline"

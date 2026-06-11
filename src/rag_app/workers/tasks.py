@@ -13,11 +13,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from rag_app.config import settings
 from rag_app.db.models import (
     TRANSLATABLE_KINDS,
+    Chunk,
     Document,
     DocumentKind,
     DocumentStatus,
@@ -26,6 +27,7 @@ from rag_app.db.models import (
     SegmentKind,
 )
 from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
+from rag_app.llm.embeddings import Embedder
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc
 from rag_app.pipeline.export_docx import build_docx
@@ -33,6 +35,7 @@ from rag_app.pipeline.parse import load_block_geometry, load_content_list, pdf_i
 from rag_app.pipeline.scan_pdf import build_scan_overlay
 from rag_app.pipeline.segments import content_list_to_segments
 from rag_app.pipeline.validate import ValidationResult, validate_numbers
+from rag_app.rag.chunking import segments_to_chunks
 from rag_app.storage.s3 import Storage
 
 logger = logging.getLogger(__name__)
@@ -303,6 +306,69 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
         raise
 
 
+# ---------------------------------------------------------------- index (RAG, этап 3)
+
+async def index_document(ctx: dict, doc_id_str: str) -> str:
+    """Чанкинг по структуре → эмбеддинги EN/RU → chunks (roadmap § 5).
+
+    Не влияет на статус перевода: ошибки идут в documents.index_error.
+    """
+    doc_id = uuid.UUID(doc_id_str)
+    embedder: Embedder = ctx["embedder"]
+    try:
+        async with ctx["sessionmaker"]() as session:
+            segments = list(
+                (
+                    await session.execute(
+                        select(Segment).where(Segment.document_id == doc_id).order_by(Segment.idx)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        drafts = segments_to_chunks(segments)
+        if not drafts:
+            raise RuntimeError("нет чанков (документ пуст?)")
+
+        emb_en = await embedder.embed([d.text_en for d in drafts])
+        emb_ru = await embedder.embed([d.text_ru for d in drafts])
+
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(delete(Chunk).where(Chunk.document_id == doc_id))
+            session.add_all(
+                Chunk(
+                    document_id=doc_id,
+                    idx=d.idx,
+                    kind=d.kind,
+                    heading_path=d.heading_path,
+                    page_start=d.page_start,
+                    page_end=d.page_end,
+                    text_en=d.text_en,
+                    text_ru=d.text_ru,
+                    emb_en=e_en,
+                    emb_ru=e_ru,
+                    meta=d.meta,
+                )
+                for d, e_en, e_ru in zip(drafts, emb_en, emb_ru, strict=True)
+            )
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id)
+                .values(chunk_count=len(drafts), indexed_at=func.now(), index_error=None)
+            )
+            await session.commit()
+        logger.info("index %s: %d чанков", doc_id, len(drafts))
+        return f"indexed: {len(drafts)} chunks"
+    except Exception as exc:
+        logger.exception("index %s failed", doc_id)
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(
+                update(Document).where(Document.id == doc_id).values(index_error=str(exc)[:1000])
+            )
+            await session.commit()
+        raise
+
+
 # ---------------------------------------------------------------- export
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -410,6 +476,10 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
         async with ctx["sessionmaker"]() as session:
             await session.execute(update(Document).where(Document.id == doc_id).values(**values))
             await session.commit()
+
+        await ctx["redis"].enqueue_job(
+            "index_document", doc_id_str, _job_id=f"index:{doc_id}:{uuid.uuid4().hex[:8]}"
+        )
         return f"exported: {', '.join(k for k in values if k.startswith('s3_'))}"
 
     except Exception as exc:

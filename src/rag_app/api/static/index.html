@@ -38,7 +38,8 @@
 <body>
 <header>
   <h1>rag_app</h1>
-  <span>перевод технической документации EN→RU · этап 1: текстовые PDF → DOCX</span>
+  <span>перевод и анализ технической документации EN→RU</span>
+  <a href="/chat" style="margin-left:auto;color:#9db4e8;text-decoration:none;font-size:14px">Чат с документами →</a>
 </header>
 <main>
   <div class="upload" id="drop">
@@ -47,11 +48,20 @@
     <div class="hint">или перетащите файл сюда · до 200 МБ · PDF (включая сканы), DOCX, XLSX, PPTX</div>
     <div class="hint" id="msg"></div>
   </div>
+  <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center">
+    <input id="libsearch" placeholder="Поиск по библиотеке (гибридный: смысл + термины)…"
+           style="flex:1;padding:9px 13px;border:1px solid #c9d1de;border-radius:8px;font-size:14px">
+    <select id="folderfilter" style="padding:9px 10px;border:1px solid #c9d1de;border-radius:8px;font-size:13.5px">
+      <option value="">Все папки</option>
+    </select>
+    <button class="btn" id="newfolder" style="background:#475569">+ папка</button>
+  </div>
+  <div id="searchresults"></div>
   <table>
     <thead>
-      <tr><th>Документ</th><th>Стр.</th><th>Статус</th><th>Прогресс</th><th>Скачать</th><th></th></tr>
+      <tr><th>Документ</th><th>Стр.</th><th>Статус</th><th>Прогресс</th><th>Скачать</th><th>Папка</th><th></th></tr>
     </thead>
-    <tbody id="rows"><tr><td colspan="6" class="empty">Загрузка…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="7" class="empty">Загрузка…</td></tr></tbody>
   </table>
 </main>
 <script>
@@ -92,11 +102,62 @@ async function retry(id) { await fetch(`/api/documents/${id}/retry`, { method: "
 
 function esc(s) { const d = document.createElement("span"); d.textContent = s || ""; return d.innerHTML; }
 
+let folders = [];
+async function loadFolders() {
+  folders = await (await fetch("/api/folders")).json();
+  const ff = document.getElementById("folderfilter");
+  const cur = ff.value;
+  ff.innerHTML = '<option value="">Все папки</option>' +
+    folders.map(f => `<option value="${f.id}">${esc(f.name)} (${f.documents})</option>`).join("");
+  ff.value = cur;
+}
+document.getElementById("newfolder").onclick = async () => {
+  const name = prompt("Название папки:");
+  if (!name) return;
+  await fetch("/api/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  loadFolders();
+};
+document.getElementById("folderfilter").onchange = refresh;
+
+async function moveDoc(id, folderId) {
+  await fetch(`/api/documents/${id}/folder`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder_id: folderId || null }),
+  });
+  loadFolders();
+}
+
+const searchBox = document.getElementById("libsearch");
+const searchOut = document.getElementById("searchresults");
+let searchTimer = null;
+searchBox.oninput = () => {
+  clearTimeout(searchTimer);
+  const text = searchBox.value.trim();
+  if (text.length < 3) { searchOut.innerHTML = ""; return; }
+  searchTimer = setTimeout(async () => {
+    searchOut.innerHTML = '<div class="small" style="padding:8px">Ищу…</div>';
+    const ff = document.getElementById("folderfilter").value;
+    const url = `/api/search?q=${encodeURIComponent(text)}${ff ? "&folder_id=" + ff : ""}`;
+    try {
+      const hits = await (await fetch(url)).json();
+      searchOut.innerHTML = hits.length ? hits.map(h => `
+        <div style="background:#fff;border-radius:8px;padding:10px 14px;margin-bottom:8px;box-shadow:0 1px 2px rgba(16,23,37,.06)">
+          <a href="/view?id=${h.document_id}"><b>${esc(h.filename)}</b></a>
+          <span class="small"> ${esc(h.heading_path)}${h.page_start !== null ? " · стр. " + (h.page_start + 1) : ""}</span>
+          <div class="small" style="color:#3a4254;margin-top:4px">${esc(h.snippet)}…</div>
+        </div>`).join("")
+        : '<div class="small" style="padding:8px">Ничего не найдено</div>';
+    } catch (e) { searchOut.innerHTML = '<div class="small" style="padding:8px">Поиск недоступен: ' + esc(e.message) + "</div>"; }
+  }, 400);
+};
+
 async function refresh() {
   try {
     const docs = await (await fetch("/api/documents")).json();
-    if (!docs.length) { rows.innerHTML = '<tr><td colspan="6" class="empty">Документов пока нет — загрузите первый PDF</td></tr>'; return; }
-    rows.innerHTML = docs.map(d => {
+    const ff = document.getElementById("folderfilter").value;
+    const visible = ff ? docs.filter(d => d.folder_id === ff) : docs;
+    if (!visible.length) { rows.innerHTML = '<tr><td colspan="7" class="empty">Документов нет — загрузите первый</td></tr>'; return; }
+    rows.innerHTML = visible.map(d => {
       const [label, cls] = STATUS[d.status] || [d.status, "b-wait"];
       const pct = d.segment_count ? Math.round(100 * d.translated_count / d.segment_count) : 0;
       const prog = ["translating","translated","exporting","done"].includes(d.status)
@@ -109,19 +170,25 @@ async function refresh() {
         ? `<div class="small" style="color:#92600a">⚠ проверить числа: ${d.review_count}</div>` : "";
       const extra = d.status === "error"
         ? `<div class="err-text">${esc(d.error)}</div><a href="#" onclick="retry('${d.id}');return false">повторить</a>` : "";
+      const folderSel = `<select class="small" style="max-width:110px" onchange="moveDoc('${d.id}', this.value)">
+        <option value="">—</option>
+        ${folders.map(f => `<option value="${f.id}" ${d.folder_id === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}
+      </select>`;
+      const chatLink = d.status === "done" ? ` · <a href="/chat?doc=${d.id}">чат</a>` : "";
       return `<tr>
         <td><a href="/view?id=${d.id}">${esc(d.filename)}</a>
-          <div class="small">${new Date(d.created_at).toLocaleString("ru-RU")} · ${(d.size_bytes/1048576).toFixed(1)} МБ · ${esc(d.kind)}</div>${review}</td>
+          <div class="small">${new Date(d.created_at).toLocaleString("ru-RU")} · ${(d.size_bytes/1048576).toFixed(1)} МБ · ${esc(d.kind)}${chatLink}</div>${review}</td>
         <td>${d.page_count ?? "—"}</td>
         <td><span class="badge ${cls}">${label}</span></td>
         <td>${prog}</td>
         <td>${links.join(" · ")}</td>
+        <td>${folderSel}</td>
         <td>${extra}</td>
       </tr>`;
     }).join("");
   } catch (e) { /* сервер перезапускается — пробуем дальше */ }
 }
-refresh();
+loadFolders().then(refresh);
 setInterval(refresh, 2500);
 </script>
 </body>

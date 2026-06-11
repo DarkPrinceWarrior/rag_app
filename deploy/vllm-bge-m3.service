@@ -1,0 +1,29 @@
+# Эмбеддинги BGE-M3 (dense, dim=1024) — GPU4, порт 8002 (roadmap § 4.3).
+[Unit]
+Description=vLLM BGE-M3 embeddings (GPU4, :8002)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=4
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# GPU4 — NUMA node1
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/bge-m3 \
+    --served-model-name bge-m3 \
+    --runner pooling \
+    --host 127.0.0.1 \
+    --port 8002 \
+    --gpu-memory-utilization 0.25 \
+    --max-model-len 8192
+Restart=always
+RestartSec=10
+TimeoutStartSec=600
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
