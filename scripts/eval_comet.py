@@ -57,7 +57,19 @@ def main() -> None:
 
     from comet import download_model, load_from_checkpoint
 
-    model_path = download_model("Unbabel/wmt22-cometkiwi-da")
+    # cometkiwi-22 — gated (нужен HF-токен с принятой CC-BY-NC лицензией);
+    # фолбэк — открытая wmt20-comet-qe-da (тоже reference-free). Для A/B важна
+    # консистентность метрики между прогонами, не её абсолютные значения.
+    model_path = None
+    for name in ("Unbabel/wmt22-cometkiwi-da", "wmt20-comet-qe-da-v2", "wmt20-comet-qe-da"):
+        try:
+            model_path = download_model(name)
+            print(f"метрика: {name}")
+            break
+        except Exception as exc:
+            print(f"  {name}: недоступна ({str(exc)[:80]})")
+    if model_path is None:
+        raise SystemExit("ни одна QE-модель не скачалась")
     model = load_from_checkpoint(model_path)
     out = model.predict(pairs, batch_size=32, gpus=1)
     scores = out["scores"]
