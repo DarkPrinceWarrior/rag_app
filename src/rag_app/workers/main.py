@@ -11,7 +11,7 @@ import logging
 from arq.connections import RedisSettings
 
 from rag_app.config import settings
-from rag_app.db.engine import create_engine, create_sessionmaker, init_db
+from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.llm.client import Translator
 from rag_app.storage.s3 import Storage
 from rag_app.workers.tasks import export_document, parse_document, translate_document
@@ -22,7 +22,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def startup(ctx: dict) -> None:
     ctx["engine"] = create_engine()
     ctx["sessionmaker"] = create_sessionmaker(ctx["engine"])
-    await init_db(ctx["engine"])
     ctx["storage"] = Storage()
     await ctx["storage"].ensure_buckets()
     ctx["translator"] = Translator()

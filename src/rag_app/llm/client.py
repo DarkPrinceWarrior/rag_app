@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
@@ -45,6 +45,29 @@ def needs_translation(text: str) -> bool:
 class SegmentContext:
     heading: str | None = None  # заголовок текущего раздела
     prev_text: str | None = None  # предыдущий абзац (оригинал)
+    # утверждённые термины (EN, RU), найденные в этом сегменте — roadmap § 3.4 п.1
+    glossary: list[tuple[str, str]] = field(default_factory=list)
+
+
+def pick_glossary_terms(
+    text: str, terms: list[tuple[str, str]], limit: int = 10
+) -> list[tuple[str, str]]:
+    """Термины глоссария, встречающиеся в тексте (без учёта регистра, по границам слов)."""
+    found: list[tuple[str, str]] = []
+    low = text.lower()
+    for en, ru in terms:
+        en_low = en.lower()
+        pos = low.find(en_low)
+        if pos < 0:
+            continue
+        before_ok = pos == 0 or not low[pos - 1].isalnum()
+        end = pos + len(en_low)
+        after_ok = end >= len(low) or not low[end].isalnum()
+        if before_ok and after_ok:
+            found.append((en, ru))
+            if len(found) >= limit:
+                break
+    return found
 
 
 class Translator:
@@ -56,7 +79,12 @@ class Translator:
         )
         self.model = settings.llm_model
 
-    async def translate(self, text: str, context: SegmentContext | None = None) -> str:
+    async def translate(
+        self,
+        text: str,
+        context: SegmentContext | None = None,
+        feedback: str | None = None,
+    ) -> str:
         if not needs_translation(text):
             return text
 
@@ -66,6 +94,11 @@ class Translator:
         if context and context.prev_text:
             prev = context.prev_text.strip()[:1000]
             parts.append(f"Предыдущий абзац (только контекст, НЕ переводить):\n{prev}")
+        if context and context.glossary:
+            terms = "\n".join(f"- {en} → {ru}" for en, ru in context.glossary)
+            parts.append(f"ОБЯЗАТЕЛЬНАЯ терминология (использовать именно эти переводы):\n{terms}")
+        if feedback:
+            parts.append(f"Предыдущая попытка перевода была отклонена. Причина: {feedback}")
         parts.append(
             f"Переведи на русский ТОЛЬКО текст между маркерами <doc> и </doc>:\n<doc>\n{text}\n</doc>"
         )

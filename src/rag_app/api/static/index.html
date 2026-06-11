@@ -42,9 +42,9 @@
 </header>
 <main>
   <div class="upload" id="drop">
-    <button class="btn" id="pick">Загрузить PDF</button>
-    <input type="file" id="file" accept=".pdf">
-    <div class="hint">или перетащите файл сюда · до 200 МБ · только PDF с текстовым слоем</div>
+    <button class="btn" id="pick">Загрузить документ</button>
+    <input type="file" id="file" accept=".pdf,.docx,.xlsx,.pptx">
+    <div class="hint">или перетащите файл сюда · до 200 МБ · PDF (включая сканы), DOCX, XLSX, PPTX</div>
     <div class="hint" id="msg"></div>
   </div>
   <table>
@@ -102,12 +102,16 @@ async function refresh() {
       const prog = ["translating","translated","exporting","done"].includes(d.status)
         ? `<div class="progress"><i style="width:${d.status==="done"?100:pct}%"></i></div><span class="small">${d.translated_count}/${d.segment_count}</span>`
         : `<span class="small">—</span>`;
+      const NAMES = { docx: "DOCX (RU)", pdf: "PDF (RU)", pdf_dual: "PDF (EN+RU)", source: "файл (RU)" };
       const links = [`<a href="/api/documents/${d.id}/download/original">оригинал</a>`];
-      if (d.has_docx) links.push(`<a href="/api/documents/${d.id}/download/docx"><b>DOCX (RU)</b></a>`);
+      for (const k of d.exports) links.push(`<a href="/api/documents/${d.id}/download/${k}"><b>${NAMES[k]}</b></a>`);
+      const review = d.review_count > 0
+        ? `<div class="small" style="color:#92600a">⚠ проверить числа: ${d.review_count}</div>` : "";
       const extra = d.status === "error"
         ? `<div class="err-text">${esc(d.error)}</div><a href="#" onclick="retry('${d.id}');return false">повторить</a>` : "";
       return `<tr>
-        <td>${esc(d.filename)}<div class="small">${new Date(d.created_at).toLocaleString("ru-RU")} · ${(d.size_bytes/1048576).toFixed(1)} МБ</div></td>
+        <td><a href="/view?id=${d.id}">${esc(d.filename)}</a>
+          <div class="small">${new Date(d.created_at).toLocaleString("ru-RU")} · ${(d.size_bytes/1048576).toFixed(1)} МБ · ${esc(d.kind)}</div>${review}</td>
         <td>${d.page_count ?? "—"}</td>
         <td><span class="badge ${cls}">${label}</span></td>
         <td>${prog}</td>

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rag_app — просмотр и правки</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f4f5f7; color: #1a1f2b; }
+  header { background: #101725; color: #fff; padding: 12px 24px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 5; }
+  header a { color: #8b97ad; text-decoration: none; font-size: 14px; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn { background: #2563eb; color: #fff; border: 0; border-radius: 7px; padding: 8px 16px; font-size: 13.5px; cursor: pointer; }
+  .btn:disabled { opacity: .5; }
+  main { max-width: 1400px; margin: 18px auto; padding: 0 16px; }
+  .hint { color: #6b7485; font-size: 13px; margin-bottom: 12px; }
+  .seg { display: grid; grid-template-columns: 28px 1fr 1fr; gap: 12px; background: #fff; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(16,23,37,.06); }
+  .seg.review { outline: 2px solid #e8b031; }
+  .seg .num { color: #aab3c2; font-size: 11.5px; padding-top: 4px; }
+  .src { color: #3a4254; white-space: pre-wrap; font-size: 14px; padding: 4px 8px; }
+  .dst { white-space: pre-wrap; font-size: 14px; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; }
+  .dst:hover { border-color: #d6dce6; }
+  .dst:focus { outline: none; border-color: #2563eb; background: #f6f9ff; }
+  .dst.saved { background: #eefcf1; transition: background 1.5s; }
+  .heading .src, .heading .dst { font-weight: 700; font-size: 15px; }
+  .kind-table .src, .kind-table .dst { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .review-badge { display: inline-block; background: #fff4dd; color: #92600a; font-size: 11px; border-radius: 99px; padding: 2px 8px; margin-left: 8px; }
+  .page-sep { color: #8b97ad; font-size: 12px; margin: 16px 0 8px; }
+  #msg { color: #2563eb; font-size: 13px; min-width: 130px; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← документы</a>
+  <h1 id="title">…</h1>
+  <span id="msg"></span>
+  <button class="btn" id="reexport">Пересобрать экспорт</button>
+</header>
+<main>
+  <div class="hint">Правый столбец редактируется: клик → правка → клик вне поля сохраняет.
+    Жёлтая рамка — числовая валидация не сошлась (проверьте числа и единицы).</div>
+  <div id="list">Загрузка…</div>
+</main>
+<script>
+const docId = new URLSearchParams(location.search).get("id");
+const msg = document.getElementById("msg");
+let lastPage = null;
+
+async function load() {
+  const [doc, segs] = await Promise.all([
+    (await fetch(`/api/documents/${docId}`)).json(),
+    (await fetch(`/api/documents/${docId}/segments`)).json(),
+  ]);
+  document.getElementById("title").textContent = doc.filename + " · " + doc.status;
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  for (const s of segs) {
+    if (s.page_idx !== null && s.page_idx !== lastPage) {
+      lastPage = s.page_idx;
+      const sep = document.createElement("div");
+      sep.className = "page-sep";
+      sep.textContent = `— страница ${s.page_idx + 1} —`;
+      list.appendChild(sep);
+    }
+    const row = document.createElement("div");
+    row.className = `seg ${s.kind === "heading" ? "heading" : ""} kind-${s.kind} ${s.needs_review ? "review" : ""}`;
+    const badge = s.needs_review ? `<span class="review-badge">проверить числа</span>` : "";
+    row.innerHTML = `
+      <div class="num">${s.idx}</div>
+      <div class="src">${esc(s.source_text)}${badge}</div>
+      <div class="dst" contenteditable="plaintext-only" data-id="${s.id}">${esc(s.translated_text ?? "")}</div>`;
+    list.appendChild(row);
+  }
+  list.querySelectorAll(".dst").forEach(el => {
+    el.dataset.orig = el.textContent;
+    el.addEventListener("blur", () => save(el));
+  });
+}
+
+function esc(s) { const d = document.createElement("span"); d.textContent = s || ""; return d.innerHTML; }
+
+async function save(el) {
+  if (el.textContent === el.dataset.orig) return;
+  msg.textContent = "Сохранение…";
+  const r = await fetch(`/api/segments/${el.dataset.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ translated_text: el.textContent }),
+  });
+  if (r.ok) {
+    el.dataset.orig = el.textContent;
+    el.classList.add("saved");
+    el.closest(".seg").classList.remove("review");
+    setTimeout(() => el.classList.remove("saved"), 1500);
+    msg.textContent = "Сохранено";
+  } else { msg.textContent = "Ошибка сохранения"; }
+  setTimeout(() => (msg.textContent = ""), 2500);
+}
+
+document.getElementById("reexport").onclick = async () => {
+  msg.textContent = "Экспорт в очереди…";
+  const r = await fetch(`/api/documents/${docId}/reexport`, { method: "POST" });
+  msg.textContent = r.ok ? "Экспорт пересобирается (см. список)" : "Ошибка";
+  setTimeout(() => (msg.textContent = ""), 4000);
+};
+
+load();
+</script>
+</body>
+</html>

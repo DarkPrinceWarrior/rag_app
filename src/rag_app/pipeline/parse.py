@@ -56,7 +56,8 @@ async def run_mineru(input_pdf: Path, out_dir: Path) -> Path:
         "-b", settings.mineru_backend,
     ]
     if settings.mineru_backend == "pipeline":
-        cmd += ["-l", settings.mineru_lang]
+        # -m auto: текстовый слой / OCR выбирается постранично (roadmap § 3.1)
+        cmd += ["-m", settings.mineru_method, "-l", settings.mineru_lang]
     env = dict(os.environ, MINERU_DEVICE_MODE=settings.mineru_device)
     logger.info("mineru: %s (device=%s)", " ".join(cmd), settings.mineru_device)
     proc = await asyncio.create_subprocess_exec(

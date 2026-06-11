@@ -13,8 +13,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from rag_app.api.routes.documents import router as documents_router
+from rag_app.api.routes.glossary import router as glossary_router
+from rag_app.api.routes.segments import router as segments_router
 from rag_app.config import settings
-from rag_app.db.engine import create_engine, create_sessionmaker, init_db
+from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.storage.s3 import Storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -26,7 +28,6 @@ STATIC_DIR = Path(__file__).parent / "static"
 async def lifespan(app: FastAPI):
     app.state.engine = create_engine()
     app.state.sessionmaker = create_sessionmaker(app.state.engine)
-    await init_db(app.state.engine)
     app.state.storage = Storage()
     await app.state.storage.ensure_buckets()
     app.state.arq = await create_pool(
@@ -39,7 +40,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="rag_app — перевод документации EN→RU", lifespan=lifespan)
 app.include_router(documents_router)
+app.include_router(segments_router)
+app.include_router(glossary_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/view", include_in_schema=False)
+async def view() -> FileResponse:
+    return FileResponse(STATIC_DIR / "view.html")
 
 
 @app.get("/healthz")

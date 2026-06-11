@@ -13,17 +13,29 @@ class DocumentOut(BaseModel):
 
     id: uuid.UUID
     filename: str
+    kind: str
     size_bytes: int
     status: DocumentStatus
     error: str | None
     page_count: int | None
     segment_count: int
     translated_count: int
-    has_docx: bool = False
+    review_count: int = 0  # сегменты с needs_review (числовая валидация)
+    exports: list[str] = []  # доступные виды скачивания (kind для /download/{kind})
     created_at: datetime
 
     @classmethod
-    def from_doc(cls, doc: Document) -> DocumentOut:
+    def from_doc(cls, doc: Document, review_count: int = 0) -> DocumentOut:
         out = cls.model_validate(doc)
-        out.has_docx = doc.s3_key_export_docx is not None
+        out.review_count = review_count
+        out.exports = [
+            kind
+            for kind, attr in (
+                ("docx", "s3_key_export_docx"),
+                ("pdf", "s3_key_export_pdf"),
+                ("pdf_dual", "s3_key_export_pdf_dual"),
+                ("source", "s3_key_export_source"),
+            )
+            if getattr(doc, attr)
+        ]
         return out

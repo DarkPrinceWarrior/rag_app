@@ -39,8 +39,15 @@ class Settings(BaseSettings):
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
     mineru_backend: str = "pipeline"
+    mineru_method: str = "auto"  # auto: текстовый слой / OCR постранично (roadmap § 3.1)
     mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)
     mineru_timeout_s: int = 1800
+
+    # --- BabelDOC (PDF→PDF с вёрсткой; AGPL-изоляция в отдельном venv) ---
+    babeldoc_enabled: bool = True
+    babeldoc_bin: str = "/root/services/babeldoc/.venv/bin/babeldoc"
+    babeldoc_qps: int = 8
+    babeldoc_timeout_s: int = 3600
 
     # --- Прочее ---
     max_upload_mb: int = 200
