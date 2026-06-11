@@ -39,3 +39,4 @@ extension/node_modules/
 extension/.output/
 extension/.wxt/
 extension/stats*.html
+extension/e2e/out/

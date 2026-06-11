@@ -25,7 +25,7 @@ export default defineContentScript({
         .btn { position: absolute; background: #2563eb; color: #fff; border: 0; border-radius: 7px;
                padding: 5px 11px; font: 12.5px system-ui, sans-serif; cursor: pointer;
                box-shadow: 0 2px 8px rgba(0,0,0,.25); display: none; }
-        .tip { position: absolute; max-width: 440px; background: #101725; color: #eef1f6;
+        .tip { position: absolute; width: max-content; max-width: 440px; background: #101725; color: #eef1f6;
                border-radius: 9px; padding: 10px 13px; font: 13.5px/1.5 system-ui, sans-serif;
                box-shadow: 0 4px 16px rgba(0,0,0,.35); display: none; white-space: pre-wrap; }
         .tip .meta { color: #8b97ad; font-size: 11px; margin-top: 6px; }
