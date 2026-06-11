@@ -70,6 +70,9 @@ services:
       KC_DB_USERNAME: ${RAG_PG_USER:-rag}
       KC_DB_PASSWORD: ${RAG_PG_PASSWORD:-rag-pg-2026}
       KC_HTTP_PORT: "8080"
+      # фиксируем issuer (иначе он зависит от того, по какому хосту пришли,
+      # и не совпадает с проверкой на бэкенде)
+      KC_HOSTNAME: ${RAG_KC_HOSTNAME:-http://localhost:8180}
     ports:
       - "127.0.0.1:8180:8080"
     volumes:

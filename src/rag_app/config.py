@@ -84,8 +84,9 @@ class Settings(BaseSettings):
 
     # --- Аутентификация (Keycloak OIDC, этап 5) ---
     auth_enabled: bool = False  # false — dev-режим без токенов
-    oidc_issuer: str = "http://127.0.0.1:8180/realms/rag-app"
-    # issuer для браузера (если Keycloak за другим адресом, чем видит бэкенд)
+    # issuer зафиксирован KC_HOSTNAME в compose; бэкенд резолвит localhost сам
+    oidc_issuer: str = "http://localhost:8180/realms/rag-app"
+    # адрес для браузера (если Keycloak за другим адресом, чем видит бэкенд)
     oidc_public_url: str = "http://localhost:8180/realms/rag-app"
     oidc_client_id: str = "rag-web"
 
