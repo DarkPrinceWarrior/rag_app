@@ -165,11 +165,14 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
     cur_heading: str | None = None
     prev_text: str | None = None
     for seg in segments:
-        contexts[seg.id] = SegmentContext(heading=cur_heading, prev_text=prev_text)
         if seg.kind == SegmentKind.heading:
+            # заголовки — без контекста: модель может «утащить» контекст в ответ
+            contexts[seg.id] = SegmentContext()
             cur_heading = seg.source_text
             prev_text = None
-        elif seg.kind == SegmentKind.paragraph:
+            continue
+        contexts[seg.id] = SegmentContext(heading=cur_heading, prev_text=prev_text)
+        if seg.kind == SegmentKind.paragraph:
             prev_text = seg.source_text
 
     todo = [s for s in segments if s.kind in TRANSLATABLE_KINDS and s.translated_text is None]

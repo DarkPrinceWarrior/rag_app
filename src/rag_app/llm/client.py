@@ -27,7 +27,9 @@ SYSTEM_PROMPT = """\
    номера пунктов и формулы переноси без изменений.
 2. Сохраняй разметку исходного текста (Markdown, LaTeX), если она есть.
 3. Имена собственные компаний и продуктов не переводи.
-4. Выводи ТОЛЬКО перевод — без пояснений, комментариев и кавычек-обёрток.
+4. Выводи ТОЛЬКО перевод — без пояснений, комментариев, кавычек-обёрток
+   и без маркеров <doc>/</doc>. Контекст (раздел, предыдущий абзац) в ответ
+   не включай никогда.
 5. Если текст уже на русском или переводить нечего (число, код, обозначение) —
    верни его без изменений."""
 
@@ -64,7 +66,9 @@ class Translator:
         if context and context.prev_text:
             prev = context.prev_text.strip()[:1000]
             parts.append(f"Предыдущий абзац (только контекст, НЕ переводить):\n{prev}")
-        parts.append(f"Переведи на русский:\n{text}")
+        parts.append(
+            f"Переведи на русский ТОЛЬКО текст между маркерами <doc> и </doc>:\n<doc>\n{text}\n</doc>"
+        )
         user_prompt = "\n\n".join(parts)
 
         last_err: Exception | None = None
@@ -82,6 +86,10 @@ class Translator:
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 out = (resp.choices[0].message.content or "").strip()
+                if out.startswith("<doc>"):
+                    out = out[len("<doc>"):].strip()
+                if out.endswith("</doc>"):
+                    out = out[: -len("</doc>")].strip()
                 if out:
                     return out
                 raise ValueError("пустой ответ модели")
