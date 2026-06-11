@@ -11,7 +11,13 @@ import logging
 import os
 from typing import Any
 
+from dotenv import load_dotenv
+
 logger = logging.getLogger(__name__)
+
+# LANGFUSE_* лежат в .env проекта; pydantic-settings его читает только для
+# Settings и НЕ экспортирует в os.environ — SDK же смотрит именно в окружение.
+load_dotenv()
 
 _enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
 _client = None
