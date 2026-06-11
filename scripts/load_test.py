@@ -19,18 +19,38 @@ sys.path.insert(0, "scripts")
 from make_test_pdf import build_story_pdf  # noqa: E402
 
 
+async def _retry(fn, attempts: int = 4):
+    for attempt in range(attempts):
+        try:
+            return await fn()
+        except (httpx.TransportError, httpx.HTTPStatusError):
+            if attempt == attempts - 1:
+                raise
+            await asyncio.sleep(1.5 * (attempt + 1))
+
+
 async def upload_and_wait(client: httpx.AsyncClient, api: str, pdf: bytes, i: int) -> dict:
     t0 = time.monotonic()
-    resp = await client.post(
-        f"{api}/api/documents",
-        files={"file": (f"load_{i:02d}.pdf", io.BytesIO(pdf), "application/pdf")},
-    )
-    resp.raise_for_status()
-    doc_id = resp.json()["id"]
+
+    async def _upload():
+        resp = await client.post(
+            f"{api}/api/documents",
+            files={"file": (f"load_{i:02d}.pdf", io.BytesIO(pdf), "application/pdf")},
+        )
+        resp.raise_for_status()
+        return resp.json()["id"]
+
+    doc_id = await _retry(_upload)
     status = "uploaded"
     while status not in ("done", "error"):
         await asyncio.sleep(5)
-        status = (await client.get(f"{api}/api/documents/{doc_id}")).json()["status"]
+
+        async def _poll():
+            resp = await client.get(f"{api}/api/documents/{doc_id}")
+            resp.raise_for_status()
+            return resp.json()["status"]
+
+        status = await _retry(_poll)
     return {"i": i, "id": doc_id, "status": status, "sec": time.monotonic() - t0}
 
 
@@ -42,7 +62,8 @@ async def main() -> None:
     pdf = build_story_pdf(pages)
     print(f"PDF: {pages} стр., {len(pdf)} байт; документов: {n}")
     t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=10)
+    async with httpx.AsyncClient(timeout=120.0, limits=limits) as client:
         results = await asyncio.gather(
             *(upload_and_wait(client, api, pdf, i) for i in range(n))
         )
