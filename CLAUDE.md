@@ -71,12 +71,15 @@ verified locally.
   `docs/roadmap.md` § 4.3: GPU0–1 Qwen3-32B, GPU2 Qwen3-VL, GPU3 Hunyuan-MT,
   GPU4 TEI/OCR, GPU5 резерв).
 
-Статус: этапы **1–4 завершены** (пайплайн перевода PDF/OOXML/сканов, RAG-чат
-с цитатами, библиотека, браузерное расширение `extension/` на WXT). Впереди
-**Этап 5 — прод**: Keycloak/SSO, RBAC, аудит, Langfuse, нагрузочное.
-Этапы и критерии — `docs/roadmap.md` § 11, прогресс — журнал в конце того же
-файла. LLM-сервисы на a100: Qwen3-32B-AWQ GPU0 `:8001`, Hunyuan-MT-7B GPU3
-`:8004`, BGE-M3 GPU4 `:8002`, reranker GPU4 `:8003` (systemd-юниты из `deploy/`).
+Статус: **все 5 этапов MVP завершены** (пайплайн перевода PDF/OOXML/сканов,
+RAG-чат с цитатами, библиотека, браузерное расширение `extension/` на WXT,
+SSO/RBAC/аудит/Langfuse, нагрузочное 20 документов). Оставшиеся доделки и план
+обновления моделей — `docs/roadmap.md` § 12.1 и журнал (последняя строка 📋).
+LLM-сервисы на a100: Qwen3-32B-AWQ GPU0 `:8001`, Hunyuan-MT-7B GPU3 `:8004`,
+BGE-M3 GPU4 `:8002`, reranker GPU4 `:8003` (systemd-юниты из `deploy/`).
+Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,
+Keycloak `:8180`) + `deploy/langfuse/` (`:8200`); API `:8100` (tmux `rag_api`),
+воркер — tmux `rag_worker`. `RAG_AUTH_ENABLED=false` до OIDC в расширении.
 
 ## Setup
 
