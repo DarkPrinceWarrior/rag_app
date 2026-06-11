@@ -46,7 +46,9 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
                     return
             else:
                 chat_session = ChatSession(
-                    title=make_session_title(body.message), document_id=body.document_id
+                    id=uuid.uuid4(),  # default колонки срабатывает только на flush
+                    title=make_session_title(body.message),
+                    document_id=body.document_id,
                 )
                 db.add(chat_session)
             db.add(ChatMessage(session_id=chat_session.id, role="user", content=body.message))
