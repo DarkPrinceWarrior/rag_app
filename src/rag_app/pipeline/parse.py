@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,10 @@ async def run_mineru(input_pdf: Path, out_dir: Path) -> Path:
     Девайс в MinerU 3.x задаётся только через env MINERU_DEVICE_MODE
     (флага -d в CLI больше нет).
     """
+    # mineru лежит в том же venv, что и воркер; PATH в tmux/systemd может его не содержать
+    mineru_bin = Path(sys.executable).with_name("mineru")
     cmd = [
-        "mineru",
+        str(mineru_bin) if mineru_bin.exists() else "mineru",
         "-p", str(input_pdf),
         "-o", str(out_dir),
         "-b", settings.mineru_backend,
