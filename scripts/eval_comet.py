@@ -3,10 +3,14 @@
 Reference-free QE: wmt22-cometkiwi-da по EN→RU парам сегментов из БД.
 Бейзлайн фиксируется для будущего A/B (Qwen3-32B vs Qwen3.6-27B, § 12.1).
 
-Запуск на сервере (модель ~2.3 ГБ, GPU5):
-  CUDA_VISIBLE_DEVICES=5 uv run python scripts/eval_comet.py [лимит=500]
+Зависимости конфликтуют с mineru (transformers) → отдельный venv:
+  uv venv /root/services/comet-eval/.venv --python 3.12
+  uv pip install --python /root/services/comet-eval/.venv/bin/python \
+      unbabel-comet "sqlalchemy[asyncio]" asyncpg pydantic-settings pgvector python-dotenv
 
-Зависимость ставится отдельно (тяжёлая): uv add --dev unbabel-comet
+Запуск на сервере (модель ~2.3 ГБ, GPU5):
+  cd /root/projects/rag_app && PYTHONPATH=src CUDA_VISIBLE_DEVICES=5 \
+      /root/services/comet-eval/.venv/bin/python scripts/eval_comet.py [лимит=500]
 """
 
 from __future__ import annotations
