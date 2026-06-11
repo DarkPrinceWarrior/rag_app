@@ -33,3 +33,9 @@ Thumbs.db
 
 # Playwright MCP артефакты
 .playwright-mcp/
+
+# Расширение (WXT)
+extension/node_modules/
+extension/.output/
+extension/.wxt/
+extension/stats*.html

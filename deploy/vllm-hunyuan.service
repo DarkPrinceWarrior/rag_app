@@ -1,0 +1,30 @@
+# Hunyuan-MT-7B — быстрый контур виджета, GPU3, порт 8004 (roadmap § 4.3).
+# Изолирован от batch-нагрузки Qwen3: латентность выделения < 2 с.
+[Unit]
+Description=vLLM Hunyuan-MT-7B (GPU3, :8004)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=3
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# GPU3 — NUMA node1
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Hunyuan-MT-7B \
+    --served-model-name hunyuan-mt-7b \
+    --host 127.0.0.1 \
+    --port 8004 \
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 8192 \
+    --max-num-seqs 64
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

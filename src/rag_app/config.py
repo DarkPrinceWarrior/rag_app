@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     translate_concurrency: int = 12
     translate_max_retries: int = 3
 
+    # --- Быстрый контур виджета: Hunyuan-MT-7B, GPU3 (roadmap § 4.1/4.3) ---
+    fast_llm_enabled: bool = True
+    fast_llm_base_url: str = "http://127.0.0.1:8004/v1"
+    fast_llm_model: str = "hunyuan-mt-7b"
+    selection_max_chars: int = 4000
+    web_translate_max_items: int = 300
+    web_translate_concurrency: int = 16
+
     # --- Эмбеддинги и reranker (GPU4, vLLM; roadmap § 4.3) ---
     embed_base_url: str = "http://127.0.0.1:8002/v1"
     embed_model: str = "bge-m3"
