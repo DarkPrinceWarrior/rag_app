@@ -12,6 +12,10 @@ Environment=CUDA_VISIBLE_DEVICES=0
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=VLLM_WORKER_MULTIPROC_METHOD=spawn
+# FlashInfer JIT-компилирует сэмплер при первом старте: нужны ninja (в venv)
+# и nvcc (CUDA 13.0 хоста); кэш ядер — /root/.cache/flashinfer.
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU0 — NUMA node0: пиннинг, чтобы H2D/D2H не ходили через UPI.
 ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
     /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-32B-AWQ \

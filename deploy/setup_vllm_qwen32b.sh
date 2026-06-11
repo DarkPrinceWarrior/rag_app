@@ -16,7 +16,8 @@ command -v numactl >/dev/null || { apt-get update -qq && apt-get install -y -qq 
 mkdir -p "$SVC_DIR"
 cd "$SVC_DIR"
 [ -d .venv ] || "$UV" venv --python 3.12 .venv
-"$UV" pip install --python .venv/bin/python --upgrade vllm
+# ninja — для JIT-сборки ядер FlashInfer (сэмплер) при первом старте
+"$UV" pip install --python .venv/bin/python --upgrade vllm ninja
 
 cp "$REPO_DIR/deploy/vllm-qwen32b.service" /etc/systemd/system/vllm-qwen32b.service
 systemctl daemon-reload
