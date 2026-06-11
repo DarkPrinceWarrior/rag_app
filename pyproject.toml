@@ -1,0 +1,10 @@
+[project]
+name = "rag_app"
+version = "0.1.0"
+description = "RAG application (TODO: описание)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+# Зависимости добавляются через `uv add <pkg>` (пишутся сюда + в uv.lock).
+# Dev-зависимости: `uv add --dev <pkg>`.

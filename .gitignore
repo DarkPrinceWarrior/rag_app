@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# uv / venv
+.venv/
+.python-version.local
+
+# Среда / секреты
+.env
+.env.*
+!.env.example
+
+# Инструменты навигации (локальные индексы/кэш)
+.codegraph/
+.serena/cache/
+
+# Артефакты / данные (структуру уточним по проекту)
+data/
+artifacts/
+models/
+runs/
+*.parquet
+*.ckpt
+*.pt
+*.bin
+
+# ОС
+.DS_Store
+Thumbs.db

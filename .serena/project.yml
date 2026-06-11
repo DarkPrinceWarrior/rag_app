@@ -1,0 +1,9 @@
+# Конфигурация проекта Serena
+project_name: "rag_app"
+
+# Языки, для которых поднимаются language servers.
+languages:
+- python
+
+# Кодировка текстовых файлов проекта.
+encoding: "utf-8"
