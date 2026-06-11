@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rag_app — просмотр и правки</title>
+<script src="/static/auth.js"></script>
 <style>
   * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f4f5f7; color: #1a1f2b; }
@@ -104,7 +105,7 @@ document.getElementById("reexport").onclick = async () => {
   setTimeout(() => (msg.textContent = ""), 4000);
 };
 
-load();
+window.authReady.then(load);
 </script>
 </body>
 </html>

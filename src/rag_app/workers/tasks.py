@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from rag_app.db.models import (
 )
 from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
 from rag_app.llm.embeddings import Embedder
+from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc
 from rag_app.pipeline.export_docx import build_docx
@@ -213,6 +215,7 @@ async def _translate_segment(translator: Translator, seg: Segment, context: Segm
 async def translate_document(ctx: dict, doc_id_str: str) -> str:
     doc_id = uuid.UUID(doc_id_str)
     translator: Translator = ctx["translator"]
+    t_task = time.monotonic()
     await _set_status(ctx, doc_id, DocumentStatus.translating)
 
     async with ctx["sessionmaker"]() as session:
@@ -294,6 +297,10 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
                 f"не переведено сегментов: {len(failures)}; первые ошибки: " + "; ".join(failures[:3])
             )
 
+        doc = await _get_doc(ctx, doc_id)
+        log_translate_trace(
+            doc_id_str, doc.filename, doc.kind, len(todo), time.monotonic() - t_task, settings.llm_model
+        )
         await _set_status(ctx, doc_id, DocumentStatus.translated)
         await ctx["redis"].enqueue_job(
             "export_document", doc_id_str, _job_id=f"export:{doc_id}:{uuid.uuid4().hex[:8]}"

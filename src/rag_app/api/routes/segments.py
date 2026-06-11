@@ -8,9 +8,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, update
 
+from rag_app.api.audit import audit
+from rag_app.api.auth import require_user
 from rag_app.db.models import Document, DocumentStatus, Segment
 
-router = APIRouter(prefix="/api", tags=["segments"])
+router = APIRouter(prefix="/api", tags=["segments"], dependencies=[require_user])
 
 
 class SegmentOut(BaseModel):
@@ -58,6 +60,7 @@ async def patch_segment(request: Request, segment_id: uuid.UUID, body: SegmentPa
         seg.needs_review = False  # ручная правка снимает флаг валидации
         await session.commit()
         await session.refresh(seg)
+    await audit(request, "segment_edit", "segment", str(segment_id), {"document_id": str(seg.document_id)})
     return SegmentOut.model_validate(seg)
 
 

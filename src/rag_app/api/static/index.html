@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rag_app — перевод документации EN→RU</title>
+<script src="/static/auth.js"></script>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -188,7 +189,7 @@ async function refresh() {
     }).join("");
   } catch (e) { /* сервер перезапускается — пробуем дальше */ }
 }
-loadFolders().then(refresh);
+window.authReady.then(() => loadFolders().then(refresh));
 setInterval(refresh, 2500);
 </script>
 </body>

@@ -8,11 +8,20 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
+from rag_app.api.audit import audit
+from rag_app.api.auth import User, require_user
 from rag_app.api.schemas import DocumentOut
 from rag_app.config import settings
 from rag_app.db.models import Document, DocumentStatus, Segment
 
-router = APIRouter(prefix="/api/documents", tags=["documents"])
+router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
+
+
+def _owner_filter(stmt, user: User):
+    """RBAC: admin видит всё; user — свои + документы dev-периода (owner NULL)."""
+    if user.is_admin:
+        return stmt
+    return stmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
 
 # Этап 2: PDF (текст и сканы) + OOXML. TXT/HTML — позже (roadmap § 3.1).
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx"}
@@ -42,6 +51,7 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
     async with request.app.state.sessionmaker() as session:
         doc = Document(
             id=doc_id,
+            owner_sub=request.state.user.sub if settings.auth_enabled else None,
             filename=filename,
             content_type=file.content_type or "application/pdf",
             size_bytes=len(data),
@@ -54,14 +64,16 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
     await request.app.state.arq.enqueue_job(
         "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
     )
+    await audit(request, "upload", "document", str(doc_id), {"filename": filename, "bytes": len(data)})
     return DocumentOut.from_doc(doc)
 
 
 @router.get("", response_model=list[DocumentOut])
 async def list_documents(request: Request) -> list[DocumentOut]:
     async with request.app.state.sessionmaker() as session:
+        stmt = _owner_filter(select(Document), request.state.user)
         docs = (
-            (await session.execute(select(Document).order_by(Document.created_at.desc()).limit(200)))
+            (await session.execute(stmt.order_by(Document.created_at.desc()).limit(200)))
             .scalars()
             .all()
         )
@@ -100,6 +112,7 @@ async def retry_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
     await request.app.state.arq.enqueue_job(
         "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
     )
+    await audit(request, "retry", "document", str(doc_id))
     return DocumentOut.from_doc(doc)
 
 
@@ -129,6 +142,7 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> StreamingR
         raise HTTPException(404, f"kind должен быть один из: original, {', '.join(_EXPORT_KINDS)}")
 
     data = await request.app.state.storage.get_bytes(bucket, key)
+    await audit(request, "download", "document", str(doc_id), {"kind": kind})
     quoted = out_name.encode("ascii", "ignore").decode() or "document"
     return StreamingResponse(
         io.BytesIO(data),
@@ -142,4 +156,7 @@ async def _get_or_404(request: Request, doc_id: uuid.UUID) -> Document:
         doc = await session.get(Document, doc_id)
     if doc is None:
         raise HTTPException(404, "документ не найден")
+    user: User = request.state.user
+    if not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub:
+        raise HTTPException(404, "документ не найден")  # не раскрываем существование
     return doc

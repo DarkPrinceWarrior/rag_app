@@ -48,6 +48,23 @@ SPEC_ROWS = [
 ]
 
 
+def build_story_pdf(n_pages: int) -> bytes:
+    """PDF в память — для нагрузочного теста (scripts/load_test.py)."""
+    import io
+
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle("Body", parent=styles["Normal"], fontSize=10.5, leading=14, spaceAfter=8)
+    story = [Paragraph("Load Test Specification", styles["Title"])]
+    for page in range(1, n_pages + 1):
+        story.append(Paragraph(f"Section {page}. Requirements for Unit {100 + page}", styles["Heading1"]))
+        for j, text in enumerate(PARAGRAPHS):
+            story.append(Paragraph(f"{page}.{j + 1} {text}", body))
+        story.append(PageBreak())
+    buf = io.BytesIO()
+    SimpleDocTemplate(buf, pagesize=A4).build(story)
+    return buf.getvalue()
+
+
 def main() -> None:
     n_pages = int(sys.argv[1]) if len(sys.argv) > 1 else 50
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/test_50p.pdf")

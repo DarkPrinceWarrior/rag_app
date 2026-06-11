@@ -10,9 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from rag_app.api.audit import audit
+from rag_app.api.auth import require_user
 from rag_app.db.models import GlossaryTerm
 
-router = APIRouter(prefix="/api/glossary", tags=["glossary"])
+router = APIRouter(prefix="/api/glossary", tags=["glossary"], dependencies=[require_user])
 
 
 class TermIn(BaseModel):
@@ -57,6 +59,7 @@ async def upsert_term(request: Request, body: TermIn) -> TermOut:
         )
         term = (await session.execute(stmt)).scalar_one()
         await session.commit()
+        await audit(request, "glossary_upsert", "glossary", str(term.id), {"en": term.en_term})
         return TermOut.model_validate(term)
 
 

@@ -92,6 +92,8 @@ class Document(Base):
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("folders.id", ondelete="SET NULL"), default=None
     )
+    # RBAC (этап 5): sub владельца из OIDC-токена; NULL — документы dev-периода
+    owner_sub: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -189,6 +191,21 @@ class ChatMessage(Base):
     # [{n, chunk_id, document_id, filename, heading_path, page_idx, bbox}]
     citations: Mapped[list[Any] | None] = mapped_column(JSONB, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditLog(Base):
+    """Append-only аудит (roadmap § 9): кто загрузил/перевёл/экспортировал/спросил."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    user_sub: Mapped[str] = mapped_column(String(64))
+    username: Mapped[str | None] = mapped_column(String(128), default=None)
+    action: Mapped[str] = mapped_column(String(64))  # upload | download | chat_query | …
+    object_type: Mapped[str | None] = mapped_column(String(32), default=None)
+    object_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
 
 
 class GlossaryTerm(Base):

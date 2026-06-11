@@ -8,9 +8,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 
+from rag_app.api.auth import require_user
 from rag_app.db.models import Document, Folder
 
-router = APIRouter(prefix="/api", tags=["library"])
+router = APIRouter(prefix="/api", tags=["library"], dependencies=[require_user])
 
 
 class FolderIn(BaseModel):

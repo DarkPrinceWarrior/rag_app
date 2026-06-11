@@ -13,10 +13,11 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from rag_app.api.auth import require_user
 from rag_app.config import settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api", tags=["widget"])
+router = APIRouter(prefix="/api", tags=["widget"], dependencies=[require_user])
 
 
 class SelectionIn(BaseModel):

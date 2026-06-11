@@ -1,0 +1,128 @@
+# Langfuse v3 self-hosted (roadmap § 10). Отдельный compose: своя инфраструктура
+# (postgres/clickhouse/redis/minio во внутренней сети, наружу — только web :8200).
+# Headless-инициализация: организация/проект/ключи/пользователь через LANGFUSE_INIT_*.
+# Запуск: docker compose -f deploy/langfuse/docker-compose.yml up -d
+name: langfuse
+
+x-env: &langfuse-env
+  DATABASE_URL: postgresql://langfuse:lf-pg-2026@lf-postgres:5432/langfuse
+  SALT: "rag-app-langfuse-salt-2026"
+  ENCRYPTION_KEY: "9e25dbbbcfa15d10cb12c0e1d031b1d2bc61c4f4a05e44b1d24c0b521b577e9c"
+  NEXTAUTH_SECRET: "rag-app-langfuse-nextauth-2026"
+  NEXTAUTH_URL: http://localhost:8200
+  CLICKHOUSE_URL: http://lf-clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://lf-clickhouse:9000
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: lf-ch-2026
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_CONNECTION_STRING: redis://lf-redis:6379
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: lf-minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: lf-minio-2026
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://lf-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: lf-minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: lf-minio-2026
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:8200/s3  # пресайн наружу не нужен в контуре
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_INIT_ORG_ID: rag
+  LANGFUSE_INIT_ORG_NAME: rag_app
+  LANGFUSE_INIT_PROJECT_ID: rag-app
+  LANGFUSE_INIT_PROJECT_NAME: rag-app
+  LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-rag-app
+  LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-rag-app-2026
+  LANGFUSE_INIT_USER_EMAIL: admin@rag-app.local
+  LANGFUSE_INIT_USER_NAME: admin
+  LANGFUSE_INIT_USER_PASSWORD: lf-admin-2026
+
+services:
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    depends_on:
+      lf-postgres:
+        condition: service_healthy
+      lf-clickhouse:
+        condition: service_healthy
+      lf-redis:
+        condition: service_started
+      lf-minio:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8200:3000"
+    environment: *langfuse-env
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    depends_on:
+      lf-postgres:
+        condition: service_healthy
+      lf-clickhouse:
+        condition: service_healthy
+      lf-redis:
+        condition: service_started
+      lf-minio:
+        condition: service_started
+    environment: *langfuse-env
+
+  lf-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: lf-pg-2026
+      POSTGRES_DB: langfuse
+    volumes:
+      - lf_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lf-clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: lf-ch-2026
+      CLICKHOUSE_DB: default
+    volumes:
+      - lf_ch_data:/var/lib/clickhouse
+      - lf_ch_logs:/var/log/clickhouse-server
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user clickhouse --password lf-ch-2026 --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  lf-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory-policy noeviction
+
+  lf-minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server /data'
+    environment:
+      MINIO_ROOT_USER: lf-minio
+      MINIO_ROOT_PASSWORD: lf-minio-2026
+    volumes:
+      - lf_minio_data:/data
+
+volumes:
+  lf_pg_data:
+  lf_ch_data:
+  lf_ch_logs:
+  lf_minio_data:

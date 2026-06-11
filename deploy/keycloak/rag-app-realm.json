@@ -1,0 +1,56 @@
+{
+  "realm": "rag-app",
+  "enabled": true,
+  "displayName": "rag_app — перевод документации",
+  "registrationAllowed": false,
+  "ssoSessionIdleTimeout": 28800,
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      { "name": "user", "description": "Доступ к своим документам и чату" },
+      { "name": "admin", "description": "Все документы, глоссарий, аудит" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "rag-web",
+      "name": "Веб-приложение rag_app",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:8100/*", "http://127.0.0.1:8100/*"],
+      "webOrigins": ["+"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    },
+    {
+      "clientId": "rag-extension",
+      "name": "Браузерное расширение rag_app",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["https://*.chromiumapp.org/*"],
+      "webOrigins": ["+"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    }
+  ],
+  "users": [
+    {
+      "username": "ruslan",
+      "enabled": true,
+      "email": "ruslan@rag-app.local",
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "rag-dev-2026", "temporary": false }],
+      "realmRoles": ["user", "admin"]
+    },
+    {
+      "username": "engineer",
+      "enabled": true,
+      "email": "engineer@rag-app.local",
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "rag-dev-2026", "temporary": false }],
+      "realmRoles": ["user"]
+    }
+  ]
+}

@@ -22,6 +22,8 @@ dependencies = [
     "python-pptx>=1.0.2",
     "pillow>=12.2.0",
     "pgvector>=0.4.2",
+    "pyjwt[crypto]>=2.13.0",
+    "langfuse>=4.7.1",
 ]
 
 # Тяжёлый GPU-контур парсинга — только на сервере: uv sync --extra parse.

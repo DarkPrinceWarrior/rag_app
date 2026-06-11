@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
@@ -11,11 +12,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 
+from rag_app.api.audit import audit
+from rag_app.api.auth import require_user
+from rag_app.config import settings
 from rag_app.db.models import ChatMessage, ChatSession
+from rag_app.observability import log_chat_trace
 from rag_app.rag.chat import extract_citations, make_session_title
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[require_user])
 
 
 class ChatIn(BaseModel):
@@ -34,6 +39,13 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
     if not body.message.strip():
         raise HTTPException(422, "пустой вопрос")
     app = request.app
+    await audit(
+        request,
+        "chat_query",
+        "chat_session",
+        str(body.session_id) if body.session_id else None,
+        {"document_id": str(body.document_id) if body.document_id else None, "q": body.message[:200]},
+    )
 
     async def gen():
         sessionmaker = app.state.sessionmaker
@@ -94,6 +106,7 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
 
         # 3) стрим ответа
         parts: list[str] = []
+        t_gen = time.monotonic()
         try:
             async for delta in app.state.chat_engine.stream_answer(body.message, chunks, history):
                 parts.append(delta)
@@ -115,6 +128,16 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
             )
             await db.commit()
             message_id = msg.id
+        user = getattr(request.state, "user", None)
+        log_chat_trace(
+            question=body.message,
+            chunks=chunks,
+            answer=answer,
+            model=settings.llm_model,
+            ms=int((time.monotonic() - t_gen) * 1000),
+            session_id=str(session_id),
+            user_sub=user.sub if user else None,
+        )
         yield _sse({"type": "done", "citations": citations, "message_id": str(message_id)})
 
     return StreamingResponse(

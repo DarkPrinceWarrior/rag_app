@@ -81,6 +81,16 @@ async def healthz() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+async def api_config() -> dict:
+    """Публичная конфигурация для UI и расширения (auth-параметры)."""
+    return {
+        "auth_enabled": settings.auth_enabled,
+        "oidc_authority": settings.oidc_public_url,
+        "oidc_client_id": settings.oidc_client_id,
+    }
+
+
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")

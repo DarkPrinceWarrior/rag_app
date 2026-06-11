@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     # («no paragraphs», проверено) — для них наш оверлей pipeline/scan_pdf.py.
     babeldoc_auto_ocr_workaround: bool = True
 
+    # --- Аутентификация (Keycloak OIDC, этап 5) ---
+    auth_enabled: bool = False  # false — dev-режим без токенов
+    oidc_issuer: str = "http://127.0.0.1:8180/realms/rag-app"
+    # issuer для браузера (если Keycloak за другим адресом, чем видит бэкенд)
+    oidc_public_url: str = "http://localhost:8180/realms/rag-app"
+    oidc_client_id: str = "rag-web"
+
     # --- Прочее ---
     max_upload_mb: int = 200
     job_timeout_s: int = 3600
