@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,20 +27,27 @@ class NoTextLayerError(Exception):
     """Скан без текстового слоя — OCR-ветка появится на этапе 2."""
 
 
+# pdfium НЕ потокобезопасен: конкурентные вызовы из asyncio.to_thread дают
+# segfault (воркер умирает молча — поймано нагрузочным тестом этапа 5).
+# Все обращения к pypdfium2 в процессе — под одним замком.
+PDFIUM_LOCK = threading.Lock()
+
+
 def pdf_info(path: Path, sample_pages: int = 5) -> tuple[int, bool]:
     """(число страниц, есть ли текстовый слой). Проверка — миллисекунды (roadmap § 3.1)."""
-    doc = pdfium.PdfDocument(str(path))
-    try:
-        n_pages = len(doc)
-        chars = 0
-        for i in range(min(sample_pages, n_pages)):
-            textpage = doc[i].get_textpage()
-            chars += len(textpage.get_text_bounded() or "")
-            if chars > 100:
-                return n_pages, True
-        return n_pages, chars > 100
-    finally:
-        doc.close()
+    with PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(str(path))
+        try:
+            n_pages = len(doc)
+            chars = 0
+            for i in range(min(sample_pages, n_pages)):
+                textpage = doc[i].get_textpage()
+                chars += len(textpage.get_text_bounded() or "")
+                if chars > 100:
+                    return n_pages, True
+            return n_pages, chars > 100
+        finally:
+            doc.close()
 
 
 async def run_mineru(input_pdf: Path, out_dir: Path) -> Path:

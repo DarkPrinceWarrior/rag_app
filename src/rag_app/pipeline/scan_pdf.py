@@ -72,31 +72,36 @@ def build_scan_overlay(original_pdf: Path, segments: list[Segment]) -> tuple[byt
     if skipped:
         logger.warning("оверлей: %d сегментов без геометрии (останутся фоном)", skipped)
 
-    doc = pdfium.PdfDocument(str(original_pdf))
-    originals: list[Image.Image] = []
+    from rag_app.pipeline.parse import PDFIUM_LOCK
+
+    with PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(str(original_pdf))
+        originals: list[Image.Image] = []
+        try:
+            for i in range(len(doc)):
+                originals.append(doc[i].render(scale=_RENDER_SCALE).to_pil().convert("RGB"))
+        finally:
+            doc.close()
+
+    # наложение — чистый PIL, замок не нужен
     overlaid: list[Image.Image] = []
-    try:
-        for i in range(len(doc)):
-            base = doc[i].render(scale=_RENDER_SCALE).to_pil().convert("RGB")
-            originals.append(base)
-            img = base.copy()
-            draw = ImageDraw.Draw(img)
-            for seg in sorted(by_page.get(i, []), key=lambda s: s.idx):
-                pw, ph = seg.meta["page_size_pt"]
-                fx, fy = img.width / pw, img.height / ph
-                x0, y0, x1, y1 = seg.meta["bbox_pt"]
-                px0, py0, px1, py1 = x0 * fx, y0 * fy, x1 * fx, y1 * fy
-                draw.rectangle([px0 - 2, py0 - 2, px1 + 2, py1 + 2], fill=(255, 255, 255))
-                font, lines, line_h = _fit_text(draw, seg.translated_text, px1 - px0, py1 - py0)
-                y = py0
-                for line in lines:
-                    if y > py1 + line_h:  # лёгкий выход за низ бокса допустим
-                        break
-                    draw.text((px0, y), line, fill=(20, 24, 33), font=font)
-                    y += line_h
-            overlaid.append(img)
-    finally:
-        doc.close()
+    for i, base in enumerate(originals):
+        img = base.copy()
+        draw = ImageDraw.Draw(img)
+        for seg in sorted(by_page.get(i, []), key=lambda s: s.idx):
+            pw, ph = seg.meta["page_size_pt"]
+            fx, fy = img.width / pw, img.height / ph
+            x0, y0, x1, y1 = seg.meta["bbox_pt"]
+            px0, py0, px1, py1 = x0 * fx, y0 * fy, x1 * fx, y1 * fy
+            draw.rectangle([px0 - 2, py0 - 2, px1 + 2, py1 + 2], fill=(255, 255, 255))
+            font, lines, line_h = _fit_text(draw, seg.translated_text, px1 - px0, py1 - py0)
+            y = py0
+            for line in lines:
+                if y > py1 + line_h:  # лёгкий выход за низ бокса допустим
+                    break
+                draw.text((px0, y), line, fill=(20, 24, 33), font=font)
+                y += line_h
+        overlaid.append(img)
 
     def to_pdf(pages: list[Image.Image]) -> bytes:
         buf = io.BytesIO()
