@@ -20,8 +20,16 @@ class BabelDocUnavailableError(Exception):
     """CLI не установлен/выключен — PDF-экспорт с вёрсткой пропускается."""
 
 
-async def run_babeldoc(input_pdf: Path, out_dir: Path) -> tuple[Path | None, Path | None]:
-    """Возвращает (mono_pdf, dual_pdf): только перевод / EN+RU постранично."""
+async def run_babeldoc(
+    input_pdf: Path, out_dir: Path, ocr_workaround: bool = False
+) -> tuple[Path | None, Path | None]:
+    """Возвращает (mono_pdf, dual_pdf): только перевод / EN+RU постранично.
+
+    ocr_workaround → --auto-enable-ocr-workaround: для searchable-сканов
+    (растр + текстовый слой) BabelDOC кладёт перевод на белых плашках;
+    image-only сканы он не берёт даже так («no paragraphs» — проверено,
+    они идут через наш оверлей).
+    """
     if not settings.babeldoc_enabled:
         raise BabelDocUnavailableError("BabelDOC выключен (RAG_BABELDOC_ENABLED=false)")
     babeldoc = Path(settings.babeldoc_bin)
@@ -41,6 +49,8 @@ async def run_babeldoc(input_pdf: Path, out_dir: Path) -> tuple[Path | None, Pat
         "--output", str(out_dir),
         "--qps", str(settings.babeldoc_qps),
     ]
+    if ocr_workaround:
+        cmd.append("--auto-enable-ocr-workaround")
     logger.info("babeldoc: %s", input_pdf.name)
     proc = await asyncio.create_subprocess_exec(
         *cmd,

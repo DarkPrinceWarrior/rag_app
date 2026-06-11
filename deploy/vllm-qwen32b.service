@@ -25,7 +25,8 @@ ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
     --gpu-memory-utilization 0.92 \
     --max-model-len 16384 \
     --kv-cache-dtype fp8_e5m2 \
-    --max-num-seqs 64
+    --max-num-seqs 64 \
+    --default-chat-template-kwargs '{"enable_thinking": false}'
 Restart=always
 RestartSec=10
 TimeoutStartSec=900

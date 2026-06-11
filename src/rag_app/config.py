@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     babeldoc_bin: str = "/root/services/babeldoc/.venv/bin/babeldoc"
     babeldoc_qps: int = 8
     babeldoc_timeout_s: int = 3600
+    # --auto-enable-ocr-workaround на ветке pdf_text: для обычных PDF детект
+    # не срабатывает (поведение прежнее), для searchable-сканов (растр +
+    # текстовый слой стороннего OCR) BabelDOC включит белые плашки вместо
+    # отказа «Scanned PDF detected». Image-only сканы (pdf_scan) это не лечит
+    # («no paragraphs», проверено) — для них наш оверлей pipeline/scan_pdf.py.
+    babeldoc_auto_ocr_workaround: bool = True
 
     # --- Прочее ---
     max_upload_mb: int = 200

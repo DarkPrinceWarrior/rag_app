@@ -316,7 +316,9 @@ _OOXML_MIME = {
 async def _export_pdf_layout(ctx: dict, doc: Document, local_pdf: Path, tmp: Path) -> dict[str, Any]:
     """BabelDOC: PDF с сохранённой вёрсткой (mono + dual). Недоступен — не фейл."""
     try:
-        mono, dual = await run_babeldoc(local_pdf, tmp / "babeldoc_out")
+        mono, dual = await run_babeldoc(
+            local_pdf, tmp / "babeldoc_out", ocr_workaround=settings.babeldoc_auto_ocr_workaround
+        )
     except BabelDocUnavailableError as exc:
         logger.warning("babeldoc недоступен: %s", exc)
         return {}
