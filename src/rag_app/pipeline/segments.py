@@ -68,24 +68,35 @@ def _join_captions(*caption_lists: Any) -> str:
     return "\n".join(parts)
 
 
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
     drafts: list[SegmentDraft] = []
     for item in items:
         itype = item.get("type")
-        page_idx = item.get("page_idx")
+        page_idx = _to_int(item.get("page_idx"))
+        # bbox нужен на этапе 3: подсветка цитат RAG в оригинале (roadmap § 5)
+        base_meta = {"bbox": item.get("bbox")} if item.get("bbox") else {}
         idx = len(drafts)
 
         if itype == "text":
             text = (item.get("text") or "").strip()
             if not text:
                 continue
-            level = item.get("text_level")
+            level = _to_int(item.get("text_level"))
             if level:
                 drafts.append(
-                    SegmentDraft(idx, SegmentKind.heading, text, page_idx, heading_level=int(level))
+                    SegmentDraft(
+                        idx, SegmentKind.heading, text, page_idx, heading_level=level, meta=base_meta
+                    )
                 )
             else:
-                drafts.append(SegmentDraft(idx, SegmentKind.paragraph, text, page_idx))
+                drafts.append(SegmentDraft(idx, SegmentKind.paragraph, text, page_idx, meta=base_meta))
 
         elif itype == "table":
             rows = parse_table_html(item.get("table_body") or "")
@@ -99,7 +110,7 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
                     SegmentKind.table,
                     source_text=(caption + "\n" + preview).strip(),
                     page_idx=page_idx,
-                    meta={"table_rows": rows, "caption": caption},
+                    meta={**base_meta, "table_rows": rows, "caption": caption},
                 )
             )
 
@@ -107,13 +118,17 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
             caption = _join_captions(item.get("image_caption"), item.get("image_footnote"))
             drafts.append(
                 SegmentDraft(
-                    idx, SegmentKind.image, caption, page_idx, meta={"img_path": item.get("img_path")}
+                    idx,
+                    SegmentKind.image,
+                    caption,
+                    page_idx,
+                    meta={**base_meta, "img_path": item.get("img_path")},
                 )
             )
 
         elif itype == "equation":
             text = (item.get("text") or "").strip()
             if text:
-                drafts.append(SegmentDraft(idx, SegmentKind.equation, text, page_idx))
+                drafts.append(SegmentDraft(idx, SegmentKind.equation, text, page_idx, meta=base_meta))
 
     return drafts
