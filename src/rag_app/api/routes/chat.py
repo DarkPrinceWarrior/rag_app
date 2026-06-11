@@ -51,6 +51,7 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
                     document_id=body.document_id,
                 )
                 db.add(chat_session)
+                await db.flush()  # сессия должна попасть в INSERT раньше сообщения (FK)
             db.add(ChatMessage(session_id=chat_session.id, role="user", content=body.message))
             await db.commit()
             session_id = chat_session.id
