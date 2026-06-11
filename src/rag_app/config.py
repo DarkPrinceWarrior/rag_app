@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
     mineru_backend: str = "pipeline"
+    mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)
     mineru_timeout_s: int = 1800
 
     # --- Прочее ---

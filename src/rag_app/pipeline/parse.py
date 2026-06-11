@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -40,17 +41,24 @@ def pdf_info(path: Path, sample_pages: int = 5) -> tuple[int, bool]:
 
 
 async def run_mineru(input_pdf: Path, out_dir: Path) -> Path:
-    """Запуск mineru CLI; возвращает путь к *_content_list.json."""
+    """Запуск mineru CLI; возвращает путь к *_content_list.json.
+
+    Девайс в MinerU 3.x задаётся только через env MINERU_DEVICE_MODE
+    (флага -d в CLI больше нет).
+    """
     cmd = [
         "mineru",
         "-p", str(input_pdf),
         "-o", str(out_dir),
         "-b", settings.mineru_backend,
-        "-d", settings.mineru_device,
     ]
-    logger.info("mineru: %s", " ".join(cmd))
+    if settings.mineru_backend == "pipeline":
+        cmd += ["-l", settings.mineru_lang]
+    env = dict(os.environ, MINERU_DEVICE_MODE=settings.mineru_device)
+    logger.info("mineru: %s (device=%s)", " ".join(cmd), settings.mineru_device)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
