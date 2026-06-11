@@ -29,7 +29,8 @@ from rag_app.llm.client import SegmentContext, Translator, needs_translation, pi
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc
 from rag_app.pipeline.export_docx import build_docx
-from rag_app.pipeline.parse import load_content_list, pdf_info, run_mineru
+from rag_app.pipeline.parse import load_block_geometry, load_content_list, pdf_info, run_mineru
+from rag_app.pipeline.scan_pdf import build_scan_overlay
 from rag_app.pipeline.segments import content_list_to_segments
 from rag_app.pipeline.validate import ValidationResult, validate_numbers
 from rag_app.storage.s3 import Storage
@@ -79,6 +80,18 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 content_list_path = await run_mineru(local_file, out_dir)
                 items = load_content_list(content_list_path)
                 drafts = content_list_to_segments(items)
+                # геометрия в пунктах из middle.json — для оверлея сканов и
+                # подсветки цитат (этап 3); content_list-bbox в другом масштабе
+                geo = load_block_geometry(content_list_path)
+                for d in drafts:
+                    if d.kind in (SegmentKind.table, SegmentKind.image, SegmentKind.equation):
+                        bbox_pt = geo.pop_typed(d.page_idx, d.kind.value)
+                    else:
+                        bbox_pt = geo.match_text(d.page_idx, d.source_text)
+                    size = geo.page_sizes.get(d.page_idx) if d.page_idx is not None else None
+                    if bbox_pt and size:
+                        d.meta["bbox_pt"] = bbox_pt
+                        d.meta["page_size_pt"] = list(size)
                 artifact_key = f"{doc_id}/content_list.json"
                 await storage.put_bytes(
                     settings.bucket_artifacts,
@@ -348,12 +361,29 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
             docx_key = f"{doc_id}/{stem}.ru.docx"
             await storage.put_bytes(settings.bucket_exports, docx_key, data, _DOCX_MIME)
             values["s3_key_export_docx"] = docx_key
-            # 2) PDF с исходной вёрсткой (BabelDOC, mono+dual)
+            # 2) PDF с исходной вёрсткой
             with tempfile.TemporaryDirectory(prefix="rag_export_") as tmp:
                 tmp_path = Path(tmp)
                 local_pdf = tmp_path / Path(doc.filename).name
                 await storage.download_to(settings.bucket_originals, doc.s3_key_original, local_pdf)
-                values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
+                if doc.kind == DocumentKind.pdf_scan:
+                    # BabelDOC сканы не переводит (нет текстового слоя) —
+                    # собственный оверлей по bbox (roadmap § 9, запасной путь)
+                    mono_data, dual_data = await asyncio.to_thread(
+                        build_scan_overlay, local_pdf, segments
+                    )
+                    mono_key = f"{doc_id}/{stem}.ru.pdf"
+                    dual_key = f"{doc_id}/{stem}.en-ru.pdf"
+                    await storage.put_bytes(
+                        settings.bucket_exports, mono_key, mono_data, "application/pdf"
+                    )
+                    await storage.put_bytes(
+                        settings.bucket_exports, dual_key, dual_data, "application/pdf"
+                    )
+                    values["s3_key_export_pdf"] = mono_key
+                    values["s3_key_export_pdf_dual"] = dual_key
+                else:
+                    values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
         else:
             # OOXML: переводы обратно в копию оригинала, формат и вёрстка не меняются
             ext = doc.kind if isinstance(doc.kind, str) else doc.kind.value

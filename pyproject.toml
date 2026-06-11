@@ -20,6 +20,7 @@ dependencies = [
     "pypdfium2>=4.30",
     "openpyxl>=3.1.5",
     "python-pptx>=1.0.2",
+    "pillow>=12.2.0",
 ]
 
 # Тяжёлый GPU-контур парсинга — только на сервере: uv sync --extra parse.
@@ -36,7 +37,6 @@ dev = [
     "mypy>=1.14",
     "reportlab>=4.2",
     "alembic>=1.18.4",
-    "pillow>=12.2.0",
 ]
 
 [build-system]

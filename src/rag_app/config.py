@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)
     mineru_timeout_s: int = 1800
 
+    # --- Оверлей сканов (перевод поверх изображения по bbox) ---
+    scan_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
     # --- BabelDOC (PDF→PDF с вёрсткой; AGPL-изоляция в отдельном venv) ---
     babeldoc_enabled: bool = True
     babeldoc_bin: str = "/root/services/babeldoc/.venv/bin/babeldoc"

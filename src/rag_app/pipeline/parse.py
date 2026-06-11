@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -88,3 +89,66 @@ def load_content_list(path: Path) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError(f"неожиданный формат content_list: {type(data)}")
     return data
+
+
+def _norm_text(text: str) -> str:
+    return "".join(text.lower().split())[:40]
+
+
+@dataclass
+class BlockGeometry:
+    """Геометрия блоков из *_middle.json — bbox в ПУНКТАХ страницы.
+
+    bbox из content_list — во внутреннем масштабе рендера MinerU (непригоден
+    для наложения), а para_blocks из middle.json — в координатах страницы
+    (проверено по pdfium): их и используем для оверлея сканов.
+    """
+
+    page_sizes: dict[int, tuple[float, float]] = field(default_factory=dict)
+    text_map: dict[tuple[int, str], list[float]] = field(default_factory=dict)
+    typed: dict[tuple[int, str], list[list[float]]] = field(default_factory=dict)
+
+    def match_text(self, page_idx: int | None, text: str) -> list[float] | None:
+        if page_idx is None:
+            return None
+        return self.text_map.get((page_idx, _norm_text(text)))
+
+    def pop_typed(self, page_idx: int | None, block_type: str) -> list[float] | None:
+        if page_idx is None:
+            return None
+        lst = self.typed.get((page_idx, block_type))
+        return lst.pop(0) if lst else None
+
+
+_TYPED_BLOCKS = {"table": "table", "image": "image", "interline_equation": "equation"}
+
+
+def load_block_geometry(content_list_path: Path) -> BlockGeometry:
+    geo = BlockGeometry()
+    middle_path = Path(str(content_list_path).replace("_content_list.json", "_middle.json"))
+    if not middle_path.exists():
+        logger.warning("middle.json не найден: %s — оверлей сканов будет недоступен", middle_path)
+        return geo
+    data = json.loads(middle_path.read_text(encoding="utf-8"))
+    for page in data.get("pdf_info", []):
+        p_idx = page.get("page_idx")
+        size = page.get("page_size")
+        if p_idx is None or not size:
+            continue
+        geo.page_sizes[p_idx] = (float(size[0]), float(size[1]))
+        for blk in page.get("para_blocks", []):
+            btype = blk.get("type")
+            bbox = blk.get("bbox")
+            if not bbox:
+                continue
+            if btype in _TYPED_BLOCKS:
+                geo.typed.setdefault((p_idx, _TYPED_BLOCKS[btype]), []).append(bbox)
+                continue
+            text = "".join(
+                span.get("content", "")
+                for line in blk.get("lines", [])
+                for span in line.get("spans", [])
+            )
+            if text.strip():
+                geo.text_map[(p_idx, _norm_text(text))] = bbox
+    return geo
