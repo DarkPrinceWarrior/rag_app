@@ -1,0 +1,52 @@
+"""FastAPI-приложение. Запуск: uv run uvicorn rag_app.api.main:app --port 8100"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from arq import create_pool
+from arq.connections import RedisSettings
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from rag_app.api.routes.documents import router as documents_router
+from rag_app.config import settings
+from rag_app.db.engine import create_engine, create_sessionmaker, init_db
+from rag_app.storage.s3 import Storage
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.engine = create_engine()
+    app.state.sessionmaker = create_sessionmaker(app.state.engine)
+    await init_db(app.state.engine)
+    app.state.storage = Storage()
+    await app.state.storage.ensure_buckets()
+    app.state.arq = await create_pool(
+        RedisSettings(host=settings.redis_host, port=settings.redis_port, database=settings.redis_db)
+    )
+    yield
+    await app.state.arq.aclose()
+    await app.state.engine.dispose()
+
+
+app = FastAPI(title="rag_app — перевод документации EN→RU", lifespan=lifespan)
+app.include_router(documents_router)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")

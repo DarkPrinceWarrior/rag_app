@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rag_app — перевод документации EN→RU</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f4f5f7; color: #1a1f2b; }
+  header { background: #101725; color: #fff; padding: 14px 28px; display: flex; align-items: baseline; gap: 14px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header span { color: #8b97ad; font-size: 13px; }
+  main { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+  .upload { background: #fff; border: 1px dashed #b8c0cf; border-radius: 10px; padding: 22px; text-align: center; margin-bottom: 20px; }
+  .upload.drag { border-color: #2563eb; background: #eef4ff; }
+  .upload input { display: none; }
+  .btn { display: inline-block; background: #2563eb; color: #fff; border: 0; border-radius: 7px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .hint { color: #6b7485; font-size: 13px; margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(16,23,37,.08); }
+  th, td { padding: 10px 14px; text-align: left; font-size: 14px; border-bottom: 1px solid #eceff4; }
+  th { background: #f9fafc; color: #5b6574; font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em; }
+  tr:last-child td { border-bottom: 0; }
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .b-wait { background: #eef1f6; color: #5b6574; }
+  .b-run  { background: #fff4dd; color: #92600a; }
+  .b-done { background: #e3f6e8; color: #176b33; }
+  .b-err  { background: #fde8e8; color: #b3261e; }
+  .progress { background: #eceff4; border-radius: 99px; height: 7px; width: 130px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: #2563eb; border-radius: 99px; transition: width .4s; }
+  .small { color: #6b7485; font-size: 12.5px; }
+  a { color: #2563eb; text-decoration: none; }
+  .err-text { color: #b3261e; font-size: 12.5px; max-width: 320px; }
+  .empty { text-align: center; color: #6b7485; padding: 36px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>rag_app</h1>
+  <span>перевод технической документации EN→RU · этап 1: текстовые PDF → DOCX</span>
+</header>
+<main>
+  <div class="upload" id="drop">
+    <button class="btn" id="pick">Загрузить PDF</button>
+    <input type="file" id="file" accept=".pdf">
+    <div class="hint">или перетащите файл сюда · до 200 МБ · только PDF с текстовым слоем</div>
+    <div class="hint" id="msg"></div>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Документ</th><th>Стр.</th><th>Статус</th><th>Прогресс</th><th>Скачать</th><th></th></tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="6" class="empty">Загрузка…</td></tr></tbody>
+  </table>
+</main>
+<script>
+const STATUS = {
+  uploaded:   ["в очереди", "b-wait"],
+  parsing:    ["парсинг", "b-run"],
+  parsed:     ["распарсен", "b-run"],
+  translating:["перевод", "b-run"],
+  translated: ["переведён", "b-run"],
+  exporting:  ["экспорт", "b-run"],
+  done:       ["готово", "b-done"],
+  error:      ["ошибка", "b-err"],
+};
+const rows = document.getElementById("rows");
+const msg = document.getElementById("msg");
+const fileInput = document.getElementById("file");
+const drop = document.getElementById("drop");
+document.getElementById("pick").onclick = () => fileInput.click();
+fileInput.onchange = () => fileInput.files[0] && upload(fileInput.files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("drag"); };
+drop.ondragleave = () => drop.classList.remove("drag");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("drag"); e.dataTransfer.files[0] && upload(e.dataTransfer.files[0]); };
+
+async function upload(file) {
+  msg.textContent = "Загрузка « " + file.name + " »…";
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch("/api/documents", { method: "POST", body: fd });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.status); }
+    msg.textContent = "";
+    refresh();
+  } catch (e) { msg.textContent = "Ошибка: " + e.message; }
+  fileInput.value = "";
+}
+
+async function retry(id) { await fetch(`/api/documents/${id}/retry`, { method: "POST" }); refresh(); }
+
+function esc(s) { const d = document.createElement("span"); d.textContent = s || ""; return d.innerHTML; }
+
+async function refresh() {
+  try {
+    const docs = await (await fetch("/api/documents")).json();
+    if (!docs.length) { rows.innerHTML = '<tr><td colspan="6" class="empty">Документов пока нет — загрузите первый PDF</td></tr>'; return; }
+    rows.innerHTML = docs.map(d => {
+      const [label, cls] = STATUS[d.status] || [d.status, "b-wait"];
+      const pct = d.segment_count ? Math.round(100 * d.translated_count / d.segment_count) : 0;
+      const prog = ["translating","translated","exporting","done"].includes(d.status)
+        ? `<div class="progress"><i style="width:${d.status==="done"?100:pct}%"></i></div><span class="small">${d.translated_count}/${d.segment_count}</span>`
+        : `<span class="small">—</span>`;
+      const links = [`<a href="/api/documents/${d.id}/download/original">оригинал</a>`];
+      if (d.has_docx) links.push(`<a href="/api/documents/${d.id}/download/docx"><b>DOCX (RU)</b></a>`);
+      const extra = d.status === "error"
+        ? `<div class="err-text">${esc(d.error)}</div><a href="#" onclick="retry('${d.id}');return false">повторить</a>` : "";
+      return `<tr>
+        <td>${esc(d.filename)}<div class="small">${new Date(d.created_at).toLocaleString("ru-RU")} · ${(d.size_bytes/1048576).toFixed(1)} МБ</div></td>
+        <td>${d.page_count ?? "—"}</td>
+        <td><span class="badge ${cls}">${label}</span></td>
+        <td>${prog}</td>
+        <td>${links.join(" · ")}</td>
+        <td>${extra}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { /* сервер перезапускается — пробуем дальше */ }
+}
+refresh();
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>

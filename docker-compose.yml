@@ -1,0 +1,59 @@
+# Stateless-инфраструктура этапа 1 (roadmap § 2, § 4.4).
+# Порты смещены: 5432/8000/3000/8010 на a100 заняты другими проектами.
+# Всё слушает только 127.0.0.1 — наружу смотрит лишь FastAPI (отдельно).
+name: rag-app
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${RAG_PG_USER:-rag}
+      POSTGRES_PASSWORD: ${RAG_PG_PASSWORD:-rag-pg-2026}
+      POSTGRES_DB: ${RAG_PG_DB:-rag_app}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RAG_PG_USER:-rag} -d ${RAG_PG_DB:-rag_app}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${RAG_S3_ACCESS_KEY:-rag-minio}
+      MINIO_ROOT_PASSWORD: ${RAG_S3_SECRET_KEY:-rag-minio-secret-2026}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:

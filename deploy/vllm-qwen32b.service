@@ -1,0 +1,31 @@
+# vLLM: Qwen3-32B-AWQ, реплика A — GPU0, порт 8001 (roadmap § 4.3).
+# Установка: deploy/setup_vllm_qwen32b.sh
+[Unit]
+Description=vLLM Qwen3-32B-AWQ (replica A, GPU0, :8001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# NVLink отсутствует физически — P2P выключен навсегда (roadmap § 4.3).
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=VLLM_WORKER_MULTIPROC_METHOD=spawn
+# GPU0 — NUMA node0: пиннинг, чтобы H2D/D2H не ходили через UPI.
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-32B-AWQ \
+    --served-model-name qwen3-32b-awq \
+    --host 127.0.0.1 \
+    --port 8001 \
+    --gpu-memory-utilization 0.92 \
+    --max-model-len 16384 \
+    --kv-cache-dtype fp8_e5m2 \
+    --max-num-seqs 64
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

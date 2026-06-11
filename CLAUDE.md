@@ -4,9 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > `AGENTS.md` is kept byte-identical to this file (same instructions, same rules).
 > Edit one, mirror the change to the other.
->
-> ⚠️ **Описание проекта пока не заполнено** — см. раздел «Project Purpose (TODO)».
-> Остальные разделы (инструменты, память, окружение, сервер, конвенции) — рабочие.
 
 ## Tooling
 
@@ -21,10 +18,8 @@ Code navigation uses three MCP servers, each with one job — do not duplicate t
   prefer over `fff grep`), `codegraph_callers`/`codegraph_callees`,
   `codegraph_impact` (blast radius before a refactor), `codegraph_node`,
   `codegraph_explore`. Trust its results — full AST parse; do not re-verify
-  with grep.
-  > 🔧 Индекс ещё **не построен** (кода нет). После появления первого кода:
-  > `codegraph init .`, затем `codegraph status` в начале сессии и
-  > `codegraph sync` после bulk-изменений.
+  with grep. `codegraph status` в начале сессии, `codegraph sync` после
+  bulk-изменений.
 - **serena** — LSP-precise symbol navigation and the only tool that *edits*
   at symbol level (`find_symbol`, `get_symbols_overview`,
   `find_referencing_symbols`, `replace_symbol_body`, `insert_*`,
@@ -51,13 +46,34 @@ Separate confirmed facts from inference. Treat files and command outputs as
 confirmed; treat Honcho memory and architectural guesses as inference unless
 verified locally.
 
-## Project Purpose (TODO)
+## Project Purpose
 
-> 🚧 **Заполнит Руслан.** Указать: назначение проекта, доменную область,
-> источники и формат данных, ключевые компоненты, точки входа.
+**Корпоративный инструмент перевода и анализа технической документации (EN→RU)**
+по ТЗ № 3086-СлЗап(333). Домен: нефтегаз / строительство / договоры.
+Жёсткое ограничение: всё on-premise, только open-weight модели, ни один байт
+документов не покидает периметр. Полное ТЗ и архитектура — `docs/roadmap.md`.
 
-`rag_app` — RAG-приложение (Retrieval-Augmented Generation). Подробное описание
-архитектуры и пайплайна будет добавлено сюда.
+Продукт из трёх частей:
+1. **Веб-приложение** — загрузка документов, перевод с сохранением структуры,
+   side-by-side просмотр, правки, RAG-чат с документом, библиотека, экспорт.
+2. **Браузерное расширение (WXT, MV3)** — перевод выделения/страницы.
+3. **Бэкенд-платформа** — пайплайн: парсинг (MinerU/PaddleOCR-VL) → перевод
+   (vLLM: Qwen3-32B-AWQ, Hunyuan-MT-7B) → реконструкция (BabelDOC / OOXML /
+   python-docx) → индексация (pgvector, BGE-M3) → RAG-чат.
+
+Ключевые компоненты и точки входа:
+- `src/rag_app/api/main.py` — FastAPI-приложение (REST + примитивный UI).
+- `src/rag_app/workers/` — ARQ-воркеры (parse / translate / export).
+- `src/rag_app/pipeline/` — парсинг, сегментация, перевод, DOCX-экспорт.
+- `src/rag_app/db/models.py` — схема Postgres (documents, segments, …).
+- `docker-compose.yml` — инфраструктура: Postgres 17 + pgvector, Redis, MinIO.
+- `deploy/` — systemd-юниты vLLM и скрипты раскладки моделей по GPU (см.
+  `docs/roadmap.md` § 4.3: GPU0–1 Qwen3-32B, GPU2 Qwen3-VL, GPU3 Hunyuan-MT,
+  GPU4 TEI/OCR, GPU5 резерв).
+
+Статус: идёт **Этап 1** (скелет: compose-инфра, vLLM, PDF → MinerU → перевод →
+DOCX, примитивный UI). Этапы и критерии — `docs/roadmap.md` § 11, прогресс —
+журнал в конце того же файла.
 
 ## Setup
 
