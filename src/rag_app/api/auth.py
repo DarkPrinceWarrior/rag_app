@@ -45,7 +45,12 @@ class _JwksCache:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
-            self._keys = {k["kid"]: jwt.PyJWK(k) for k in resp.json()["keys"]}
+            # в JWKS есть и enc-ключи (RSA-OAEP) — берём только подписи
+            self._keys = {
+                k["kid"]: jwt.PyJWK(k)
+                for k in resp.json()["keys"]
+                if k.get("use") == "sig"
+            }
             self._fetched_at = time.monotonic()
         if kid not in self._keys:
             raise HTTPException(401, "неизвестный ключ подписи токена")

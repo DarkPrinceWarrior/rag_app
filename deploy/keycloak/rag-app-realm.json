@@ -39,6 +39,8 @@
     {
       "username": "ruslan",
       "enabled": true,
+      "firstName": "Ruslan",
+      "lastName": "Safaev",
       "email": "ruslan@rag-app.local",
       "emailVerified": true,
       "credentials": [{ "type": "password", "value": "rag-dev-2026", "temporary": false }],
@@ -47,6 +49,8 @@
     {
       "username": "engineer",
       "enabled": true,
+      "firstName": "Test",
+      "lastName": "Engineer",
       "email": "engineer@rag-app.local",
       "emailVerified": true,
       "credentials": [{ "type": "password", "value": "rag-dev-2026", "temporary": false }],
