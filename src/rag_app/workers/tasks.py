@@ -432,6 +432,11 @@ async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
             session.add_all(
                 PageEmbedding(document_id=doc_id, page_idx=i, emb=e) for i, e in enumerate(embs)
             )
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id, Document.index_error.like("visual:%"))
+                .values(index_error=None)
+            )
             await session.commit()
         logger.info("visual index %s: %d страниц", doc_id, len(embs))
         return f"visual indexed: {len(embs)} pages"
