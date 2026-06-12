@@ -75,7 +75,13 @@ async def search_visual(
     top_k: int = Query(default=5, le=20),
 ) -> list[dict]:
     """Визуальный поиск по страницам сканов (§ 12.1 шаг 4): печати, штампы,
-    чертежи — текстовый запрос в общем пространстве с изображениями страниц."""
+    чертежи — текстовый запрос в общем пространстве с изображениями страниц.
+
+    Кириллический запрос прозрачно переводится на английский быстрым контуром:
+    кросс-языковость VL-эмбеддера заметно слабее (0.33 против 0.56 на контроле).
+    """
+    if any("а" <= ch.lower() <= "я" for ch in q):
+        q, _ = await request.app.state.fast_translator.translate(q, target_lang="en")
     q_emb = await request.app.state.visual.embed_text_query(q)
     sql_text = """
         SELECT p.document_id, d.filename, p.page_idx, 1 - (p.emb <=> CAST(:qe AS vector)) AS score

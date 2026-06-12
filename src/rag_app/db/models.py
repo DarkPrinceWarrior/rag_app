@@ -187,7 +187,7 @@ class PageEmbedding(Base):
         ForeignKey("documents.id", ondelete="CASCADE"), index=True
     )
     page_idx: Mapped[int] = mapped_column(Integer)
-    emb: Mapped[list[float] | None] = mapped_column(Vector(1024), default=None)
+    emb: Mapped[list[float] | None] = mapped_column(Vector(4096), default=None)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 

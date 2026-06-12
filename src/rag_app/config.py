@@ -59,8 +59,9 @@ class Settings(BaseSettings):
     visual_enabled: bool = True
     visual_embed_base_url: str = "http://127.0.0.1:8007"
     visual_embed_model: str = "qwen3-vl-embedding-8b"
-    # MRL-усечение до dim, влезающего в pgvector HNSW (<2000)
-    visual_embed_dim: int = 1024
+    # Полный dim: усечение ломает ранжирование (серия не MRL-обученная).
+    # HNSW при >2000 невозможен — страницы ищутся последовательным сканом.
+    visual_embed_dim: int = 4096
     visual_query_instruction: str = (
         "Given a search query, retrieve document pages that answer the query"
     )
