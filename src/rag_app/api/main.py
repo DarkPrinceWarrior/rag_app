@@ -23,6 +23,7 @@ from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.fast import FastTranslator
+from rag_app.llm.visual import VisualEmbedder
 from rag_app.rag.chat import ChatEngine
 from rag_app.rag.retrieve import Retriever
 from rag_app.storage.s3 import Storage
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.retriever = Retriever(Embedder(), Reranker())
     app.state.chat_engine = ChatEngine()
+    app.state.visual = VisualEmbedder()
     app.state.fast_translator = FastTranslator()
     yield
     await app.state.arq.aclose()

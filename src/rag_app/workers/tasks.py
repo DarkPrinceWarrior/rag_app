@@ -24,16 +24,24 @@ from rag_app.db.models import (
     DocumentKind,
     DocumentStatus,
     GlossaryTerm,
+    PageEmbedding,
     Segment,
     SegmentKind,
 )
 from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
 from rag_app.llm.embeddings import Embedder
+from rag_app.llm.visual import VisualEmbedder
 from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc
 from rag_app.pipeline.export_docx import build_docx
-from rag_app.pipeline.parse import load_block_geometry, load_content_list, pdf_info, run_mineru
+from rag_app.pipeline.parse import (
+    PDFIUM_LOCK,
+    load_block_geometry,
+    load_content_list,
+    pdf_info,
+    run_mineru,
+)
 from rag_app.pipeline.scan_pdf import build_scan_overlay
 from rag_app.pipeline.segments import content_list_to_segments
 from rag_app.pipeline.validate import ValidationResult, validate_numbers
@@ -376,6 +384,69 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
         raise
 
 
+# ------------------------------------------------- визуальный индекс (§ 12.1 шаг 4)
+
+async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
+    """Эмбеддинги страниц-картинок для сканов: печати/штампы/чертежи,
+    где текстовый OCR-контур теряет."""
+    doc_id = uuid.UUID(doc_id_str)
+    if not settings.visual_enabled:
+        return "visual disabled"
+    doc = await _get_doc(ctx, doc_id)
+    if doc.kind != DocumentKind.pdf_scan.value:
+        return f"skip: kind={doc.kind}"
+    storage: Storage = ctx["storage"]
+    visual: VisualEmbedder = ctx["visual"]
+
+    def render_pages(pdf_path: Path) -> list[bytes]:
+        import io as _io
+
+        import pypdfium2 as pdfium
+        from PIL import Image  # noqa: F401
+
+        with PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(str(pdf_path))
+            try:
+                pages = []
+                for i in range(len(pdf)):
+                    img = pdf[i].render(scale=settings.visual_render_scale).to_pil().convert("RGB")
+                    buf = _io.BytesIO()
+                    img.save(buf, format="JPEG", quality=85)
+                    pages.append(buf.getvalue())
+                return pages
+            finally:
+                pdf.close()
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="rag_visual_") as tmp:
+            local_pdf = Path(tmp) / "doc.pdf"
+            await storage.download_to(settings.bucket_originals, doc.s3_key_original, local_pdf)
+            jpegs = await asyncio.to_thread(render_pages, local_pdf)
+
+        embs: list[list[float]] = []
+        for jpeg in jpegs:  # последовательно: vision-башня прожорлива
+            embs.append(await visual.embed_page(jpeg))
+
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(delete(PageEmbedding).where(PageEmbedding.document_id == doc_id))
+            session.add_all(
+                PageEmbedding(document_id=doc_id, page_idx=i, emb=e) for i, e in enumerate(embs)
+            )
+            await session.commit()
+        logger.info("visual index %s: %d страниц", doc_id, len(embs))
+        return f"visual indexed: {len(embs)} pages"
+    except Exception as exc:
+        logger.exception("visual index %s failed", doc_id)
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id)
+                .values(index_error=f"visual: {str(exc)[:500]}")
+            )
+            await session.commit()
+        raise
+
+
 # ---------------------------------------------------------------- export
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -486,6 +557,9 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
 
         await ctx["redis"].enqueue_job(
             "index_document", doc_id_str, _job_id=f"index:{doc_id}:{uuid.uuid4().hex[:8]}"
+        )
+        await ctx["redis"].enqueue_job(
+            "index_pages_visual", doc_id_str, _job_id=f"vindex:{doc_id}:{uuid.uuid4().hex[:8]}"
         )
         return f"exported: {', '.join(k for k in values if k.startswith('s3_'))}"
 

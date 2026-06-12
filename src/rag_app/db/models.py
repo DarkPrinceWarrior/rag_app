@@ -13,7 +13,18 @@ from datetime import datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -161,6 +172,22 @@ class Chunk(Base):
     emb_en: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), default=None)
     emb_ru: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), default=None)
     # segment_ids, bbox по страницам — для подсветки цитат в оригинале
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class PageEmbedding(Base):
+    """Эмбеддинг страницы-изображения (§ 12.1 шаг 4): визуальный поиск по
+    сканам — печати, штампы, чертежи, где OCR теряет."""
+
+    __tablename__ = "page_embeddings"
+    __table_args__ = (UniqueConstraint("document_id", "page_idx", name="uq_page_embeddings_doc_page"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    page_idx: Mapped[int] = mapped_column(Integer)
+    emb: Mapped[list[float] | None] = mapped_column(Vector(1024), default=None)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 

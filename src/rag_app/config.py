@@ -55,6 +55,17 @@ class Settings(BaseSettings):
         "Given a search query, retrieve relevant passages from technical documentation"
         " that answer the query"
     )
+    # --- Визуальный контур сканов (§ 12.1 шаг 4): эмбеддинг страниц-картинок ---
+    visual_enabled: bool = True
+    visual_embed_base_url: str = "http://127.0.0.1:8007"
+    visual_embed_model: str = "qwen3-vl-embedding-8b"
+    # MRL-усечение до dim, влезающего в pgvector HNSW (<2000)
+    visual_embed_dim: int = 1024
+    visual_query_instruction: str = (
+        "Given a search query, retrieve document pages that answer the query"
+    )
+    visual_render_scale: float = 2.0  # 144 DPI
+
     rerank_base_url: str = "http://127.0.0.1:8003"
     rerank_model: str = "qwen3-reranker-4b"
     rerank_instruction: str = (

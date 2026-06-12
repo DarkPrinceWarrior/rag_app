@@ -68,6 +68,36 @@ async def move_document(request: Request, doc_id: uuid.UUID, body: DocumentFolde
     return {"status": "ok"}
 
 
+@router.get("/search/visual")
+async def search_visual(
+    request: Request,
+    q: str = Query(min_length=2),
+    top_k: int = Query(default=5, le=20),
+) -> list[dict]:
+    """Визуальный поиск по страницам сканов (§ 12.1 шаг 4): печати, штампы,
+    чертежи — текстовый запрос в общем пространстве с изображениями страниц."""
+    q_emb = await request.app.state.visual.embed_text_query(q)
+    sql_text = """
+        SELECT p.document_id, d.filename, p.page_idx, 1 - (p.emb <=> CAST(:qe AS vector)) AS score
+        FROM page_embeddings p JOIN documents d ON d.id = p.document_id
+        ORDER BY p.emb <=> CAST(:qe AS vector)
+        LIMIT :k
+    """
+    from sqlalchemy import text as sql
+
+    async with request.app.state.sessionmaker() as db:
+        rows = (await db.execute(sql(sql_text), {"qe": str(q_emb), "k": top_k})).all()
+    return [
+        {
+            "document_id": str(r.document_id),
+            "filename": r.filename,
+            "page": r.page_idx + 1,
+            "score": round(float(r.score), 4),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/search")
 async def search(
     request: Request,
