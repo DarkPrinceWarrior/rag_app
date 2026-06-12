@@ -11,10 +11,12 @@ Environment=CUDA_VISIBLE_DEVICES=5
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Отдельный venv с последним vLLM: 0.22.1 давал NaN в мультимодальном
+# pooling-пути этой модели (строковый /v1/embeddings работал)
+Environment=PATH=/root/services/vllm-visual/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU5 — NUMA node1
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-VL-Embedding-8B \
+    /root/services/vllm-visual/.venv/bin/vllm serve /root/models/Qwen3-VL-Embedding-8B \
     --served-model-name qwen3-vl-embedding-8b \
     --runner pooling \
     --host 127.0.0.1 \
