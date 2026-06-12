@@ -23,9 +23,12 @@ ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
     --port 8007 \
     --gpu-memory-utilization 0.6 \
     --max-model-len 16384 \
-    --dtype float16
-# float16 обязк: в bf16 мультимодальный pooling-путь этой модели в vLLM 0.22.1
-# отдаёт NaN (fp32 не влезает в A100-40 по KV-кэшу)
+    --dtype float16 \
+    --enforce-eager
+# --enforce-eager ОБЯЗАТЕЛЕН: скомпилированные ядра vision-башни (torch.compile)
+# в vLLM 0.22.1 на Ampere дают NaN на реальных страницах (зависело от содержимого
+# пикселей); eager стабилен на полном разрешении. float16: bf16-путь NaN'ился
+# даже на мини-картинках. Перепроверить оба флага при апгрейде vLLM.
 Restart=always
 RestartSec=10
 TimeoutStartSec=900

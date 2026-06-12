@@ -64,11 +64,7 @@ class Settings(BaseSettings):
     visual_query_instruction: str = (
         "Given a search query, retrieve document pages that answer the query"
     )
-    # 0.7 ≈ 417×590: vision-путь Qwen3-VL-Embedding в vLLM 0.22.1 уходит в NaN
-    # на изображениях крупнее ~450×640 (fp16; bf16 — всегда, fp32 не влезает).
-    # Печати/штампы/структура страницы на миниатюре различимы; мелкий текст
-    # закрывает OCR-контур. Поднять при фиксе vLLM.
-    visual_render_scale: float = 0.7
+    visual_render_scale: float = 2.0  # 144 DPI (требует --enforce-eager у сервиса)
 
     rerank_base_url: str = "http://127.0.0.1:8003"
     rerank_model: str = "qwen3-reranker-4b"
