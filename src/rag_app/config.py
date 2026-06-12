@@ -44,12 +44,23 @@ class Settings(BaseSettings):
     web_translate_max_items: int = 300
     web_translate_concurrency: int = 16
 
-    # --- Эмбеддинги и reranker (GPU4, vLLM; roadmap § 4.3) ---
+    # --- Эмбеддинги и reranker (GPU4, vLLM; roadmap § 4.3, § 12.1 шаг 1) ---
     embed_base_url: str = "http://127.0.0.1:8002/v1"
-    embed_model: str = "bge-m3"
+    embed_model: str = "qwen3-embedding-0.6b"
     embed_batch_size: int = 32
+    # Серия Qwen3-Embedding instruction-aware: запрос идёт с инструкцией
+    # («Instruct: …\nQuery: …»), документы — без; пустая строка отключает префикс
+    # (так работал BGE-M3).
+    embed_query_instruction: str = (
+        "Given a search query, retrieve relevant passages from technical documentation"
+        " that answer the query"
+    )
     rerank_base_url: str = "http://127.0.0.1:8003"
-    rerank_model: str = "bge-reranker-v2-m3"
+    rerank_model: str = "qwen3-reranker-4b"
+    rerank_instruction: str = (
+        "Given a search query, retrieve relevant passages from technical documentation"
+        " that answer the query"
+    )
 
     # --- RAG (roadmap § 5) ---
     rag_dense_top_k: int = 50

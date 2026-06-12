@@ -1,6 +1,7 @@
-# Эмбеддинги BGE-M3 (dense, dim=1024) — GPU4, порт 8002 (roadmap § 4.3).
+# Эмбеддинги Qwen3-Embedding-0.6B (dim 1024, как у BGE-M3 — схема pgvector
+# не меняется) — GPU4, порт 8002 (§ 12.1 шаг 1; заменяет vllm-bge-m3).
 [Unit]
-Description=vLLM BGE-M3 embeddings (GPU4, :8002)
+Description=vLLM Qwen3-Embedding-0.6B (GPU4, :8002)
 After=network-online.target
 Wants=network-online.target
 
@@ -13,12 +14,12 @@ Environment=CUDA_HOME=/usr/local/cuda
 Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU4 — NUMA node1
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/bge-m3 \
-    --served-model-name bge-m3 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-Embedding-0.6B \
+    --served-model-name qwen3-embedding-0.6b \
     --runner pooling \
     --host 127.0.0.1 \
     --port 8002 \
-    --gpu-memory-utilization 0.25 \
+    --gpu-memory-utilization 0.15 \
     --max-model-len 8192
 Restart=always
 RestartSec=10

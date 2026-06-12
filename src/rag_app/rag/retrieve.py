@@ -98,7 +98,7 @@ class Retriever:
         top_k = top_k or settings.rag_context_top_k
         params = {"doc_id": document_id, "folder_id": folder_id}
 
-        q_emb = (await self.embedder.embed([query]))[0]
+        q_emb = await self.embedder.embed_query(query)
         dense_rows = (
             await session.execute(
                 sql(_DENSE_SQL),

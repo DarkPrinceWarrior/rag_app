@@ -1,7 +1,8 @@
-# Reranker BGE-reranker-v2-m3 (cross-encoder) — GPU4, порт 8003 (roadmap § 4.3).
-# Qwen3-Reranker — план апгрейда после стабилизации контура.
+# Reranker Qwen3-Reranker-4B — GPU4, порт 8003 (§ 12.1 шаг 1; заменяет BGE).
+# Генеративный yes/no-reranker сервится как классификатор — официальный рецепт
+# vLLM: hf_overrides (Qwen3ForSequenceClassification + classifier_from_token).
 [Unit]
-Description=vLLM BGE-reranker-v2-m3 (GPU4, :8003)
+Description=vLLM Qwen3-Reranker-4B (GPU4, :8003)
 After=network-online.target
 Wants=network-online.target
 
@@ -13,13 +14,14 @@ Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
 Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/bge-reranker-v2-m3 \
-    --served-model-name bge-reranker-v2-m3 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-Reranker-4B \
+    --served-model-name qwen3-reranker-4b \
     --runner pooling \
+    --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' \
     --host 127.0.0.1 \
     --port 8003 \
-    --gpu-memory-utilization 0.2 \
-    --max-model-len 4096
+    --gpu-memory-utilization 0.35 \
+    --max-model-len 8192
 Restart=always
 RestartSec=10
 TimeoutStartSec=600
