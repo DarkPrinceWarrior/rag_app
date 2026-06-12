@@ -22,7 +22,10 @@ ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
     --host 127.0.0.1 \
     --port 8007 \
     --gpu-memory-utilization 0.6 \
-    --max-model-len 16384
+    --max-model-len 16384 \
+    --dtype float16
+# float16 обязк: в bf16 мультимодальный pooling-путь этой модели в vLLM 0.22.1
+# отдаёт NaN (fp32 не влезает в A100-40 по KV-кэшу)
 Restart=always
 RestartSec=10
 TimeoutStartSec=900
