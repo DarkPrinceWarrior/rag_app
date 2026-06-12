@@ -101,6 +101,7 @@ async def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--b-url", required=True)
     p.add_argument("--b-model", required=True)
+    p.add_argument("--b-temperature", type=float, default=0.3)
     p.add_argument("--n", type=int, default=300)
     p.add_argument("--speed-sample", type=int, default=30)
     p.add_argument("--out-dir", default="/tmp")
@@ -109,7 +110,7 @@ async def main() -> None:
     segments, contexts = await load_segments(args.n)
     print(f"сегментов: {len(segments)}")
 
-    model_b = Translator(base_url=args.b_url, model=args.b_model)
+    model_b = Translator(base_url=args.b_url, model=args.b_model, temperature=args.b_temperature)
     mt_b, sec_b = await translate_all(model_b, segments, contexts, concurrency=12)
     print(f"B ({args.b_model}): {len(segments)} сегментов за {sec_b:.0f} с")
 

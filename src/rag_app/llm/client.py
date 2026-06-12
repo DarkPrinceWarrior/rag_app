@@ -71,14 +71,20 @@ def pick_glossary_terms(
 
 
 class Translator:
-    def __init__(self, base_url: str | None = None, model: str | None = None) -> None:
-        """base_url/model переопределяются для A/B-стендов (§ 12.1)."""
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        temperature: float = 0.3,
+    ) -> None:
+        """base_url/model/temperature переопределяются для A/B-стендов (§ 12.1)."""
         self.client = AsyncOpenAI(
             base_url=base_url or settings.llm_base_url,
             api_key=settings.llm_api_key,
             timeout=300.0,
         )
         self.model = model or settings.llm_model
+        self.temperature = temperature
 
     async def translate(
         self,
@@ -114,7 +120,7 @@ class Translator:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
                     ],
-                    temperature=0.3,
+                    temperature=self.temperature,
                     top_p=0.8,
                     max_tokens=settings.llm_max_tokens,
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
