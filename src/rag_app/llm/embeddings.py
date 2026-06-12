@@ -44,22 +44,31 @@ class Embedder:
         return resp.data[0].embedding
 
 
+# Официальный шаблон Qwen3-Reranker: vLLM с is_original_qwen3_reranker НЕ
+# оборачивает вход сам — без шаблона скоры слипаются (0.34/0.27 на контрольной
+# паре), с ним разделение 0.97/0.00.
+_QWEN3_RR_PREFIX = (
+    "<|im_start|>system\nJudge whether the Document meets the requirements based on "
+    'the Query and the Instruct provided. Note that the answer can only be "yes" or "no".'
+    "<|im_end|>\n<|im_start|>user\n"
+)
+_QWEN3_RR_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
 class Reranker:
     async def rerank(self, query: str, texts: list[str]) -> list[float]:
         """Релевантности (в исходном порядке texts) через /v1/rerank (Cohere-совместимый)."""
         if not texts:
             return []
         q = query[:2000]
-        if settings.rerank_model.startswith("qwen3-reranker") and settings.rerank_instruction:
-            q = f"<Instruct>: {settings.rerank_instruction}\n<Query>: {q}"
+        docs = [t[:4000] for t in texts]
+        if settings.rerank_model.startswith("qwen3-reranker"):
+            q = f"{_QWEN3_RR_PREFIX}<Instruct>: {settings.rerank_instruction}\n<Query>: {q}\n"
+            docs = [f"<Document>: {d}{_QWEN3_RR_SUFFIX}" for d in docs]
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{settings.rerank_base_url}/v1/rerank",
-                json={
-                    "model": settings.rerank_model,
-                    "query": q,
-                    "documents": [t[:4000] for t in texts],
-                },
+                json={"model": settings.rerank_model, "query": q, "documents": docs},
             )
             resp.raise_for_status()
             data = resp.json()
