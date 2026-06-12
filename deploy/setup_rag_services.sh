@@ -8,14 +8,14 @@ REPO_DIR="${REPO_DIR:-/root/projects/rag_app}"
 [ -d /root/models/Qwen3-Embedding-0.6B ] || { echo "нет /root/models/Qwen3-Embedding-0.6B"; exit 1; }
 [ -d /root/models/Qwen3-Reranker-4B ] || { echo "нет /root/models/Qwen3-Reranker-4B"; exit 1; }
 
-# вывод старых bge-юнитов
+# вывод старых bge-юнитов. ВАЖНО: глушить безусловно — SO_REUSEPORT позволяет
+# двум vLLM слушать один порт, и запросы раскидываются между старым и новым
+# (половина отвечает 404 по имени модели).
 for old in vllm-bge-m3; do
-  if systemctl list-unit-files | grep -q "$old"; then
-    systemctl disable --now "$old" 2>/dev/null || true
-    rm -f "/etc/systemd/system/$old.service"
-    echo "выведен: $old"
-  fi
+  systemctl disable --now "$old" 2>/dev/null || true
+  rm -f "/etc/systemd/system/$old.service"
 done
+systemctl daemon-reload
 
 cp "$REPO_DIR/deploy/vllm-embedding.service" /etc/systemd/system/
 cp "$REPO_DIR/deploy/vllm-reranker.service" /etc/systemd/system/
