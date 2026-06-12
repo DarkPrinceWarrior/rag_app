@@ -48,8 +48,16 @@ async def fetch_pairs(limit: int) -> list[dict]:
 
 
 def main() -> None:
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 500
-    pairs = asyncio.run(fetch_pairs(limit))
+    arg = sys.argv[1] if len(sys.argv) > 1 else "500"
+    if arg.endswith(".jsonl"):
+        # режим A/B (§ 12.1): готовые пары из scripts/ab_translate.py
+        import json
+
+        with open(arg, encoding="utf-8") as f:
+            pairs = [json.loads(line) for line in f]
+        print(f"файл: {arg}")
+    else:
+        pairs = asyncio.run(fetch_pairs(int(arg)))
     if not pairs:
         print("нет переведённых сегментов")
         return

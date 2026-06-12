@@ -71,13 +71,14 @@ def pick_glossary_terms(
 
 
 class Translator:
-    def __init__(self) -> None:
+    def __init__(self, base_url: str | None = None, model: str | None = None) -> None:
+        """base_url/model переопределяются для A/B-стендов (§ 12.1)."""
         self.client = AsyncOpenAI(
-            base_url=settings.llm_base_url,
+            base_url=base_url or settings.llm_base_url,
             api_key=settings.llm_api_key,
             timeout=300.0,
         )
-        self.model = settings.llm_model
+        self.model = model or settings.llm_model
 
     async def translate(
         self,
