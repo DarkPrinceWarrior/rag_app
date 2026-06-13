@@ -16,8 +16,10 @@ from rag_app.api.audit import audit
 from rag_app.api.auth import require_user
 from rag_app.config import settings
 from rag_app.db.models import ChatMessage, ChatSession
-from rag_app.observability import log_chat_trace
+from rag_app.observability import log_agent_trace, log_chat_trace
+from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
+from rag_app.rag.tools import AgentTools
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[require_user])
@@ -85,16 +87,47 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
         history = [{"role": m.role, "content": m.content} for m in reversed(history_rows[1:])]
         yield _sse({"type": "session", "session_id": str(session_id)})
 
-        # 2) гибридный поиск
+        # 2) роутинг по сложности (§ 5 п.7): single-hop hybrid+rerank или
+        #    multi-hop агентный цикл сбора контекста
+        t_retr = time.monotonic()
+        mode, reason = await classify(app.state.chat_engine.client, body.message, history)
+        yield _sse({"type": "mode", "mode": mode, "reason": reason})
+        agent: AgentLoop | None = None
         try:
-            async with sessionmaker() as db:
-                chunks = await app.state.retriever.retrieve(
-                    db, body.message, document_id=doc_filter, folder_id=body.folder_id
+            if mode == "multi_hop":
+                tools = AgentTools(
+                    sessionmaker,
+                    app.state.retriever,
+                    document_id=doc_filter,
+                    folder_id=body.folder_id,
+                    session_id=session_id,
                 )
+                agent = AgentLoop(app.state.chat_engine.client, tools)
+                async for ev in agent.gather(body.message, history):
+                    yield _sse(ev)
+                chunks = agent.chunks
+            else:
+                async with sessionmaker() as db:
+                    chunks = await app.state.retriever.retrieve(
+                        db, body.message, document_id=doc_filter, folder_id=body.folder_id
+                    )
         except Exception as exc:
-            logger.exception("retrieve failed")
+            logger.exception("retrieve/agent failed")
             yield _sse({"type": "error", "detail": f"поиск не удался: {exc}"})
             return
+        if agent is not None:
+            user = getattr(request.state, "user", None)
+            log_agent_trace(
+                question=body.message,
+                mode=mode,
+                steps=agent.steps,
+                stop_reason=agent.stop_reason,
+                tokens=agent.tokens,
+                n_chunks=len(chunks),
+                ms=int((time.monotonic() - t_retr) * 1000),
+                session_id=str(session_id),
+                user_sub=user.sub if user else None,
+            )
         if not chunks:
             answer = "В библиотеке не нашлось проиндексированных фрагментов по этому запросу."
             async with sessionmaker() as db:

@@ -72,7 +72,8 @@ verified locally.
   GPU4 TEI/OCR, GPU5 резерв).
 
 Статус: **все 5 этапов MVP завершены** (пайплайн перевода PDF/OOXML/сканов,
-RAG-чат с цитатами, библиотека, браузерное расширение `extension/` на WXT,
+adaptive agentic-RAG-чат с цитатами — классификатор single/multi-hop + tool-цикл
+`rag/agent.py`, § 5 п.7 — библиотека, браузерное расширение `extension/` на WXT,
 SSO/RBAC/аудит/Langfuse, нагрузочное 20 документов). Оставшиеся доделки и план
 обновления моделей — `docs/roadmap.md` § 12.1 и журнал (последняя строка 📋).
 LLM-сервисы на a100: Qwen3-32B-AWQ GPU0 `:8001`, Hunyuan-MT-7B GPU3 `:8004`,

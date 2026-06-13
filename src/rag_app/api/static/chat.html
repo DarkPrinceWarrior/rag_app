@@ -106,7 +106,17 @@ async function send() {
     if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.status);
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buf = "", answer = "";
+    let buf = "", answer = "", trace = null;
+    const addStep = (txt) => {
+      if (!trace) {
+        trace = document.createElement("div");
+        trace.style.cssText = "font-size:12px;color:#8a8f98;margin:2px 0 4px;padding-left:6px;border-left:2px solid #2a2f3a;";
+        bubble.closest(".msg").before(trace);
+      }
+      const d = document.createElement("div");
+      d.textContent = txt;
+      trace.appendChild(d);
+    };
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -118,6 +128,14 @@ async function send() {
         if (!line.startsWith("data: ")) continue;
         const ev = JSON.parse(line.slice(6));
         if (ev.type === "session") sessionId = ev.session_id;
+        else if (ev.type === "mode") {
+          if (ev.mode === "multi_hop") { statusEl.textContent = "🧭 Углублённый поиск…"; addStep("🧭 углублённый разбор запроса"); }
+        }
+        else if (ev.type === "step") { addStep("🔧 " + ev.tool + (ev.arg ? ": " + ev.arg : "")); }
+        else if (ev.type === "agent_summary") {
+          addStep("✓ собрано фрагментов: " + ev.chunks + " (шагов " + ev.iters + ", стоп: " + ev.stop + ")");
+          statusEl.textContent = "Формулирую ответ…";
+        }
         else if (ev.type === "delta") {
           if (!answer) statusEl.textContent = "";
           answer += ev.text;

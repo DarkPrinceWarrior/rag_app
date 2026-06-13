@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     chunk_max_chars: int = 4000  # ~1K токенов
     chunk_min_chars: int = 200  # секции короче — клеим к соседней
 
+    # --- Agentic-RAG (§ 5 п.7): роутинг по сложности + multi-hop tool-цикл ---
+    agent_enabled: bool = True
+    # Стоп-условия (главный провал agentic RAG — незавершающийся цикл):
+    agent_max_iters: int = 5  # ≤5 итераций tool-цикла
+    agent_token_budget: int = 30_000  # ≤30K токенов на запрос (суммарно usage)
+    agent_timeout_s: int = 60  # ≤60 c wall-clock на сбор контекста
+    agent_search_top_k: int = 8  # сколько чанков возвращает один search_chunks
+    agent_max_context_chunks: int = 12  # union evidence → reranker → столько в ответ
+
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
     mineru_backend: str = "pipeline"

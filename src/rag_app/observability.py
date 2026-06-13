@@ -88,6 +88,43 @@ def log_chat_trace(
         logger.exception("langfuse: chat-трейс не записался")
 
 
+def log_agent_trace(
+    question: str,
+    mode: str,
+    steps: list[dict[str, Any]],
+    stop_reason: str,
+    tokens: int,
+    n_chunks: int,
+    ms: int,
+    session_id: str,
+    user_sub: str | None,
+) -> None:
+    """Трасса agentic-цикла (§ 5 п.7): шаги tool-вызовов + стоп-условие."""
+    if not _enabled:
+        return
+    try:
+        from langfuse import propagate_attributes
+
+        with propagate_attributes(
+            user_id=user_sub or "anonymous", session_id=session_id, trace_name="rag-agent"
+        ):
+            with _client.start_as_current_observation(name="rag-agent") as span:
+                span.update(
+                    input={"question": question, "mode": mode},
+                    output={
+                        "steps": [
+                            {"tool": s.get("tool"), "arg": str(s.get("arg", ""))[:120]} for s in steps
+                        ],
+                        "stop_reason": stop_reason,
+                        "iters": len(steps),
+                        "chunks": n_chunks,
+                    },
+                    metadata={"tokens": tokens, "latency_ms": ms},
+                )
+    except Exception:
+        logger.exception("langfuse: agent-трейс не записался")
+
+
 def log_translate_trace(
     doc_id: str, filename: str, kind: str, segments: int, seconds: float, model: str
 ) -> None:
