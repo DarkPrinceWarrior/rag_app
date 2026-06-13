@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     agent_search_top_k: int = 8  # сколько чанков возвращает один search_chunks
     agent_max_context_chunks: int = 12  # union evidence → reranker → столько в ответ
 
+    # --- Спец-интенты § 5 п.6: экстракция таблиц (structured output → XLSX) ---
+    extract_context_top_k: int = 10  # фрагментов в контекст экстракции
+
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
     mineru_backend: str = "pipeline"

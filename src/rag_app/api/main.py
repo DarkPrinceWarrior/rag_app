@@ -16,6 +16,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from rag_app.api.routes.chat import router as chat_router
 from rag_app.api.routes.documents import router as documents_router
+from rag_app.api.routes.extract import router as extract_router
 from rag_app.api.routes.glossary import router as glossary_router
 from rag_app.api.routes.library import router as library_router
 from rag_app.api.routes.segments import router as segments_router
@@ -69,6 +70,7 @@ app.include_router(segments_router)
 app.include_router(glossary_router)
 app.include_router(chat_router)
 app.include_router(library_router)
+app.include_router(extract_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Метрики Prometheus (§ 10): HTTP-метрики по эндпоинтам (rate/latency/errors).
@@ -85,6 +87,11 @@ async def view() -> FileResponse:
 @app.get("/chat", include_in_schema=False)
 async def chat_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "chat.html")
+
+
+@app.get("/extract", include_in_schema=False)
+async def extract_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "extract.html")
 
 
 @app.get("/healthz")

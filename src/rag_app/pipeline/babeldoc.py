@@ -8,6 +8,7 @@ AGPL-3.0 → изоляция (roadmap § 9): отдельный venv /root/serv
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 from pathlib import Path
 
@@ -20,8 +21,29 @@ class BabelDocUnavailableError(Exception):
     """CLI не установлен/выключен — PDF-экспорт с вёрсткой пропускается."""
 
 
+def write_glossary_csv(terms: list[tuple[str, str]], out_path: Path) -> Path | None:
+    """CSV утверждённой терминологии для BabelDOC (--glossary-files).
+
+    Формат BabelDOC: колонки source,target,tgt_lng (tgt_lng фильтрует по языку
+    вывода — ставим «ru»). Раньше глоссарий доходил только до DOCX-экспорта;
+    теперь и PDF-контур вёрстки переводит по нашим терминам. None, если пусто.
+    """
+    rows = [(en, ru) for en, ru in terms if en and ru]
+    if not rows:
+        return None
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["source", "target", "tgt_lng"], doublequote=True)
+        writer.writeheader()
+        for en, ru in rows:
+            writer.writerow({"source": en, "target": ru, "tgt_lng": "ru"})
+    return out_path
+
+
 async def run_babeldoc(
-    input_pdf: Path, out_dir: Path, ocr_workaround: bool = False
+    input_pdf: Path,
+    out_dir: Path,
+    ocr_workaround: bool = False,
+    glossary_file: Path | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Возвращает (mono_pdf, dual_pdf): только перевод / EN+RU постранично.
 
@@ -52,7 +74,9 @@ async def run_babeldoc(
     ]
     if ocr_workaround:
         cmd.append("--auto-enable-ocr-workaround")
-    logger.info("babeldoc: %s", input_pdf.name)
+    if glossary_file is not None:
+        cmd += ["--glossary-files", str(glossary_file)]
+    logger.info("babeldoc: %s%s", input_pdf.name, " (+глоссарий)" if glossary_file else "")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,

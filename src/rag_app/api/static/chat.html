@@ -36,6 +36,7 @@
 <header>
   <a href="/">← документы</a>
   <h1>Чат с документами</h1>
+  <a href="/extract">таблица →</a>
   <select id="docsel"><option value="">Вся библиотека</option></select>
 </header>
 <main><div class="wrap" id="chatlog"><div class="empty">Задайте вопрос по переведённым документам — ответ придёт со ссылками на источники.</div></div></main>
@@ -84,7 +85,10 @@ function renderCites(bubble, citations) {
   box.innerHTML = citations.map(c => {
     const pages = c.page_start !== null ? ` · стр. ${c.page_start + 1}` : "";
     const label = `[${c.n}] ${esc(c.filename)}${pages}`;
-    return `<a class="cite" href="/view?id=${c.document_id}" target="_blank" title="${esc(c.heading_path)}">${label}</a>`;
+    // якорь на процитированный фрагмент: первый сегмент чанка (+ страница как запасной)
+    const seg = (c.segment_ids && c.segment_ids[0]) ? `&seg=${c.segment_ids[0]}` : "";
+    const page = c.page_start !== null ? `&page=${c.page_start + 1}` : "";
+    return `<a class="cite" href="/view?id=${c.document_id}${seg}${page}" target="_blank" title="${esc(c.heading_path)}">${label}</a>`;
   }).join("");
   bubble.appendChild(box);
 }

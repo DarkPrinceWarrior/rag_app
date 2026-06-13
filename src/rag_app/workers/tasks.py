@@ -33,7 +33,7 @@ from rag_app.llm.embeddings import Embedder
 from rag_app.llm.visual import VisualEmbedder
 from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
-from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc
+from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc, write_glossary_csv
 from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.parse import (
     PDFIUM_LOCK,
@@ -464,9 +464,18 @@ _OOXML_MIME = {
 
 async def _export_pdf_layout(ctx: dict, doc: Document, local_pdf: Path, tmp: Path) -> dict[str, Any]:
     """BabelDOC: PDF с сохранённой вёрсткой (mono + dual). Недоступен — не фейл."""
+    # утверждённую терминологию отдаём и в PDF-контур (раньше только в DOCX)
+    async with ctx["sessionmaker"]() as session:
+        terms = (
+            await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))
+        ).all()
+    glossary_file = write_glossary_csv([(t.en_term, t.ru_term) for t in terms], tmp / "glossary.csv")
     try:
         mono, dual = await run_babeldoc(
-            local_pdf, tmp / "babeldoc_out", ocr_workaround=settings.babeldoc_auto_ocr_workaround
+            local_pdf,
+            tmp / "babeldoc_out",
+            ocr_workaround=settings.babeldoc_auto_ocr_workaround,
+            glossary_file=glossary_file,
         )
     except BabelDocUnavailableError as exc:
         logger.warning("babeldoc недоступен: %s", exc)

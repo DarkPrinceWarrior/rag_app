@@ -27,6 +27,8 @@
   .kind-table .src, .kind-table .dst { font-family: ui-monospace, monospace; font-size: 12.5px; }
   .review-badge { display: inline-block; background: #fff4dd; color: #92600a; font-size: 11px; border-radius: 99px; padding: 2px 8px; margin-left: 8px; }
   .page-sep { color: #8b97ad; font-size: 12px; margin: 16px 0 8px; }
+  .seg.cited { outline: 2px solid #2563eb; animation: citeflash 1s ease-in-out 2; }
+  @keyframes citeflash { 0%, 100% { background: #fff; } 50% { background: #dbeafe; } }
   #msg { color: #2563eb; font-size: 13px; min-width: 130px; text-align: right; }
 </style>
 </head>
@@ -60,6 +62,7 @@ async function load() {
       lastPage = s.page_idx;
       const sep = document.createElement("div");
       sep.className = "page-sep";
+      sep.id = `page-${s.page_idx + 1}`;
       sep.textContent = `— страница ${s.page_idx + 1} —`;
       list.appendChild(sep);
     }
@@ -76,6 +79,23 @@ async function load() {
     el.dataset.orig = el.textContent;
     el.addEventListener("blur", () => save(el));
   });
+  scrollToCite();
+}
+
+// Переход от цитаты в чате: ?seg=<id> (точный фрагмент) или ?page=<n> (запасной)
+function scrollToCite() {
+  const p = new URLSearchParams(location.search);
+  const seg = p.get("seg"), page = p.get("page");
+  let target = null;
+  if (seg) {
+    const el = document.querySelector(`.dst[data-id="${seg}"]`);
+    target = el ? el.closest(".seg") : null;
+  }
+  if (!target && page) target = document.getElementById(`page-${page}`);
+  if (!target) return;
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  target.classList.add("cited");
+  setTimeout(() => target.classList.remove("cited"), 4000);
 }
 
 function esc(s) { const d = document.createElement("span"); d.textContent = s || ""; return d.innerHTML; }

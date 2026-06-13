@@ -72,6 +72,7 @@ def extract_citations(answer: str, chunks: list[RetrievedChunk]) -> list[dict[st
                 "page_start": c.page_start,
                 "page_end": c.page_end,
                 "bboxes": (c.meta or {}).get("bboxes", [])[:20],
+                "segment_ids": (c.meta or {}).get("segment_ids", [])[:30],
             }
         )
     return sorted(seen, key=lambda x: x["n"])
