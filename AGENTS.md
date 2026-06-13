@@ -80,8 +80,14 @@ Qwen3-Embedding-0.6B GPU4 `:8002`, Qwen3-Reranker-4B GPU4 `:8003`,
 Qwen3-VL-Embedding-8B GPU5 `:8007` — визуальный поиск по сканам
 (systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1).
 Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,
-Keycloak `:8180`) + `deploy/langfuse/` (`:8200`); API `:8100` (tmux `rag_api`),
-воркер — tmux `rag_worker`. `RAG_AUTH_ENABLED=false` до OIDC в расширении.
+Keycloak `:8180`) + `deploy/langfuse/` (`:8200`) + `deploy/monitoring/`
+(Prometheus `:9090`, Grafana `:3001`, скрейпит публичный `/metrics` API);
+API `:8100` (tmux `rag_api`), воркер — tmux `rag_worker`.
+`RAG_AUTH_ENABLED=true` (включён 2026-06-13 — OIDC в расширении готов,
+`chrome.identity` PKCE; `/healthz`, `/metrics`, `/api/config` остаются
+публичными). Prod-доводка Keycloak (TLS/AD) и раздачи расширения (MDM/GPO) —
+scaffold в `deploy/keycloak/PROD.md` и `deploy/extension-policy/`. Sentry —
+опционально через `SENTRY_DSN` (no-op без него).
 
 ## Setup
 

@@ -1,0 +1,26 @@
+{
+  "_comment": "Шаблон user-federation для Active Directory. Значения <...> — координаты AD заказчика; добавить нельзя без них (поэтому это scaffold, не проверено локально). Создаётся в realm rag-app: POST /admin/realms/rag-app/components",
+  "name": "corp-ad",
+  "providerId": "ldap",
+  "providerType": "org.keycloak.storage.UserStorageProvider",
+  "parentId": "rag-app",
+  "config": {
+    "enabled": ["true"],
+    "vendor": ["ad"],
+    "connectionUrl": ["ldaps://<dc.example.corp>:636"],
+    "bindDn": ["<CN=svc-keycloak,OU=Service,DC=example,DC=corp>"],
+    "bindCredential": ["<bind-password>"],
+    "usersDn": ["<OU=Users,DC=example,DC=corp>"],
+    "usernameLDAPAttribute": ["sAMAccountName"],
+    "rdnLDAPAttribute": ["cn"],
+    "uuidLDAPAttribute": ["objectGUID"],
+    "userObjectClasses": ["person, organizationalPerson, user"],
+    "searchScope": ["2"],
+    "editMode": ["READ_ONLY"],
+    "syncRegistrations": ["false"],
+    "importEnabled": ["true"],
+    "trustEmail": ["true"],
+    "useTruststoreSpi": ["always"]
+  },
+  "_mappers_note": "Роли rag-app (user/admin) маппятся отдельными role-ldap-mapper'ами из групп AD. Пример: группа AD 'RAG-Admins' -> realm-role 'admin', 'RAG-Users' -> 'user'. Создаются как components с providerId=role-ldap-mapper, parentId=<id federation выше>."
+}

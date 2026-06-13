@@ -1,0 +1,16 @@
+{
+  "_comment": "Managed-политика принудительной установки расширения (self-hosted, без Chrome Web Store). <EXTENSION_ID> и <CORP_HOST> подставить реальными. См. README.md. Раскладывается MDM/GPO заказчика — локально не проверялось.",
+
+  "ExtensionSettings": {
+    "<EXTENSION_ID>": {
+      "installation_mode": "force_installed",
+      "update_url": "https://<CORP_HOST>/ext/update_manifest.xml",
+      "toolbar_pin": "force_pinned"
+    }
+  },
+
+  "_alt_forcelist_comment": "Эквивалент через старую политику ExtensionInstallForcelist (формат '<ID>;<update_url>'):",
+  "ExtensionInstallForcelist": [
+    "<EXTENSION_ID>;https://<CORP_HOST>/ext/update_manifest.xml"
+  ]
+}

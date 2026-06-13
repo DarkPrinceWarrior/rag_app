@@ -1,0 +1,30 @@
+# Прод-оверлей Keycloak (roadmap § 9). Накладывается на корневой compose:
+#   docker compose -f docker-compose.yml -f deploy/keycloak/docker-compose.prod.yml up -d keycloak
+#
+# Отличия от dev (start-dev --import-realm):
+#   * start --optimized — прод-режим, без авто-импорта realm на каждый старт
+#     (realm уже в БД; первичный импорт — см. PROD.md, делается один раз);
+#   * HTTPS с реальным сертификатом (KC_HOSTNAME — https-адрес заказчика);
+#   * HTTP-порт выключен, наружу только TLS (:8443).
+#
+# Сертификаты кладутся в deploy/keycloak/certs/ (в репозиторий НЕ коммитятся).
+services:
+  keycloak:
+    command: start --optimized
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${RAG_KC_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${RAG_KC_ADMIN_PASSWORD:?prod: задайте сильный пароль}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${RAG_PG_USER:-rag}
+      KC_DB_PASSWORD: ${RAG_PG_PASSWORD:?prod: задайте пароль}
+      # Публичный https-адрес SSO (фиксирует issuer в токенах)
+      KC_HOSTNAME: ${RAG_KC_HOSTNAME:?prod: https://sso.example.corp}
+      KC_HTTP_ENABLED: "false"
+      KC_HTTPS_CERTIFICATE_FILE: /etc/keycloak/certs/tls.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /etc/keycloak/certs/tls.key
+      KC_PROXY_HEADERS: xforwarded   # если за корпоративным reverse-proxy
+    ports:
+      - "0.0.0.0:8443:8443"
+    volumes:
+      - ./deploy/keycloak/certs:/etc/keycloak/certs:ro

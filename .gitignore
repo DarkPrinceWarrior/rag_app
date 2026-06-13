@@ -40,3 +40,9 @@ extension/.output/
 extension/.wxt/
 extension/stats*.html
 extension/e2e/out/
+
+# Секреты деплоя (TLS-сертификаты Keycloak и т.п.)
+deploy/keycloak/certs/
+*.crt
+*.key
+*.pem

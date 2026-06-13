@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from rag_app.api.routes.chat import router as chat_router
 from rag_app.api.routes.documents import router as documents_router
@@ -52,10 +53,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="rag_app — перевод документации EN→RU", lifespan=lifespan)
-# Запросы из расширения (chrome-extension://) и страниц; auth — этап 5 (Keycloak)
+# CORS без wildcard (этап 5): явные origin'ы веб-приложения + регулярка для
+# страниц расширения (chrome-extension://). Фоновый SW расширения ходит по
+# host_permissions, к нему CORS не применяется.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
@@ -66,6 +70,11 @@ app.include_router(glossary_router)
 app.include_router(chat_router)
 app.include_router(library_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# Метрики Prometheus (§ 10): HTTP-метрики по эндпоинтам (rate/latency/errors).
+# /metrics — публичный (вне require_user-роутеров), Prometheus скрейпит без токена;
+# наружу не выставляется (скрейп с localhost). Скрейпит deploy/monitoring/.
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 @app.get("/view", include_in_schema=False)

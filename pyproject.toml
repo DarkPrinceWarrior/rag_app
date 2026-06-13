@@ -24,6 +24,8 @@ dependencies = [
     "pgvector>=0.4.2",
     "pyjwt[crypto]>=2.13.0",
     "langfuse>=4.7.1",
+    "prometheus-fastapi-instrumentator>=7.0",
+    "sentry-sdk[fastapi]>=2.20",
 ]
 
 # Тяжёлый GPU-контур парсинга — только на сервере: uv sync --extra parse.

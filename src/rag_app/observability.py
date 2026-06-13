@@ -1,8 +1,9 @@
-"""Трейсинг в Langfuse (roadmap § 10): каждый RAG-запрос и перевод документа.
+"""Наблюдаемость (roadmap § 10): трассы Langfuse + ошибки в Sentry.
 
-Включается наличием LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY/LANGFUSE_HOST
-в окружении (.env). Без ключей — все вызовы no-op; ошибки трейсинга
-никогда не роняют бизнес-операцию.
+Langfuse включается LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST, Sentry — SENTRY_DSN
+(всё в .env). Без ключей всё no-op; ошибки трейсинга/инициализации никогда
+не роняют бизнес-операцию. Модуль импортируется и API, и воркером — Sentry
+инициализируется в обоих процессах на импорте.
 """
 
 from __future__ import annotations
@@ -31,6 +32,23 @@ if _enabled:
     except Exception:
         logger.exception("langfuse: не инициализировался — трейсинг выключен")
         _enabled = False
+
+
+# Sentry: захват необработанных исключений в API и воркере. Интеграции FastAPI
+# и asyncio подхватываются sentry-sdk автоматически при наличии пакетов.
+if os.getenv("SENTRY_DSN"):
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=os.environ["SENTRY_DSN"],
+            environment=os.getenv("SENTRY_ENVIRONMENT", "prod"),
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+            send_default_pii=False,  # on-prem: не отправляем тела/заголовки с данными
+        )
+        logger.info("sentry: включён (env=%s)", os.getenv("SENTRY_ENVIRONMENT", "prod"))
+    except Exception:
+        logger.exception("sentry: не инициализировался")
 
 
 def log_chat_trace(

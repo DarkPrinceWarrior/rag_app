@@ -105,6 +105,18 @@ class Settings(BaseSettings):
     # («no paragraphs», проверено) — для них наш оверлей pipeline/scan_pdf.py.
     babeldoc_auto_ocr_workaround: bool = True
 
+    # --- CORS (этап 5, прод): без wildcard ---
+    # Веб-приложение отдаётся тем же origin (:8100) — ему CORS не нужен; список
+    # нужен для сторонних браузерных вызовов. Расширение ходит из фонового SW по
+    # host_permissions (CORS к ним не применяется), а его страницы имеют origin
+    # chrome-extension://<id> — покрыт регуляркой. Переопределяется env
+    # RAG_CORS_ORIGINS (JSON-список) при развёртывании за корпоративным доменом.
+    cors_origins: list[str] = [
+        "http://localhost:8100",
+        "http://127.0.0.1:8100",
+    ]
+    cors_origin_regex: str = r"chrome-extension://.*"
+
     # --- Аутентификация (Keycloak OIDC, этап 5) ---
     auth_enabled: bool = False  # false — dev-режим без токенов
     # issuer зафиксирован KC_HOSTNAME в compose; бэкенд резолвит localhost сам

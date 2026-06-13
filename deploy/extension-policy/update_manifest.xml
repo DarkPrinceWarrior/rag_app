@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Update-манифест self-hosted CRX (roadmap § 8). <EXTENSION_ID>, <CORP_HOST>,
+     version и имя .crx — подставить реальными при пусконаладке. Хостится по
+     адресу из update_url политики (chrome-managed-policy.json). -->
+<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+  <app appid='<EXTENSION_ID>'>
+    <updatecheck codebase='https://<CORP_HOST>/ext/rag_app-1.0.0.crx' version='1.0.0' />
+  </app>
+</gupdate>

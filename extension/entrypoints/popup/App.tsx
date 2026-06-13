@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { getApiBase, type HistoryEntry } from '@/utils/api';
+import { getAccessToken } from '@/utils/auth';
+
+interface AuthState {
+  enabled: boolean;
+  loggedIn: boolean;
+}
 
 async function activeTabId(): Promise<number | undefined> {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -13,13 +19,22 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [apiBase, setApiBase] = useState('http://localhost:8100');
+  const [auth, setAuth] = useState<AuthState>({ enabled: false, loggedIn: false });
   const fileInput = useRef<HTMLInputElement>(null);
+
+  function refreshAuth() {
+    browser.runtime
+      .sendMessage({ type: 'auth-status' })
+      .then((s) => setAuth(s as AuthState))
+      .catch(() => setAuth({ enabled: false, loggedIn: false }));
+  }
 
   useEffect(() => {
     browser.storage.local
       .get({ history: [] })
       .then(({ history }) => setHistory(history as HistoryEntry[]));
     getApiBase().then(setApiBase);
+    refreshAuth();
     activeTabId().then(async (id) => {
       if (!id) return;
       try {
@@ -63,7 +78,16 @@ export default function App() {
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const resp = await fetch(`${apiBase}/api/documents`, { method: 'POST', body: fd });
+      const token = await getAccessToken(false);
+      const resp = await fetch(`${apiBase}/api/documents`, {
+        method: 'POST',
+        body: fd,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (resp.status === 401) {
+        setStatus('Нужен вход — нажмите «Войти» выше');
+        return;
+      }
       if (!resp.ok) {
         const d = await resp.json().catch(() => ({ detail: resp.statusText }));
         throw new Error(d.detail);
@@ -72,6 +96,21 @@ export default function App() {
     } catch (e) {
       setStatus(`Ошибка загрузки: ${e}`);
     }
+  }
+
+  async function doLogin() {
+    setBusy(true);
+    setStatus('Открываю окно входа…');
+    const res = await browser.runtime.sendMessage({ type: 'login' });
+    setStatus(res?.ok ? 'Вход выполнен' : `Ошибка входа: ${res?.error ?? 'неизвестно'}`);
+    refreshAuth();
+    setBusy(false);
+  }
+
+  async function doLogout() {
+    await browser.runtime.sendMessage({ type: 'logout' });
+    setStatus('Вы вышли');
+    refreshAuth();
   }
 
   async function saveApiBase(value: string) {
@@ -86,6 +125,20 @@ export default function App() {
         <span>перевод EN→RU · on-prem</span>
       </header>
       <main>
+        {auth.enabled && (
+          <div className="row">
+            {auth.loggedIn ? (
+              <button className="secondary" onClick={doLogout}>
+                Выйти
+              </button>
+            ) : (
+              <button onClick={doLogin} disabled={busy}>
+                Войти
+              </button>
+            )}
+            <span className="status">{auth.loggedIn ? 'вход выполнен' : 'требуется вход'}</span>
+          </div>
+        )}
         <div className="row">
           <button onClick={translatePage} disabled={busy}>
             Перевести страницу
