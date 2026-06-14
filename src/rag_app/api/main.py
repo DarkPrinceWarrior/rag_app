@@ -32,7 +32,8 @@ from rag_app.storage.s3 import Storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-STATIC_DIR = Path(__file__).parent / "static"
+# Прод-сборка веб-SPA (web/dist; собирается локально, deploy/build_web.sh).
+WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 
 
 @asynccontextmanager
@@ -71,27 +72,11 @@ app.include_router(glossary_router)
 app.include_router(chat_router)
 app.include_router(library_router)
 app.include_router(extract_router)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Метрики Prometheus (§ 10): HTTP-метрики по эндпоинтам (rate/latency/errors).
 # /metrics — публичный (вне require_user-роутеров), Prometheus скрейпит без токена;
 # наружу не выставляется (скрейп с localhost). Скрейпит deploy/monitoring/.
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
-
-
-@app.get("/view", include_in_schema=False)
-async def view() -> FileResponse:
-    return FileResponse(STATIC_DIR / "view.html")
-
-
-@app.get("/chat", include_in_schema=False)
-async def chat_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "chat.html")
-
-
-@app.get("/extract", include_in_schema=False)
-async def extract_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "extract.html")
 
 
 @app.get("/healthz")
@@ -109,6 +94,21 @@ async def api_config() -> dict:
     }
 
 
-@app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+# --- Веб-приложение (SPA, roadmap § 7) -----------------------------------
+# Прод: React-SPA из web/dist (собирается локально, deploy/build_web.sh).
+# Клиентские маршруты (/chat, /extract, /view/...) отдают index.html (catch-all
+# регистрируется ПОСЛЕДНИМ — /api/*, /assets, /healthz, /metrics уже разобраны).
+# Без сборки (web/dist) фронта нет — соберите deploy/build_web.sh.
+if (WEB_DIST / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str) -> FileResponse:
+        # клиентские маршруты (/chat, /extract, /view/...) → index.html;
+        # реальные файлы из dist-корня (favicon.svg и пр.) отдаём как есть
+        candidate = WEB_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(WEB_DIST / "index.html")
+else:
+    logging.getLogger(__name__).warning("web/dist не найден — соберите SPA: deploy/build_web.sh")

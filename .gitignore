@@ -41,6 +41,16 @@ extension/.wxt/
 extension/stats*.html
 extension/e2e/out/
 
+# Веб-SPA (web/) — source в репо, артефакт сборки доставляется отдельно
+web/node_modules/
+web/dist/
+web/src/routeTree.gen.ts
+web/stats*.html
+
+# Демо-скриншоты Playwright
+demo-*.png
+spa-*.png
+
 # Секреты деплоя (TLS-сертификаты Keycloak и т.п.)
 deploy/keycloak/certs/
 *.crt

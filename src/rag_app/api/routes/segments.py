@@ -27,6 +27,17 @@ class SegmentOut(BaseModel):
     translated_text: str | None
     needs_review: bool
     validation: dict | None
+    # геометрия для pdf.js-вьювера (§ 7): bbox в пунктах + размер страницы
+    bbox: list[float] | None = None
+    page_size: list[float] | None = None
+
+    @classmethod
+    def from_segment(cls, s: Segment) -> SegmentOut:
+        out = cls.model_validate(s)
+        meta = s.meta or {}
+        out.bbox = meta.get("bbox_pt")
+        out.page_size = meta.get("page_size_pt")
+        return out
 
 
 class SegmentPatch(BaseModel):
@@ -47,7 +58,7 @@ async def list_segments(request: Request, doc_id: uuid.UUID) -> list[SegmentOut]
             .scalars()
             .all()
         )
-    return [SegmentOut.model_validate(s) for s in segments]
+    return [SegmentOut.from_segment(s) for s in segments]
 
 
 @router.patch("/segments/{segment_id}", response_model=SegmentOut)

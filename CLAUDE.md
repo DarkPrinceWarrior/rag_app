@@ -62,7 +62,11 @@ verified locally.
    python-docx) → индексация (pgvector, BGE-M3) → RAG-чат.
 
 Ключевые компоненты и точки входа:
-- `src/rag_app/api/main.py` — FastAPI-приложение (REST + примитивный UI).
+- `src/rag_app/api/main.py` — FastAPI (REST + SSE; отдаёт React-SPA из `web/dist`).
+- `web/` — веб-SPA (§ 7): Vite 8 + React 19 + TS, TanStack Router/Query/Virtual,
+  Zustand, Tailwind 4. Собирается ЛОКАЛЬНО (`deploy/build_web.sh`; на сервере
+  Node нет), артефакт `web/dist` доставляется на сервер. Страницы: библиотека,
+  чат, вьювер (pdf.js + bbox), экстракция таблиц.
 - `src/rag_app/workers/` — ARQ-воркеры (parse / translate / export).
 - `src/rag_app/pipeline/` — парсинг, сегментация, перевод, DOCX-экспорт.
 - `src/rag_app/db/models.py` — схема Postgres (documents, segments, …).
