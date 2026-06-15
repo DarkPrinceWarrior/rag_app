@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from PIL import Image
 from sqlalchemy import func, select
 
 from rag_app.api.audit import audit
@@ -23,9 +24,19 @@ def _owner_filter(stmt, user: User):
         return stmt
     return stmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
 
-# Этап 2: PDF (текст и сканы) + OOXML. TXT/HTML — позже (roadmap § 3.1).
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx"}
-_SIGNATURES = {".pdf": b"%PDF", ".docx": b"PK", ".xlsx": b"PK", ".pptx": b"PK"}
+# ТЗ §4.2: PDF (текст/скан), OOXML, изображения документов (JPG/PNG → OCR-ветка),
+# plain-текст (TXT). Изображения оборачиваются в 1-страничный PDF на загрузке.
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".jpg", ".jpeg", ".png", ".txt"}
+_SIGNATURES = {
+    ".pdf": b"%PDF",
+    ".docx": b"PK",
+    ".xlsx": b"PK",
+    ".pptx": b"PK",
+    ".jpg": b"\xff\xd8\xff",
+    ".jpeg": b"\xff\xd8\xff",
+    ".png": b"\x89PNG",
+}
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 
 @router.post("", response_model=DocumentOut, status_code=201)
@@ -39,13 +50,27 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(413, f"файл больше {settings.max_upload_mb} МБ")
-    if not data.startswith(_SIGNATURES[ext]):
+    sig = _SIGNATURES.get(ext)
+    if sig and not data.startswith(sig):
         raise HTTPException(415, f"содержимое не похоже на {ext}")
+
+    content_type = file.content_type or "application/octet-stream"
+    # ТЗ §4.2: изображение документа/чертежа → 1-страничный PDF, дальше как скан
+    if ext in _IMAGE_EXTS:
+        try:
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PDF", resolution=150.0)
+        except Exception as exc:
+            raise HTTPException(415, f"не удалось прочитать изображение: {exc}") from None
+        data = buf.getvalue()
+        filename = Path(filename).stem + ".pdf"
+        content_type = "application/pdf"
 
     doc_id = uuid.uuid4()
     s3_key = f"{doc_id}/{filename}"
     await request.app.state.storage.put_bytes(
-        settings.bucket_originals, s3_key, data, content_type="application/pdf"
+        settings.bucket_originals, s3_key, data, content_type=content_type
     )
 
     async with request.app.state.sessionmaker() as session:
@@ -53,7 +78,7 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
             id=doc_id,
             owner_sub=request.state.user.sub if settings.auth_enabled else None,
             filename=filename,
-            content_type=file.content_type or "application/pdf",
+            content_type=content_type,
             size_bytes=len(data),
             s3_key_original=s3_key,
         )

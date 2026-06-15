@@ -12,9 +12,12 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from rag_app.api.auth import require_user
 from rag_app.config import settings
+from rag_app.db.models import GlossaryTerm
+from rag_app.llm.client import SegmentContext, pick_glossary_terms
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["widget"], dependencies=[require_user])
@@ -37,6 +40,25 @@ async def selection_translate(request: Request, body: SelectionIn) -> dict:
         "engine": engine,
         "ms": int((time.monotonic() - t0) * 1000),
     }
+
+
+class FragmentIn(BaseModel):
+    text: str = Field(min_length=1)
+
+
+@router.post("/translate/fragment")
+async def translate_fragment(request: Request, body: FragmentIn) -> dict:
+    """Перевод произвольного фрагмента документ-качеством (Qwen3 + глоссарий) —
+    режим «выделенный фрагмент» из ТЗ §4.2 для веб-приложения."""
+    text = body.text.strip()
+    if len(text) > 8000:
+        raise HTTPException(413, "фрагмент длиннее 8000 символов — переведите документ целиком")
+    async with request.app.state.sessionmaker() as db:
+        rows = (await db.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))).all()
+    terms = pick_glossary_terms(text, [(r.en_term, r.ru_term) for r in rows])
+    t0 = time.monotonic()
+    out = await request.app.state.translator.translate(text, SegmentContext(glossary=terms))
+    return {"text": out, "engine": settings.llm_model, "ms": int((time.monotonic() - t0) * 1000)}
 
 
 class NodeIn(BaseModel):

@@ -62,6 +62,7 @@ class DocumentKind(enum.StrEnum):
     docx = "docx"
     xlsx = "xlsx"
     pptx = "pptx"
+    text = "text"  # plain TXT (ТЗ §4.2): без OCR, экспорт только DOCX
 
 
 # Виды сегментов, которые отправляются на перевод.

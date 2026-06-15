@@ -23,6 +23,7 @@ from rag_app.api.routes.segments import router as segments_router
 from rag_app.api.routes.widget import router as widget_router
 from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
+from rag_app.llm.client import Translator
 from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.fast import FastTranslator
 from rag_app.llm.visual import VisualEmbedder
@@ -49,6 +50,7 @@ async def lifespan(app: FastAPI):
     app.state.chat_engine = ChatEngine()
     app.state.visual = VisualEmbedder()
     app.state.fast_translator = FastTranslator()
+    app.state.translator = Translator()  # документ-качество (Qwen3+глоссарий) для перевода фрагмента
     yield
     await app.state.arq.aclose()
     await app.state.engine.dispose()

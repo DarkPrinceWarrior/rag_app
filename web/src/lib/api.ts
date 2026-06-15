@@ -125,6 +125,9 @@ export const api = {
   extractTable: (query: string, document_id: string | null) =>
     jsend<ExtractTable>('/api/extract/table', 'POST', { query, document_id }),
 
+  translateFragment: (text: string) =>
+    jsend<{ text: string; engine: string; ms: number }>('/api/translate/fragment', 'POST', { text }),
+
   async uploadDocument(file: File): Promise<Document> {
     const fd = new FormData()
     fd.append('file', file)

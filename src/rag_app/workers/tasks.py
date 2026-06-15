@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import tempfile
 import time
 import uuid
@@ -43,7 +44,7 @@ from rag_app.pipeline.parse import (
     run_mineru,
 )
 from rag_app.pipeline.scan_pdf import build_scan_overlay
-from rag_app.pipeline.segments import content_list_to_segments
+from rag_app.pipeline.segments import SegmentDraft, content_list_to_segments
 from rag_app.pipeline.validate import ValidationResult, validate_numbers
 from rag_app.rag.chunking import segments_to_chunks
 from rag_app.storage.s3 import Storage
@@ -116,6 +117,16 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 kind = DocumentKind(ext)
                 drafts = await asyncio.to_thread(ooxml.extract, ext, local_file)
                 n_pages = (max(d.page_idx for d in drafts) + 1) if ext == "pptx" and drafts else None
+            elif ext == "txt":
+                # plain-текст (ТЗ §4.2): абзацы (разделённые пустой строкой) → сегменты
+                kind = DocumentKind.text
+                text = local_file.read_text(encoding="utf-8", errors="replace")
+                paras = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+                drafts = [
+                    SegmentDraft(idx=i, kind=SegmentKind.paragraph, source_text=p)
+                    for i, p in enumerate(paras)
+                ]
+                n_pages = None
             else:
                 raise RuntimeError(f"неподдерживаемый формат: .{ext}")
 
@@ -544,6 +555,12 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                     values["s3_key_export_pdf_dual"] = dual_key
                 else:
                     values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
+        elif doc.kind == DocumentKind.text:
+            # plain TXT (ТЗ §4.2): только редактируемый DOCX из сегментов
+            data = await asyncio.to_thread(build_docx, doc.filename, segments)
+            docx_key = f"{doc_id}/{stem}.ru.docx"
+            await storage.put_bytes(settings.bucket_exports, docx_key, data, _DOCX_MIME)
+            values["s3_key_export_docx"] = docx_key
         else:
             # OOXML: переводы обратно в копию оригинала, формат и вёрстка не меняются
             ext = doc.kind if isinstance(doc.kind, str) else doc.kind.value

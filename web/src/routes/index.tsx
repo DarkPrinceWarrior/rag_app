@@ -90,12 +90,12 @@ function UploadZone({
         (drag ? 'border-primary bg-accent' : 'border-border bg-card text-muted-foreground hover:bg-accent/50')
       }
     >
-      {busy ? 'Загружаю…' : 'Перетащите документ сюда или кликните — PDF, DOCX, XLSX, PPTX'}
+      {busy ? 'Загружаю…' : 'Перетащите документ сюда или кликните — PDF, DOCX, XLSX, PPTX, JPG, PNG, TXT'}
       <input
         ref={fileInput}
         type="file"
         hidden
-        accept=".pdf,.docx,.xlsx,.pptx"
+        accept=".pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.txt"
         onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
       />
     </div>

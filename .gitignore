@@ -56,3 +56,7 @@ deploy/keycloak/certs/
 *.crt
 *.key
 *.pem
+
+# Внутренние документы заказчика (публичный репозиторий — не коммитим)
+docs/ТЗ_*.docx
+docs/*.docx
