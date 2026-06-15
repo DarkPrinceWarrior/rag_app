@@ -145,3 +145,19 @@ def test_needs_translation() -> None:
     assert not needs_translation("16.5")
     assert not needs_translation("")
     assert not needs_translation("Давление")
+
+
+def test_fast_prompt_terminology() -> None:
+    # быстрый контур HY-MT: глоссарий через terminology-intervention (term-anchored)
+    from rag_app.llm.fast import build_fast_prompt
+
+    p = build_fast_prompt(
+        "rated for sour service", "Russian", [("sour service", "сероводородная среда")]
+    )
+    assert "Refer to the following terminology:" in p
+    assert "sour service translates to сероводородная среда" in p
+    assert p.rstrip().endswith("rated for sour service")
+    # без глоссария — чистый шаблон, без терминологического префикса
+    p0 = build_fast_prompt("hello world", "Russian", None)
+    assert "terminology" not in p0.lower()
+    assert "Translate the following segment into Russian" in p0

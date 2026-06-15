@@ -18,7 +18,20 @@ logger = logging.getLogger(__name__)
 
 # Официальный промпт-формат HY-MT / Hunyuan-MT (XX→XX, кроме китайских пар) — общий
 _HY_PROMPT = "Translate the following segment into {lang}, without additional explanation.\n\n{text}"
+# Терминологическая интервенция HY-MT (term-anchored префикс): принудительный
+# перевод терминов глоссария. Формат проверен на :8005 (sour service →
+# «сероводородная среда»; без префикса HY-MT даёт «агрессивная среда»).
+_HY_TERM_PREFIX = "Refer to the following terminology:\n{terms}\n"
 _LANG_NAMES = {"ru": "Russian", "en": "English"}
+
+
+def build_fast_prompt(text: str, lang: str, glossary: list[tuple[str, str]] | None) -> str:
+    """Промпт HY-MT с опциональной терминологической интервенцией."""
+    prompt = _HY_PROMPT.format(lang=lang, text=text)
+    if glossary:
+        terms = "\n".join(f"{en} translates to {ru}" for en, ru in glossary)
+        prompt = _HY_TERM_PREFIX.format(terms=terms) + prompt
+    return prompt
 
 
 class FastTranslator:
@@ -30,11 +43,19 @@ class FastTranslator:
             base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=120.0
         )
 
-    async def translate(self, text: str, target_lang: str = "ru") -> tuple[str, str]:
-        """→ (перевод, движок). Пустые/нелатинские тексты возвращаются как есть."""
+    async def translate(
+        self,
+        text: str,
+        target_lang: str = "ru",
+        glossary: list[tuple[str, str]] | None = None,
+    ) -> tuple[str, str]:
+        """→ (перевод, движок). Пустые/нелатинские тексты возвращаются как есть.
+
+        glossary — термины для терминологической интервенции HY-MT (опц.).
+        """
         if target_lang == "ru" and not needs_translation(text):
             return text, "none"
-        prompt = _HY_PROMPT.format(lang=_LANG_NAMES.get(target_lang, "Russian"), text=text)
+        prompt = build_fast_prompt(text, _LANG_NAMES.get(target_lang, "Russian"), glossary)
 
         if settings.fast_llm_enabled:
             try:
