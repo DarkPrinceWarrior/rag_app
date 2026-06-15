@@ -1,0 +1,33 @@
+# HY-MT1.5-7B — кандидат переводного контура (A/B), GPU1, порт 8005.
+# Преемник WMT25-чемпиона Hunyuan-MT-7B (та же arch hunyuan_v1_dense): на WMT25
+# XCOMET-XXL 0.6159 vs Qwen3-32B 0.3605; +terminology intervention (глоссарий),
+# contextual / format-preserving перевод. Поднят ОТДЕЛЬНО от прод-контура :8004 —
+# переключение фронта только после COMET-A/B на корпусе заказчика (roadmap § 12.1).
+[Unit]
+Description=vLLM HY-MT1.5-7B (GPU1, :8005)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# GPU1 — NUMA node0 ({1,2} ↔ node0)
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/HY-MT1.5-7B \
+    --served-model-name hy-mt1.5-7b \
+    --host 127.0.0.1 \
+    --port 8005 \
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 8192 \
+    --max-num-seqs 64
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

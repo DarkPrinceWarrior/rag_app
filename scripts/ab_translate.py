@@ -18,11 +18,43 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from openai import AsyncOpenAI
 from sqlalchemy import select
 
+from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.db.models import GlossaryTerm, Segment, SegmentKind
-from rag_app.llm.client import SegmentContext, Translator, pick_glossary_terms
+from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
+
+
+class NativeMTTranslator:
+    """Спец-MT-модели (HY-MT1.5) ждут СВОЙ шаблон без лесов промпта (system-prompt,
+    контекст раздела, глоссарий-как-инструкция, <doc>-маркеры) — иначе модель
+    эхо-копирует леса в перевод. Для честного A/B даём только нативный шаблон
+    HY-MT. Сигнатура .translate(text, context) совпадает с Translator → translate_all
+    работает без изменений (context игнорируется)."""
+
+    def __init__(self, base_url: str, model: str, temperature: float = 0.3) -> None:
+        self.client = AsyncOpenAI(base_url=base_url, api_key=settings.llm_api_key, timeout=300.0)
+        self.model = model
+        self.temperature = temperature
+
+    async def translate(self, text: str, context: object = None, feedback: object = None) -> str:
+        if not needs_translation(text):
+            return text
+        resp = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[{
+                "role": "user",
+                "content": f"Translate the following segment into Russian, "
+                           f"without additional explanation.\n{text}",
+            }],
+            temperature=self.temperature,
+            top_p=0.8,
+            max_tokens=settings.llm_max_tokens,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        return (resp.choices[0].message.content or "").strip()
 
 
 async def load_segments(n: int) -> tuple[list[Segment], dict]:
@@ -105,12 +137,20 @@ async def main() -> None:
     p.add_argument("--n", type=int, default=300)
     p.add_argument("--speed-sample", type=int, default=30)
     p.add_argument("--out-dir", default="/tmp")
+    p.add_argument(
+        "--native", action="store_true",
+        help="модель B — спец-MT (HY-MT): нативный шаблон без лесов промпта/глоссария",
+    )
     args = p.parse_args()
 
     segments, contexts = await load_segments(args.n)
-    print(f"сегментов: {len(segments)}")
+    print(f"сегментов: {len(segments)}" + (" [native MT-шаблон]" if args.native else ""))
 
-    model_b = Translator(base_url=args.b_url, model=args.b_model, temperature=args.b_temperature)
+    model_b = (
+        NativeMTTranslator(base_url=args.b_url, model=args.b_model, temperature=args.b_temperature)
+        if args.native
+        else Translator(base_url=args.b_url, model=args.b_model, temperature=args.b_temperature)
+    )
     mt_b, sec_b = await translate_all(model_b, segments, contexts, concurrency=12)
     print(f"B ({args.b_model}): {len(segments)} сегментов за {sec_b:.0f} с")
 
@@ -122,6 +162,7 @@ async def main() -> None:
     print(f"скорость B на той же подвыборке: ~{sec_b * len(sample) / len(segments):.0f} с (пропорция)")
 
     out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
     with (out / "ab_a.jsonl").open("w", encoding="utf-8") as fa:
         for s in segments:
             fa.write(json.dumps({"src": s.source_text, "mt": s.translated_text}, ensure_ascii=False) + "\n")
