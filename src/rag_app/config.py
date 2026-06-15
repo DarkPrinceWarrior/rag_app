@@ -97,6 +97,10 @@ class Settings(BaseSettings):
 
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
+    # Путь к бинарю mineru: пусто → сосед текущего python (общий venv). Для VLM
+    # через vllm — изолированный venv (.venv-mineru, torch 2.11), чтобы не понижать
+    # torch 2.12 в рабочем venv воркера/API.
+    mineru_bin: str | None = None
     mineru_backend: str = "pipeline"
     mineru_method: str = "auto"  # auto: текстовый слой / OCR постранично (roadmap § 3.1)
     mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)

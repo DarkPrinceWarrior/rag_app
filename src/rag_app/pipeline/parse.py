@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -67,8 +68,11 @@ async def run_mineru(
     Девайс в MinerU 3.x задаётся только через env MINERU_DEVICE_MODE
     (флага -d в CLI больше нет).
     """
-    # mineru лежит в том же venv, что и воркер; PATH в tmux/systemd может его не содержать
-    mineru_bin = Path(sys.executable).with_name("mineru")
+    # mineru: явный путь из настроек (изолированный venv для VLM/vllm) или сосед
+    # текущего python (общий venv); PATH в tmux/systemd может бинарь не содержать
+    mineru_bin = (
+        Path(settings.mineru_bin) if settings.mineru_bin else Path(sys.executable).with_name("mineru")
+    )
     be = backend or settings.mineru_backend
     cmd = [
         str(mineru_bin) if mineru_bin.exists() else "mineru",
@@ -80,8 +84,12 @@ async def run_mineru(
         # -m auto: текстовый слой / OCR выбирается постранично (roadmap § 3.1);
         # VLM-бэкенды multilingual и метод/язык не принимают
         cmd += ["-m", method or settings.mineru_method, "-l", lang or settings.mineru_lang]
-    env = dict(os.environ, MINERU_DEVICE_MODE=settings.mineru_device)
-    logger.info("mineru: %s (device=%s)", " ".join(cmd), settings.mineru_device)
+    # vllm-движок MinerU не уважает MINERU_DEVICE_MODE и берёт cuda:0 (а там
+    # whisperX) → жёстко пиннингуем нужную карту через CUDA_VISIBLE_DEVICES;
+    # внутри процесса она становится единственной cuda:0.
+    gpu_idx = settings.mineru_device.rsplit(":", 1)[-1]
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu_idx, MINERU_DEVICE_MODE="cuda:0")
+    logger.info("mineru: %s (GPU=%s via CUDA_VISIBLE_DEVICES)", " ".join(cmd), gpu_idx)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         env=env,
@@ -128,6 +136,8 @@ class BlockGeometry:
     page_sizes: dict[int, tuple[float, float]] = field(default_factory=dict)
     text_map: dict[tuple[int, str], list[float]] = field(default_factory=dict)
     typed: dict[tuple[int, str], list[list[float]]] = field(default_factory=dict)
+    # построчная геометрия блока (x0, текст) — для восстановления переносов/отступов
+    block_lines: dict[tuple[int, str], list[tuple[float, str]]] = field(default_factory=dict)
 
     def match_text(self, page_idx: int | None, text: str) -> list[float] | None:
         if page_idx is None:
@@ -139,6 +149,34 @@ class BlockGeometry:
             return None
         lst = self.typed.get((page_idx, block_type))
         return lst.pop(0) if lst else None
+
+    def reflow(self, page_idx: int | None, text: str) -> str | None:
+        """Восстановить переносы и отступы списка/оглавления из строк middle.json.
+
+        content_list схлопывает оглавление (лидер-точки + номера страниц) в один
+        абзац-«кашу». Здесь, если блок похож на список (≥4 строк, большинство
+        кончается цифрой — номером пункта/страницы), возвращаем многострочный
+        текст: одна запись на строку, отступ по x0 (уровень вложенности). Иначе
+        None — обычные абзацы оставляем флоу-текстом.
+        """
+        if page_idx is None:
+            return None
+        lines = self.block_lines.get((page_idx, _norm_text(text)))
+        if not lines or len(lines) < 4:
+            return None
+        ends_digit = sum(1 for _, t in lines if t.strip() and t.strip()[-1].isdigit())
+        if ends_digit < len(lines) * 0.5:
+            return None
+        # уровни отступа по левому краю (кластеризация x0 округлением до 5 pt)
+        xs = sorted({round(x0 / 5) * 5 for x0, _ in lines})
+        level = {x: i for i, x in enumerate(xs)}
+        out: list[str] = []
+        for x0, t in lines:
+            lv = min(level[round(x0 / 5) * 5], 4)
+            # пробел между названием и слипшимся номером страницы: «…устройства244»
+            entry = re.sub(r"(\D)(\d[\d\s]*)$", r"\1 \2", t.strip())
+            out.append("    " * lv + entry)
+        return "\n".join(out)
 
 
 _TYPED_BLOCKS = {"table": "table", "image": "image", "interline_equation": "equation"}
@@ -165,11 +203,20 @@ def load_block_geometry(content_list_path: Path) -> BlockGeometry:
             if btype in _TYPED_BLOCKS:
                 geo.typed.setdefault((p_idx, _TYPED_BLOCKS[btype]), []).append(bbox)
                 continue
+            lines = blk.get("lines", [])
             text = "".join(
-                span.get("content", "")
-                for line in blk.get("lines", [])
-                for span in line.get("spans", [])
+                span.get("content", "") for line in lines for span in line.get("spans", [])
             )
             if text.strip():
-                geo.text_map[(p_idx, _norm_text(text))] = bbox
+                key = (p_idx, _norm_text(text))
+                geo.text_map[key] = bbox
+                # построчно: (x0, текст строки) — для reflow списков/оглавлений
+                rows: list[tuple[float, str]] = []
+                for line in lines:
+                    lt = "".join(sp.get("content", "") for sp in line.get("spans", []))
+                    lb = line.get("bbox")
+                    if lt.strip() and lb:
+                        rows.append((float(lb[0]), lt))
+                if rows:
+                    geo.block_lines[key] = rows
     return geo

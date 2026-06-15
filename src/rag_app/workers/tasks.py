@@ -115,6 +115,11 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                         bbox_pt = geo.pop_typed(d.page_idx, d.kind.value)
                     else:
                         bbox_pt = geo.match_text(d.page_idx, d.source_text)
+                        # списки/оглавления content_list схлопывает в один абзац —
+                        # восстанавливаем переносы и отступы из строк middle.json
+                        reflowed = geo.reflow(d.page_idx, d.source_text)
+                        if reflowed:
+                            d.source_text = reflowed
                     size = geo.page_sizes.get(d.page_idx) if d.page_idx is not None else None
                     if bbox_pt and size:
                         d.meta["bbox_pt"] = bbox_pt

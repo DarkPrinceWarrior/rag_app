@@ -110,6 +110,34 @@ def test_running_header_footer_dropped() -> None:
     assert [s.source_text for s in segs] == ["Page one body.", "Page two body."]
 
 
+def test_reflow_toc_lines() -> None:
+    # оглавление content_list схлопывает в один абзац — reflow восстанавливает
+    # переносы из строк middle.json и отступ по x0 (уровень вложенности)
+    from rag_app.pipeline.parse import BlockGeometry, _norm_text
+
+    g = BlockGeometry()
+    text = "Alpha 5 Beta 6 Gamma 7 Delta 8"
+    g.block_lines[(0, _norm_text(text))] = [
+        (88.0, "Alpha5"),
+        (107.0, "Beta6"),
+        (107.0, "Gamma7"),
+        (88.0, "Delta8"),
+    ]
+    out = g.reflow(0, text)
+    assert out is not None
+    rows = out.split("\n")
+    assert rows == ["Alpha 5", "    Beta 6", "    Gamma 7", "Delta 8"]
+    # обычный абзац (не список, строки не кончаются цифрой) — не трогаем
+    para = "This is a flowing paragraph of body text here"
+    g.block_lines[(0, _norm_text(para))] = [
+        (88.0, "This is a flowing"),
+        (88.0, "paragraph of body"),
+        (88.0, "text here and more"),
+        (88.0, "words continue on"),
+    ]
+    assert g.reflow(0, para) is None
+
+
 def test_needs_translation() -> None:
     from rag_app.llm.client import needs_translation
 

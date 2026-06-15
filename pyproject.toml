@@ -29,10 +29,15 @@ dependencies = [
 ]
 
 # Тяжёлый GPU-контур парсинга — только на сервере: uv sync --extra parse.
-# Воркер вызывает mineru как CLI (subprocess), импортов нет.
+# Воркер вызывает mineru как CLI (subprocess), импортов нет. vllm — для
+# hybrid/vlm-движков MinerU (форс-OCR битого cmap), даёт ~10× ускорение vs
+# transformers. torch-backend=auto при установке (ABI-совместимость vLLM/CUDA).
 [project.optional-dependencies]
 parse = [
-    "mineru[core]>=2.5",
+    # MinerU 3.3.1 пинит vllm <0.22 (vllm 0.23/torch 2.12 несовместимы с её
+    # VLM-движком) → берём максимум допустимого: vllm 0.21.x (тянет torch 2.11).
+    "mineru[core,pipeline,vllm]>=3.3.1",
+    "vllm>=0.21,<0.22",
 ]
 
 [dependency-groups]
