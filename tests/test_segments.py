@@ -12,6 +12,21 @@ def test_table_html_parsing() -> None:
     assert parse_table_html(html) == [["Item", "Value"], ["Pressure", "16.5 MPa"]]
 
 
+def test_table_colspan_rowspan_grid() -> None:
+    # шапка с объединёнными ячейками (как у MinerU): rowspan на «Pump»,
+    # colspan на «500 rpm» → ровная сетка, колонки не съезжают.
+    html = (
+        "<table>"
+        "<tr><td rowspan=2>Pump</td><td colspan=2>500 rpm</td></tr>"
+        "<tr><td>Flow</td><td>Head</td></tr>"
+        "<tr><td>A</td><td>1</td><td>2</td></tr>"
+        "</table>"
+    )
+    grid = parse_table_html(html)
+    assert grid == [["Pump", "500 rpm", ""], ["", "Flow", "Head"], ["A", "1", "2"]]
+    assert len({len(r) for r in grid}) == 1  # все строки одной ширины
+
+
 def test_content_list_mapping() -> None:
     items = [
         {"type": "text", "text": "Scope", "text_level": 1, "page_idx": 0},

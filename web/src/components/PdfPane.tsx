@@ -17,7 +17,15 @@ export interface Highlight {
 
 const SCALE = 1.4
 
-export function PdfPane({ docId, highlight }: { docId: string; highlight: Highlight | null }) {
+export function PdfPane({
+  docId,
+  highlight,
+  pageHint,
+}: {
+  docId: string
+  highlight: Highlight | null
+  pageHint?: number
+}) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -52,6 +60,11 @@ export function PdfPane({ docId, highlight }: { docId: string; highlight: Highli
   useEffect(() => {
     if (highlight) setPageNum(highlight.page)
   }, [highlight])
+
+  // прокрутка перевода справа → синхронно листаем оригинал слева
+  useEffect(() => {
+    if (pageHint && pageHint >= 1 && pageHint <= numPages) setPageNum(pageHint)
+  }, [pageHint, numPages])
 
   // рендер страницы + bbox-оверлей
   useEffect(() => {

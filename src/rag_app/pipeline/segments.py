@@ -26,38 +26,82 @@ class SegmentDraft:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
+def _span(attrs: list[tuple[str, str | None]], name: str) -> int:
+    for k, v in attrs:
+        if k == name:
+            try:
+                return max(1, int(v or 1))
+            except (TypeError, ValueError):
+                return 1
+    return 1
+
+
 class _TableHTMLParser(HTMLParser):
-    """<table> HTML → список строк с текстами ячеек (rowspan/colspan игнорируем)."""
+    """<table> HTML → ровная сетка ячеек с разворотом rowspan/colspan.
+
+    MinerU размечает объединённые ячейки шапок через colspan/rowspan; без их
+    разворота строки получаются разной длины (колонки «съезжают»). Здесь каждая
+    строка приводится к одинаковой ширине: текст ставится в левую-верхнюю ячейку
+    спана, ячейки-продолжения остаются пустыми.
+    """
 
     def __init__(self) -> None:
         super().__init__()
-        self.rows: list[list[str]] = []
+        # сырые строки: список (текст, colspan, rowspan) до разворота
+        self._raw: list[list[tuple[str, int, int]]] = []
         self._cell: list[str] | None = None
+        self._cs = 1
+        self._rs = 1
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag == "tr":
-            self.rows.append([])
+            self._raw.append([])
         elif tag in ("td", "th"):
             self._cell = []
+            self._cs = _span(attrs, "colspan")
+            self._rs = _span(attrs, "rowspan")
         elif tag == "br" and self._cell is not None:
             self._cell.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("td", "th") and self._cell is not None:
-            if not self.rows:
-                self.rows.append([])
-            self.rows[-1].append("".join(self._cell).strip())
+            if not self._raw:
+                self._raw.append([])
+            self._raw[-1].append(("".join(self._cell).strip(), self._cs, self._rs))
             self._cell = None
 
     def handle_data(self, data: str) -> None:
         if self._cell is not None:
             self._cell.append(data)
 
+    def grid(self) -> list[list[str]]:
+        out: list[list[str]] = []
+        carry: dict[int, int] = {}  # колонка → сколько строк ниже занято rowspan'ом
+        for raw_row in self._raw:
+            row: list[str] = []
+            col = 0
+            for text, cs, rs in raw_row:
+                while carry.get(col, 0) > 0:  # колонка занята спаном сверху
+                    row.append("")
+                    carry[col] -= 1
+                    col += 1
+                for k in range(cs):
+                    row.append(text if k == 0 else "")
+                    if rs > 1:
+                        carry[col] = rs - 1
+                    col += 1
+            while carry.get(col, 0) > 0:  # хвостовые rowspan-колонки справа
+                row.append("")
+                carry[col] -= 1
+                col += 1
+            out.append(row)
+        return out
+
 
 def parse_table_html(html: str) -> list[list[str]]:
     parser = _TableHTMLParser()
     parser.feed(html or "")
-    return [row for row in parser.rows if any(cell.strip() for cell in row)]
+    return [row for row in parser.grid() if any(cell.strip() for cell in row)]
 
 
 def _join_captions(*caption_lists: Any) -> str:

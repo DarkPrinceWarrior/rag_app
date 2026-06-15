@@ -29,6 +29,21 @@ function Viewer() {
   const [msg, setMsg] = useState('')
   const [cited, setCited] = useState<string | null>(null)
   const [active, setActive] = useState<Highlight | null>(null)
+  // какая страница оригинала (слева) показывается — следует за прокруткой перевода
+  const [pageHint, setPageHint] = useState(1)
+  const rightRef = useRef<HTMLDivElement>(null)
+
+  // scroll-spy: верхняя видимая страница перевода → переключаем оригинал слева
+  function syncPage() {
+    const cont = rightRef.current
+    if (!cont) return
+    const threshold = cont.getBoundingClientRect().top + 64
+    let cur = 1
+    cont.querySelectorAll<HTMLElement>('[data-page]').forEach((el) => {
+      if (el.getBoundingClientRect().top <= threshold) cur = Number(el.dataset.page)
+    })
+    setPageHint(cur)
+  }
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -90,9 +105,9 @@ function Viewer() {
         {header}
         <div className="flex h-[calc(100vh-97px)]">
           <div className="w-1/2 border-r">
-            <PdfPane docId={id} highlight={active} />
+            <PdfPane docId={id} highlight={active} pageHint={pageHint} />
           </div>
-          <div className="w-1/2 overflow-auto">
+          <div ref={rightRef} onScroll={syncPage} className="w-1/2 overflow-auto">
             <p className="border-b px-6 py-2 text-xs text-muted-foreground">
               Клик по фрагменту — подсветка в оригинале слева. Правка сохраняется по клику вне поля.
             </p>
@@ -217,6 +232,7 @@ function PageSep({ n }: { n: number }) {
   return (
     <div
       id={`page-${n}`}
+      data-page={n}
       className="my-4 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground"
     >
       <span className="h-px flex-1 bg-border" />
