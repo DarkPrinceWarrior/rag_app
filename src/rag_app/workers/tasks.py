@@ -89,9 +89,17 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 # roadmap § 3.1: детект текстового слоя за миллисекунды;
                 # сканы идут той же командой — mineru -m auto решает постранично
                 n_pages, has_text = await asyncio.to_thread(pdf_info, local_file)
-                kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan
                 out_dir = tmp_path / "mineru_out"
-                content_list_path = await run_mineru(local_file, out_dir)
+                if doc.parse_force_ocr:
+                    # битый ToUnicode-cmap текстового слоя → OCR с картинки;
+                    # экспорт через оверлей (как скан), а не babeldoc по битому тексту
+                    kind = DocumentKind.pdf_scan
+                    content_list_path = await run_mineru(
+                        local_file, out_dir, method="ocr", lang=doc.ocr_lang
+                    )
+                else:
+                    kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan
+                    content_list_path = await run_mineru(local_file, out_dir)
                 items = load_content_list(content_list_path)
                 drafts = content_list_to_segments(items)
                 # геометрия в пунктах из middle.json — для оверлея сканов и

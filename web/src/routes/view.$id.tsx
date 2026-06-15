@@ -69,12 +69,27 @@ function Viewer() {
     setTimeout(() => setMsg(''), 4000)
   }
 
+  async function reparseOcr() {
+    if (!confirm('Переразобрать через OCR? Для PDF с нечитаемым текстовым слоем (битый cmap). Текущие сегменты и перевод заменятся.'))
+      return
+    setMsg('OCR-переразбор в очереди…')
+    await api.reparseOcr(id, 'east_slavic')
+    setMsg('Переразбор запущен — обновите страницу через ~минуту')
+    setTimeout(() => setMsg(''), 8000)
+  }
+
+  const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   const header = (
     <div className="sticky top-[49px] z-[5] flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
       <span className="truncate text-sm font-medium">
         {docQ.data?.filename} · {docQ.data?.status}
       </span>
       <span className="ml-auto text-xs text-primary">{msg}</span>
+      {isPdfDoc && (
+        <Button variant="outline" size="sm" onClick={reparseOcr} title="Если текст в PDF распознан как латиница-каша">
+          OCR-распознавание
+        </Button>
+      )}
       <Button size="sm" onClick={reexport}>
         Пересобрать экспорт
       </Button>

@@ -84,6 +84,12 @@ class Document(Base):
     # pdf_text|pdf_scan|docx|xlsx|pptx; строка, не SQL-enum — маршруты будут расти
     kind: Mapped[str] = mapped_column(String(16), default=DocumentKind.pdf_text.value)
 
+    # Форс-OCR (восстановление документов с битым ToUnicode-cmap текстового слоя):
+    # парсинг через MinerU -m ocr с указанным языком (en|east_slavic|…). Хранится
+    # на документе, чтобы переживать retry/reexport.
+    parse_force_ocr: Mapped[bool] = mapped_column(Boolean, default=False)
+    ocr_lang: Mapped[str | None] = mapped_column(String(16), default=None)
+
     s3_key_original: Mapped[str] = mapped_column(String(1024))
     s3_key_content_list: Mapped[str | None] = mapped_column(String(1024), default=None)
     s3_key_export_docx: Mapped[str | None] = mapped_column(String(1024), default=None)

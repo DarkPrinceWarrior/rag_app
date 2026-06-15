@@ -112,6 +112,8 @@ export const api = {
   getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments`),
   reexport: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/reexport`, 'POST'),
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
+  reparseOcr: (id: string, lang = 'east_slavic') =>
+    jsend<{ status: string; ocr_lang: string }>(`/api/documents/${id}/reparse-ocr`, 'POST', { lang }),
   patchSegment: (segId: string, text: string) =>
     jsend<Segment>(`/api/segments/${segId}`, 'PATCH', { translated_text: text }),
 

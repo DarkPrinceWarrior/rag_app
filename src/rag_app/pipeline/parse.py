@@ -50,8 +50,13 @@ def pdf_info(path: Path, sample_pages: int = 5) -> tuple[int, bool]:
             doc.close()
 
 
-async def run_mineru(input_pdf: Path, out_dir: Path) -> Path:
+async def run_mineru(
+    input_pdf: Path, out_dir: Path, *, method: str | None = None, lang: str | None = None
+) -> Path:
     """Запуск mineru CLI; возвращает путь к *_content_list.json.
+
+    method/lang переопределяют дефолты (settings) — нужно для форс-OCR
+    документов с битым ToUnicode-cmap (method="ocr", lang="east_slavic").
 
     Девайс в MinerU 3.x задаётся только через env MINERU_DEVICE_MODE
     (флага -d в CLI больше нет).
@@ -66,7 +71,7 @@ async def run_mineru(input_pdf: Path, out_dir: Path) -> Path:
     ]
     if settings.mineru_backend == "pipeline":
         # -m auto: текстовый слой / OCR выбирается постранично (roadmap § 3.1)
-        cmd += ["-m", settings.mineru_method, "-l", settings.mineru_lang]
+        cmd += ["-m", method or settings.mineru_method, "-l", lang or settings.mineru_lang]
     env = dict(os.environ, MINERU_DEVICE_MODE=settings.mineru_device)
     logger.info("mineru: %s (device=%s)", " ".join(cmd), settings.mineru_device)
     proc = await asyncio.create_subprocess_exec(

@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from PIL import Image
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from rag_app.api.audit import audit
@@ -139,6 +140,32 @@ async def retry_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
     )
     await audit(request, "retry", "document", str(doc_id))
     return DocumentOut.from_doc(doc)
+
+
+class ReparseOcrIn(BaseModel):
+    # en | east_slavic (рус/укр/бел) | cyrillic | latin | ch | … (см. mineru -l)
+    lang: str = "east_slavic"
+
+
+@router.post("/{doc_id}/reparse-ocr")
+async def reparse_ocr(request: Request, doc_id: uuid.UUID, body: ReparseOcrIn) -> dict:
+    """Переразбор через форс-OCR — восстановление PDF с битым ToUnicode-cmap
+    текстового слоя (MinerU `-m ocr -l <lang>`); выбор сохраняется на документе."""
+    async with request.app.state.sessionmaker() as session:
+        doc = await session.get(Document, doc_id)
+        if doc is None:
+            raise HTTPException(404, "документ не найден")
+        if doc.status not in (DocumentStatus.error, DocumentStatus.done):
+            raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
+        doc.parse_force_ocr = True
+        doc.ocr_lang = body.lang
+        doc.status = DocumentStatus.uploaded
+        await session.commit()
+    await request.app.state.arq.enqueue_job(
+        "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
+    )
+    await audit(request, "reparse_ocr", "document", str(doc_id), {"lang": body.lang})
+    return {"status": "queued", "ocr_lang": body.lang}
 
 
 _EXPORT_KINDS = {
