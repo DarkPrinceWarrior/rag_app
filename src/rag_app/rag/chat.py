@@ -84,14 +84,36 @@ class ChatEngine:
             base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=300.0
         )
 
+    async def summarize_history(self, prior_summary: str | None, messages: list[Any]) -> str:
+        """Инкрементальная сводка вытесненных из окна реплик (§ 5 п.5)."""
+        convo = "\n".join(f"{m.role}: {m.content[:600]}" for m in messages)
+        head = f"Текущая сводка диалога:\n{prior_summary}\n\n" if prior_summary else ""
+        prompt = (
+            f"{head}Новые реплики диалога:\n{convo}\n\n"
+            "Обнови краткую сводку диалога на русском (до 6 пунктов: что спрашивал "
+            "пользователь и ключевые факты/числа из ответов). Только сводка, без вступлений."
+        )
+        resp = await self.client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=400,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        return (resp.choices[0].message.content or "").strip()
+
     async def stream_answer(
         self,
         question: str,
         chunks: list[RetrievedChunk],
         history: list[dict[str, str]],
+        summary: str | None = None,
     ) -> AsyncIterator[str]:
         context_block = build_context_block(chunks)
-        messages: list[dict[str, str]] = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+        system = CHAT_SYSTEM_PROMPT
+        if summary:
+            system += f"\n\nКраткое содержание более ранней части диалога:\n{summary}"
+        messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         messages.extend(history[-settings.rag_history_messages :])
         messages.append(
             {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import time
@@ -19,7 +20,10 @@ from rag_app.db.models import ChatMessage, ChatSession
 from rag_app.observability import log_agent_trace, log_chat_trace
 from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
+from rag_app.rag.digest import render_docx, render_md, session_digest
 from rag_app.rag.tools import AgentTools
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[require_user])
@@ -71,20 +75,34 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
             session_id = chat_session.id
             doc_filter = chat_session.document_id or body.document_id
 
-            history_rows = (
+            all_msgs = (
                 (
                     await db.execute(
                         select(ChatMessage)
                         .where(ChatMessage.session_id == session_id)
-                        .order_by(ChatMessage.created_at.desc())
-                        .limit(12)
+                        .order_by(ChatMessage.created_at.asc())
                     )
                 )
                 .scalars()
                 .all()
             )
-        # history_rows[0] — только что записанный вопрос, в историю не дублируем
-        history = [{"role": m.role, "content": m.content} for m in reversed(history_rows[1:])]
+            # prior — без только что записанного вопроса; recent N идут как
+            # история, вытесненные старые — в инкрементальную сводку (§ 5 п.5)
+            prior = all_msgs[:-1]
+            recent_n = settings.rag_history_messages
+            recent = prior[-recent_n:]
+            older = prior[:-recent_n] if len(prior) > recent_n else []
+            summary = chat_session.summary
+            new_old = older[chat_session.summary_msg_count :]
+            if new_old:
+                summary = await app.state.chat_engine.summarize_history(summary, new_old)
+                await db.execute(
+                    update(ChatSession)
+                    .where(ChatSession.id == session_id)
+                    .values(summary=summary, summary_msg_count=len(older))
+                )
+                await db.commit()
+        history = [{"role": m.role, "content": m.content} for m in recent]
         yield _sse({"type": "session", "session_id": str(session_id)})
 
         # 2) роутинг по сложности (§ 5 п.7): single-hop hybrid+rerank или
@@ -141,7 +159,9 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
         parts: list[str] = []
         t_gen = time.monotonic()
         try:
-            async for delta in app.state.chat_engine.stream_answer(body.message, chunks, history):
+            async for delta in app.state.chat_engine.stream_answer(
+                body.message, chunks, history, summary=summary
+            ):
                 parts.append(delta)
                 yield _sse({"type": "delta", "text": delta})
         except Exception as exc:
@@ -223,3 +243,40 @@ async def session_messages(request: Request, session_id: uuid.UUID) -> list[dict
         }
         for m in rows
     ]
+
+
+@router.get("/sessions/{session_id}/export")
+async def export_session(
+    request: Request, session_id: uuid.UUID, format: str = "md"
+) -> StreamingResponse:
+    """Выжимка/история сессии (§ 5): LLM-сводка + транскрипт + источники → md/docx."""
+    async with request.app.state.sessionmaker() as db:
+        session = await db.get(ChatSession, session_id)
+        if session is None:
+            raise HTTPException(404, "сессия не найдена")
+        messages = (
+            (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.session_id == session_id)
+                    .order_by(ChatMessage.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    digest = await session_digest(request.app.state.chat_engine.client, session.title, messages)
+    await audit(request, "chat_export", "chat_session", str(session_id), {"format": format})
+    stem = (session.title or "chat")[:40].strip().replace("/", "-")
+    ascii_name = stem.encode("ascii", "ignore").decode() or "chat"
+    if format == "docx":
+        return StreamingResponse(
+            io.BytesIO(render_docx(digest)),
+            media_type=_DOCX_MIME,
+            headers={"Content-Disposition": f'attachment; filename="{ascii_name}.docx"'},
+        )
+    return StreamingResponse(
+        io.BytesIO(render_md(digest).encode("utf-8")),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{ascii_name}.md"'},
+    )

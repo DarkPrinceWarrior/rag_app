@@ -200,6 +200,10 @@ class ChatSession(Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), default=None
     )
+    # Суммаризация старой истории (§ 5 п.5): инкрементальная сводка вытеснённых
+    # из окна реплик + сколько самых старых реплик в неё уже свёрнуто.
+    summary: Mapped[str | None] = mapped_column(Text, default=None)
+    summary_msg_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

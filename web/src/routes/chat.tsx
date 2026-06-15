@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Citation } from '@/lib/api'
+import { authFetch } from '@/lib/auth'
 import { streamChat } from '@/lib/sse'
 import { Button } from '@/components/ui/button'
 
@@ -26,8 +27,22 @@ function Chat() {
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [sid, setSid] = useState<string | null>(null) // активная сессия (для экспорта)
   const sessionId = useRef<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  async function exportChat(fmt: 'md' | 'docx') {
+    if (!sid) return
+    const r = await authFetch(`/api/chat/sessions/${sid}/export?format=${fmt}`)
+    if (!r.ok) return
+    const blob = await r.blob()
+    const cd = r.headers.get('Content-Disposition') || ''
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = /filename="?([^"]+)"?/.exec(cd)?.[1] || `chat.${fmt}`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
 
   const docsQ = useQuery({
     queryKey: ['documents'],
@@ -51,7 +66,10 @@ function Chat() {
     ])
     try {
       await streamChat({ message: text, session_id: sessionId.current, document_id: docId || null }, (ev) => {
-        if (ev.type === 'session') sessionId.current = ev.session_id
+        if (ev.type === 'session') {
+          sessionId.current = ev.session_id
+          setSid(ev.session_id)
+        }
         else if (ev.type === 'mode' && ev.mode === 'multi_hop')
           patchLast((m) => ({ ...m, trace: [...m.trace, '🧭 углублённый разбор запроса'] }))
         else if (ev.type === 'step')
@@ -78,6 +96,7 @@ function Chat() {
           onChange={(e) => {
             setDocId(e.target.value)
             sessionId.current = null
+            setSid(null)
           }}
           className="h-9 rounded-md border bg-card px-2 text-sm"
         >
@@ -88,6 +107,15 @@ function Chat() {
             </option>
           ))}
         </select>
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Выжимка:</span>
+          <Button variant="outline" size="sm" disabled={!sid} onClick={() => exportChat('md')}>
+            MD
+          </Button>
+          <Button variant="outline" size="sm" disabled={!sid} onClick={() => exportChat('docx')}>
+            DOCX
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 space-y-3 overflow-auto pb-4">
