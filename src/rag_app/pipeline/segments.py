@@ -75,14 +75,32 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
+def _norm_header(text: Any) -> str:
+    """Нормализация текста колонтитула для подсчёта повторов (бегущий vs титул)."""
+    return " ".join(str(text or "").split()).lower()
+
+
 def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
+    # MinerU помечает колонтитулы type=header/footer и НЕ кладёт их в основной
+    # поток text. Бегущий колонтитул повторяется на ≥2 страницах — это шум для
+    # перевода/RAG (выбрасываем). Уникальный header — титульная шапка документа
+    # (первая страница / одностраничник): терять её нельзя, поэтому промотируем
+    # в heading и ставим в начало её страницы (MinerU кладёт header в конец
+    # content_list). footer отбрасываем всегда.
+    header_counts: dict[str, int] = {}
+    for item in items:
+        if item.get("type") == "header":
+            norm = _norm_header(item.get("text"))
+            if norm:
+                header_counts[norm] = header_counts.get(norm, 0) + 1
+
     drafts: list[SegmentDraft] = []
+    titles: list[SegmentDraft] = []  # уникальные header'ы → вставим в начало их страницы
     for item in items:
         itype = item.get("type")
         page_idx = _to_int(item.get("page_idx"))
         # bbox нужен на этапе 3: подсветка цитат RAG в оригинале (roadmap § 5)
         base_meta = {"bbox": item.get("bbox")} if item.get("bbox") else {}
-        idx = len(drafts)
 
         if itype == "text":
             text = (item.get("text") or "").strip()
@@ -91,12 +109,19 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
             level = _to_int(item.get("text_level"))
             if level:
                 drafts.append(
-                    SegmentDraft(
-                        idx, SegmentKind.heading, text, page_idx, heading_level=level, meta=base_meta
-                    )
+                    SegmentDraft(0, SegmentKind.heading, text, page_idx, heading_level=level, meta=base_meta)
                 )
             else:
-                drafts.append(SegmentDraft(idx, SegmentKind.paragraph, text, page_idx, meta=base_meta))
+                drafts.append(SegmentDraft(0, SegmentKind.paragraph, text, page_idx, meta=base_meta))
+
+        elif itype == "header":
+            text = (item.get("text") or "").strip()
+            # бегущий колонтитул (повтор) или пусто — пропускаем; уникальный — титул
+            if not text or header_counts.get(_norm_header(text), 0) != 1:
+                continue
+            titles.append(
+                SegmentDraft(0, SegmentKind.heading, text, page_idx, heading_level=1, meta=base_meta)
+            )
 
         elif itype == "table":
             rows = parse_table_html(item.get("table_body") or "")
@@ -106,7 +131,7 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
             preview = "\n".join(" | ".join(row) for row in rows)
             drafts.append(
                 SegmentDraft(
-                    idx,
+                    0,
                     SegmentKind.table,
                     source_text=(caption + "\n" + preview).strip(),
                     page_idx=page_idx,
@@ -118,7 +143,7 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
             caption = _join_captions(item.get("image_caption"), item.get("image_footnote"))
             drafts.append(
                 SegmentDraft(
-                    idx,
+                    0,
                     SegmentKind.image,
                     caption,
                     page_idx,
@@ -129,6 +154,13 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
         elif itype == "equation":
             text = (item.get("text") or "").strip()
             if text:
-                drafts.append(SegmentDraft(idx, SegmentKind.equation, text, page_idx, meta=base_meta))
+                drafts.append(SegmentDraft(0, SegmentKind.equation, text, page_idx, meta=base_meta))
 
+    # титульные шапки — в начало своей страницы (перед первым блоком той же страницы)
+    for title in titles:
+        pos = next((i for i, d in enumerate(drafts) if d.page_idx == title.page_idx), len(drafts))
+        drafts.insert(pos, title)
+
+    for i, draft in enumerate(drafts):
+        draft.idx = i
     return drafts
