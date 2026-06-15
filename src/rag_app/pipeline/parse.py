@@ -51,26 +51,34 @@ def pdf_info(path: Path, sample_pages: int = 5) -> tuple[int, bool]:
 
 
 async def run_mineru(
-    input_pdf: Path, out_dir: Path, *, method: str | None = None, lang: str | None = None
+    input_pdf: Path,
+    out_dir: Path,
+    *,
+    backend: str | None = None,
+    method: str | None = None,
+    lang: str | None = None,
 ) -> Path:
     """Запуск mineru CLI; возвращает путь к *_content_list.json.
 
-    method/lang переопределяют дефолты (settings) — нужно для форс-OCR
-    документов с битым ToUnicode-cmap (method="ocr", lang="east_slavic").
+    backend/method/lang переопределяют дефолты (settings). Для форс-OCR битого
+    cmap используем backend="vlm-engine" (MinerU 3.3 VLM — multilingual, не нужен
+    -m/-l); pipeline-бэкенд требует -m/-l.
 
     Девайс в MinerU 3.x задаётся только через env MINERU_DEVICE_MODE
     (флага -d в CLI больше нет).
     """
     # mineru лежит в том же venv, что и воркер; PATH в tmux/systemd может его не содержать
     mineru_bin = Path(sys.executable).with_name("mineru")
+    be = backend or settings.mineru_backend
     cmd = [
         str(mineru_bin) if mineru_bin.exists() else "mineru",
         "-p", str(input_pdf),
         "-o", str(out_dir),
-        "-b", settings.mineru_backend,
+        "-b", be,
     ]
-    if settings.mineru_backend == "pipeline":
-        # -m auto: текстовый слой / OCR выбирается постранично (roadmap § 3.1)
+    if be == "pipeline":
+        # -m auto: текстовый слой / OCR выбирается постранично (roadmap § 3.1);
+        # VLM-бэкенды multilingual и метод/язык не принимают
         cmd += ["-m", method or settings.mineru_method, "-l", lang or settings.mineru_lang]
     env = dict(os.environ, MINERU_DEVICE_MODE=settings.mineru_device)
     logger.info("mineru: %s (device=%s)", " ".join(cmd), settings.mineru_device)

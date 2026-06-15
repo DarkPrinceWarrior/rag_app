@@ -91,11 +91,16 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 n_pages, has_text = await asyncio.to_thread(pdf_info, local_file)
                 out_dir = tmp_path / "mineru_out"
                 if doc.parse_force_ocr:
-                    # битый ToUnicode-cmap текстового слоя → OCR с картинки;
-                    # экспорт через оверлей (как скан), а не babeldoc по битому тексту
+                    # битый ToUnicode-cmap текстового слоя → OCR с картинки
+                    # VLM-бэкендом (MinerU 3.3, multilingual — кириллица/таблицы/
+                    # надстрочные); экспорт через оверлей (как скан), а не babeldoc
                     kind = DocumentKind.pdf_scan
                     content_list_path = await run_mineru(
-                        local_file, out_dir, method="ocr", lang=doc.ocr_lang
+                        local_file,
+                        out_dir,
+                        backend=settings.mineru_force_ocr_backend,
+                        method="ocr",
+                        lang=doc.ocr_lang,
                     )
                 else:
                     kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan

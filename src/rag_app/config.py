@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     mineru_method: str = "auto"  # auto: текстовый слой / OCR постранично (roadmap § 3.1)
     mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)
     mineru_timeout_s: int = 1800
+    # Бэкенд для форс-OCR (битый cmap): vlm-engine = MinerU 3.3 VLM
+    # (MinerU2.5-Pro-2605-1.2B, multilingual) — чинит кириллицу/таблицы/надстрочные,
+    # где PaddleOCR-пайплайн искажает. pipeline = быстрый PP-OCR (нужен -l).
+    mineru_force_ocr_backend: str = "vlm-engine"
 
     # --- Оверлей сканов (перевод поверх изображения по bbox) ---
     scan_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
