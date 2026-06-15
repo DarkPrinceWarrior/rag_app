@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Segment } from '@/lib/api'
@@ -16,9 +16,11 @@ export const Route = createFileRoute('/view/$id')({
 const PDF_KINDS = ['pdf_text', 'pdf_scan']
 
 function highlightOf(s: Segment): Highlight | null {
-  if (s.bbox && s.bbox.length === 4 && s.page_idx != null && s.page_size?.length === 2)
+  if (s.page_idx == null) return null
+  if (s.bbox && s.bbox.length === 4 && s.page_size?.length === 2)
     return { page: s.page_idx + 1, bbox: s.bbox, pageSize: s.page_size }
-  return null
+  // нет bbox (старый парс до геометрии) — хотя бы перейти на страницу сегмента
+  return { page: s.page_idx + 1, bbox: [], pageSize: [] }
 }
 
 function Viewer() {
@@ -78,8 +80,10 @@ function Viewer() {
       </div>
     )
 
+  const segs = segsQ.data ?? []
+
   // PDF: слева канвас оригинала с подсветкой bbox, справа перевод —
-  // сплошным документом с сохранением структуры (заголовки/абзацы/таблицы).
+  // сплошным документом с сохранением структуры (заголовки/списки/таблицы).
   if (isPdf) {
     return (
       <div>
@@ -92,132 +96,210 @@ function Viewer() {
             <p className="border-b px-6 py-2 text-xs text-muted-foreground">
               Клик по фрагменту — подсветка в оригинале слева. Правка сохраняется по клику вне поля.
             </p>
-            <TranslationDoc
-              segs={segsQ.data ?? []}
-              cited={cited}
-              onSaved={setMsg}
-              onPick={(s) => {
-                const h = highlightOf(s)
-                if (h) setActive(h)
-              }}
-            />
+            <article className="mx-auto max-w-3xl px-6 py-4">
+              <DocFlow
+                segs={segs}
+                field="translated"
+                editable
+                citedId={cited}
+                onSaved={setMsg}
+                onPick={(s) => {
+                  const h = highlightOf(s)
+                  if (h) setActive(h)
+                }}
+              />
+            </article>
           </div>
         </div>
       </div>
     )
   }
 
-  // не-PDF (OOXML): оригинал | перевод текстом
-  let lastPage: number | null = null
+  // не-PDF (OOXML / txt): оригинал | перевод — оба сплошным документом,
+  // структура как в оригинале (без разбиения на карточки-секции).
   return (
     <div>
       {header}
-      <div className="mx-auto max-w-[1400px] px-4 py-4">
-        <div className="space-y-2">
-          {segsQ.data?.map((s) => {
-            const sep = s.page_idx != null && s.page_idx !== lastPage
-            if (sep) lastPage = s.page_idx
-            return (
-              <div key={s.id}>
-                {sep && (
-                  <div id={`page-${(s.page_idx ?? 0) + 1}`} className="my-3 text-xs text-muted-foreground">
-                    — страница {(s.page_idx ?? 0) + 1} —
-                  </div>
-                )}
-                <SegmentRow s={s} cited={cited === s.id} showSource onSaved={setMsg} />
-              </div>
-            )
-          })}
-        </div>
+      <div className="mx-auto grid max-w-[1600px] grid-cols-2 gap-8 px-6 py-4">
+        <section className="border-r pr-8">
+          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Оригинал</div>
+          <DocFlow segs={segs} field="source" editable={false} citedId={cited} />
+        </section>
+        <section>
+          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Перевод</div>
+          <DocFlow segs={segs} field="translated" editable citedId={cited} onSaved={setMsg} />
+        </section>
       </div>
     </div>
   )
 }
 
-// --- Перевод как документ (правая панель PDF-вьювера) ----------------------
+// --- Документ-поток: структура как в оригинале -----------------------------
 
-function TranslationDoc({
+// маркеры списков: явные буллеты (глиф) или ведущее тире — однозначны.
+// Нумерацию (1./2.1) НЕ трогаем: даёт ложные срабатывания на измерениях/датах.
+const BULLET_RE = /^\s*[•·‣◦▪►○●∙*]\s+|^\s*[–—-]\s+/
+
+function isListItem(kind: string, text: string): boolean {
+  return kind === 'paragraph' && BULLET_RE.test(text)
+}
+
+const textOf = (s: Segment, field: Field): string =>
+  ((field === 'source' ? s.source_text : s.translated_text) ?? '')
+
+type Field = 'source' | 'translated'
+
+function DocFlow({
   segs,
-  cited,
+  field,
+  editable,
+  citedId,
   onSaved,
   onPick,
 }: {
   segs: Segment[]
-  cited: string | null
-  onSaved: (m: string) => void
-  onPick: (s: Segment) => void
+  field: Field
+  editable: boolean
+  citedId: string | null
+  onSaved?: (m: string) => void
+  onPick?: (s: Segment) => void
 }) {
+  const nodes: ReactNode[] = []
   let lastPage: number | null = null
+  let i = 0
+  while (i < segs.length) {
+    const s = segs[i]
+    if (s.page_idx != null && s.page_idx !== lastPage) {
+      lastPage = s.page_idx
+      nodes.push(<PageSep key={`p-${s.id}`} n={s.page_idx + 1} />)
+    }
+    // группируем подряд идущие списочные пункты в один список
+    if (isListItem(s.kind, textOf(s, field))) {
+      const items: Segment[] = []
+      while (i < segs.length && isListItem(segs[i].kind, textOf(segs[i], field))) {
+        items.push(segs[i])
+        i++
+      }
+      nodes.push(
+        <ul key={`l-${items[0].id}`} className="my-2 space-y-1">
+          {items.map((it) => (
+            <ListItem
+              key={it.id}
+              s={it}
+              field={field}
+              editable={editable}
+              cited={citedId === it.id}
+              onSaved={onSaved}
+              onPick={onPick}
+            />
+          ))}
+        </ul>,
+      )
+      continue
+    }
+    nodes.push(
+      <Block
+        key={s.id}
+        s={s}
+        field={field}
+        editable={editable}
+        cited={citedId === s.id}
+        onSaved={onSaved}
+        onPick={onPick}
+      />,
+    )
+    i++
+  }
+  return <>{nodes}</>
+}
+
+function PageSep({ n }: { n: number }) {
   return (
-    <article className="mx-auto max-w-3xl px-6 py-4 leading-relaxed">
-      {segs.map((s) => {
-        const sep = s.page_idx != null && s.page_idx !== lastPage
-        if (sep) lastPage = s.page_idx
-        return (
-          <Fragment key={s.id}>
-            {sep && (
-              <div
-                id={`page-${(s.page_idx ?? 0) + 1}`}
-                className="my-4 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground"
-              >
-                <span className="h-px flex-1 bg-border" />
-                страница {(s.page_idx ?? 0) + 1}
-                <span className="h-px flex-1 bg-border" />
-              </div>
-            )}
-            <DocBlock s={s} cited={cited === s.id} onSaved={onSaved} onPick={() => onPick(s)} />
-          </Fragment>
-        )
-      })}
-    </article>
+    <div
+      id={`page-${n}`}
+      className="my-4 flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground"
+    >
+      <span className="h-px flex-1 bg-border" />
+      страница {n}
+      <span className="h-px flex-1 bg-border" />
+    </div>
   )
 }
 
+// размер + отступ заголовка по уровню (глубже — мельче и с отступом)
 const HEADING_CLASS: Record<number, string> = {
   1: 'mt-5 mb-2 text-2xl font-bold',
   2: 'mt-5 mb-1.5 text-xl font-semibold',
-  3: 'mt-4 mb-1 text-lg font-semibold',
+  3: 'mt-4 mb-1 text-lg font-semibold ml-3',
+  4: 'mt-3 mb-1 text-base font-semibold ml-6',
 }
+const headingClass = (lvl: number) => HEADING_CLASS[lvl] ?? 'mt-3 mb-1 text-base font-semibold ml-8'
 
-function DocBlock({
+const CITE_CLS = 'rounded bg-primary/10 ring-1 ring-primary'
+
+function Block({
   s,
+  field,
+  editable,
   cited,
   onSaved,
   onPick,
 }: {
   s: Segment
+  field: Field
+  editable: boolean
   cited: boolean
-  onSaved: (m: string) => void
-  onPick: () => void
+  onSaved?: (m: string) => void
+  onPick?: (s: Segment) => void
 }) {
-  const citeCls = cited ? 'rounded bg-primary/10 ring-1 ring-primary' : ''
-  const wrap = '-ml-2 border-l-2 border-transparent pl-2 transition-colors hover:border-border ' + citeCls
+  const wrap =
+    '-ml-2 border-l-2 border-transparent pl-2 transition-colors hover:border-border ' + (cited ? CITE_CLS : '')
 
   if (s.kind === 'table') {
     return (
-      <div data-seg={s.id} onClick={onPick} className={'my-3 ' + wrap}>
-        <TableBlock s={s} onSaved={onSaved} />
-        {s.needs_review && <ReviewBadge />}
+      <div data-seg={s.id} onClick={() => onPick?.(s)} className={'my-3 ' + wrap}>
+        <TableBlock s={s} field={field} editable={editable} onSaved={onSaved} />
+        {editable && s.needs_review && <ReviewBadge />}
       </div>
     )
   }
 
   const isHeading = s.kind === 'heading'
-  const level = s.heading_level ?? 2
-  const typo = isHeading
-    ? HEADING_CLASS[level] ?? 'mt-3 mb-1 text-base font-semibold'
-    : 'my-2 text-[15px] text-foreground/90'
+  const typo = isHeading ? headingClass(s.heading_level ?? 2) : 'my-2 text-[15px] leading-relaxed text-foreground/90'
 
   return (
-    <div data-seg={s.id} onClick={onPick} className={wrap}>
-      <Editable
-        value={s.translated_text ?? ''}
-        segId={s.id}
-        className={typo}
-        onSaved={onSaved}
-      />
-      {s.needs_review && <ReviewBadge />}
+    <div data-seg={s.id} onClick={() => onPick?.(s)} className={wrap}>
+      <Editable value={textOf(s, field)} segId={s.id} className={typo} editable={editable} onSaved={onSaved} />
+      {editable && s.needs_review && <ReviewBadge />}
     </div>
+  )
+}
+
+// списочный пункт: маркер из текста сохраняем (round-trip), даём отступ и висячую строку
+function ListItem({
+  s,
+  field,
+  editable,
+  cited,
+  onSaved,
+  onPick,
+}: {
+  s: Segment
+  field: Field
+  editable: boolean
+  cited: boolean
+  onSaved?: (m: string) => void
+  onPick?: (s: Segment) => void
+}) {
+  return (
+    <li
+      data-seg={s.id}
+      onClick={() => onPick?.(s)}
+      className={'pl-6 text-[15px] leading-relaxed text-foreground/90 ' + (cited ? CITE_CLS : '')}
+      style={{ textIndent: '-1.1rem' }}
+    >
+      <Editable value={textOf(s, field)} segId={s.id} className="" editable={editable} onSaved={onSaved} />
+    </li>
   )
 }
 
@@ -229,17 +311,19 @@ function ReviewBadge() {
   )
 }
 
-/** Инлайн-редактируемый блок текста: правка сохраняется по blur, если изменилась. */
+/** Инлайн-редактируемый (или read-only) блок текста; правка по blur, если изменилась. */
 function Editable({
   value,
   segId,
   className,
+  editable,
   onSaved,
 }: {
   value: string
   segId: string
   className: string
-  onSaved: (m: string) => void
+  editable: boolean
+  onSaved?: (m: string) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const orig = useRef(value)
@@ -247,16 +331,19 @@ function Editable({
   async function save() {
     const text = ref.current?.textContent ?? ''
     if (text === orig.current) return
-    onSaved('Сохранение…')
+    onSaved?.('Сохранение…')
     try {
       await api.patchSegment(segId, text)
       orig.current = text
-      onSaved('Сохранено')
+      onSaved?.('Сохранено')
     } catch {
-      onSaved('Ошибка сохранения')
+      onSaved?.('Ошибка сохранения')
     }
-    setTimeout(() => onSaved(''), 2000)
+    setTimeout(() => onSaved?.(''), 2000)
   }
+
+  if (!editable)
+    return <div className={'whitespace-pre-wrap ' + className}>{value}</div>
 
   return (
     <div
@@ -265,8 +352,7 @@ function Editable({
       suppressContentEditableWarning
       onBlur={save}
       className={
-        'inline whitespace-pre-wrap rounded-sm outline-none focus:bg-accent/40 focus:ring-1 focus:ring-primary ' +
-        className
+        'whitespace-pre-wrap rounded-sm outline-none focus:bg-accent/40 focus:ring-1 focus:ring-primary ' + className
       }
     >
       {value}
@@ -274,11 +360,21 @@ function Editable({
   )
 }
 
-/** Таблица перевода как настоящая <table>; правка ячеек реасемблируется в '|'-формат. */
-function TableBlock({ s, onSaved }: { s: Segment; onSaved: (m: string) => void }) {
+/** Таблица как настоящая <table>; правка ячеек реасемблируется в '|'-формат. */
+function TableBlock({
+  s,
+  field,
+  editable,
+  onSaved,
+}: {
+  s: Segment
+  field: Field
+  editable: boolean
+  onSaved?: (m: string) => void
+}) {
   const ref = useRef<HTMLTableElement>(null)
-  const orig = useRef(s.translated_text ?? '')
-  const rows = (s.translated_text ?? '')
+  const orig = useRef(textOf(s, field))
+  const rows = textOf(s, field)
     .split('\n')
     .filter((l) => l.trim())
     .map((l) => (l.includes(' | ') ? l.split(' | ') : [l]))
@@ -290,26 +386,26 @@ function TableBlock({ s, onSaved }: { s: Segment; onSaved: (m: string) => void }
       .map((r) => Array.from(r.cells).map((c) => c.textContent ?? '').join(' | '))
       .join('\n')
     if (text === orig.current) return
-    onSaved('Сохранение…')
+    onSaved?.('Сохранение…')
     try {
       await api.patchSegment(s.id, text)
       orig.current = text
-      onSaved('Сохранено')
+      onSaved?.('Сохранено')
     } catch {
-      onSaved('Ошибка сохранения')
+      onSaved?.('Ошибка сохранения')
     }
-    setTimeout(() => onSaved(''), 2000)
+    setTimeout(() => onSaved?.(''), 2000)
   }
 
   return (
-    <table ref={ref} onBlur={save} className="w-full border-collapse text-sm">
+    <table ref={ref} onBlur={editable ? save : undefined} className="w-full border-collapse text-sm">
       <tbody>
         {rows.map((cells, ri) => (
           <tr key={ri} className={ri === 0 ? 'bg-muted/50 font-medium' : ''}>
             {cells.map((c, ci) => (
               <td
                 key={ci}
-                contentEditable
+                contentEditable={editable}
                 suppressContentEditableWarning
                 colSpan={cells.length === 1 ? 99 : 1}
                 className="border border-border px-2.5 py-1 align-top outline-none focus:bg-accent/40"
@@ -321,76 +417,5 @@ function TableBlock({ s, onSaved }: { s: Segment; onSaved: (m: string) => void }
         ))}
       </tbody>
     </table>
-  )
-}
-
-// --- OOXML-путь (оригинал | перевод) ---------------------------------------
-
-function SegmentRow({
-  s,
-  cited,
-  showSource,
-  onSaved,
-  onPick,
-}: {
-  s: Segment
-  cited: boolean
-  showSource: boolean
-  onSaved: (m: string) => void
-  onPick?: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  const orig = useRef(s.translated_text ?? '')
-  const [review, setReview] = useState(s.needs_review)
-  const heading = s.kind === 'heading'
-
-  async function save() {
-    const text = ref.current?.textContent ?? ''
-    if (text === orig.current) return
-    onSaved('Сохранение…')
-    try {
-      await api.patchSegment(s.id, text)
-      orig.current = text
-      setReview(false)
-      onSaved('Сохранено')
-    } catch {
-      onSaved('Ошибка сохранения')
-    }
-    setTimeout(() => onSaved(''), 2000)
-  }
-
-  return (
-    <div
-      data-seg={s.id}
-      onClick={onPick}
-      className={
-        'rounded-lg bg-card px-3 py-2 shadow-sm transition-colors ' +
-        (showSource ? 'grid grid-cols-[28px_1fr_1fr] gap-3 ' : 'grid grid-cols-[28px_1fr] gap-3 ') +
-        (review ? 'outline outline-2 outline-amber-400 ' : '') +
-        (cited ? 'outline outline-2 outline-primary ' : '')
-      }
-    >
-      <div className="pt-1 text-[11px] text-muted-foreground">{s.idx}</div>
-      {showSource && (
-        <div className={'whitespace-pre-wrap px-2 py-1 text-sm text-foreground/80 ' + (heading ? 'font-bold' : '')}>
-          {s.source_text}
-          {review && (
-            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800">проверить числа</span>
-          )}
-        </div>
-      )}
-      <div
-        ref={ref}
-        contentEditable
-        suppressContentEditableWarning
-        onBlur={save}
-        className={
-          'whitespace-pre-wrap rounded-md border border-transparent px-2 py-1 text-sm outline-none hover:border-border focus:border-primary focus:bg-accent/40 ' +
-          (heading ? 'font-bold' : '')
-        }
-      >
-        {s.translated_text ?? ''}
-      </div>
-    </div>
   )
 }
