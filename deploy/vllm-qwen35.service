@@ -1,0 +1,38 @@
+# vLLM Qwen3.5-35B-A3B-GPTQ-Int4 — воркхорс (перевод + RAG-чат + structured-output),
+# GPU3, порт 8006 (занимает слот ретайрнутого Hunyuan-MT-7B; roadmap § 12.1 п.2).
+# MoE 35B/3B-активных, гибрид Gated-DeltaNet: на старте JIT-компиляция CUDA-расширения
+# → нужен ninja (он в венв-bin, PATH ниже его подхватывает). float16 падает → строго
+# bfloat16; FP8-compute на Ampere невозможен → веса INT4 (gptq_marlin), kv-кэш fp8
+# (формат памяти). enforce-eager НЕ ставим: CUDA-графы безопасны и дают ×3.8 скорости
+# (A/B 2026-06-15: 34с/300, качество держится).
+[Unit]
+Description=vLLM Qwen3.5-35B-A3B (GPU3, :8006)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=3
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# GPU3 — NUMA node1
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3.5-35B-A3B-GPTQ-Int4 \
+    --served-model-name qwen3.5-35b-a3b \
+    --quantization gptq_marlin \
+    --dtype bfloat16 \
+    --kv-cache-dtype fp8 \
+    --host 127.0.0.1 \
+    --port 8006 \
+    --gpu-memory-utilization 0.9 \
+    --max-model-len 8192 \
+    --trust-remote-code
+Restart=always
+RestartSec=10
+TimeoutStartSec=1200
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

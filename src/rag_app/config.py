@@ -36,10 +36,12 @@ class Settings(BaseSettings):
     translate_concurrency: int = 12
     translate_max_retries: int = 3
 
-    # --- Быстрый контур виджета: Hunyuan-MT-7B, GPU3 (roadmap § 4.1/4.3) ---
+    # --- Быстрый контур виджета: HY-MT1.5-7B, GPU1 :8005 (roadmap § 12.1 п.5) ---
+    # Преемник WMT25-чемпиона Hunyuan-MT-7B (A/B 2026-06-15: нативный шаблон 0.8303,
+    # лучший средний, 0% мусора, 43с). Тот же промпт-формат, та же arch hunyuan_v1_dense.
     fast_llm_enabled: bool = True
-    fast_llm_base_url: str = "http://127.0.0.1:8004/v1"
-    fast_llm_model: str = "hunyuan-mt-7b"
+    fast_llm_base_url: str = "http://127.0.0.1:8005/v1"
+    fast_llm_model: str = "hy-mt1.5-7b"
     selection_max_chars: int = 4000
     web_translate_max_items: int = 300
     web_translate_concurrency: int = 16

@@ -1,8 +1,8 @@
-"""Быстрый контур перевода для виджета (roadmap § 3.3.C, § 4.1).
+"""Быстрый контур перевода для виджета (roadmap § 3.3.C, § 4.1, § 12.1 п.5).
 
-Hunyuan-MT-7B (WMT2025, 30/31 направлений) на GPU3 — низкая латентность для
-перевода выделения и страниц; изолирован от batch-нагрузки Qwen3.
-При недоступности — фолбэк на основной контур (Qwen3-32B, без глоссария).
+HY-MT1.5-7B (преемник WMT25-чемпиона Hunyuan-MT-7B) на GPU1 :8005 — низкая
+латентность для перевода выделения и страниц; изолирован от batch-нагрузки
+воркхорса. При недоступности — фолбэк на основной контур (без глоссария).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from rag_app.llm.client import needs_translation
 
 logger = logging.getLogger(__name__)
 
-# Официальный промпт-формат Hunyuan-MT (XX→XX, кроме китайских пар)
+# Официальный промпт-формат HY-MT / Hunyuan-MT (XX→XX, кроме китайских пар) — общий
 _HY_PROMPT = "Translate the following segment into {lang}, without additional explanation.\n\n{text}"
 _LANG_NAMES = {"ru": "Russian", "en": "English"}
 

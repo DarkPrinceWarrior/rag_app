@@ -80,10 +80,12 @@ adaptive agentic-RAG-чат с цитатами — классификатор s
 `rag/agent.py`, § 5 п.7 — библиотека, браузерное расширение `extension/` на WXT,
 SSO/RBAC/аудит/Langfuse, нагрузочное 20 документов). Оставшиеся доделки и план
 обновления моделей — `docs/roadmap.md` § 12.1 и журнал (последняя строка 📋).
-LLM-сервисы на a100: Qwen3-32B-AWQ GPU0 `:8001`, Hunyuan-MT-7B GPU3 `:8004`,
-Qwen3-Embedding-0.6B GPU4 `:8002`, Qwen3-Reranker-4B GPU4 `:8003`,
-Qwen3-VL-Embedding-8B GPU5 `:8007` — визуальный поиск по сканам
-(systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1).
+LLM-сервисы на a100 (после прод-перехода 2026-06-15, roadmap § 12.1):
+**Qwen3.5-35B-A3B GPU3 `:8006` — воркхорс** (перевод + RAG-чат, GPTQ-Int4 no-eager);
+**HY-MT1.5-7B GPU1 `:8005` — быстрый контур** (преемник Hunyuan-MT, ретайрнут);
+Qwen3-32B-AWQ GPU0 `:8001` — фолбэк; Qwen3-Embedding-0.6B GPU4 `:8002`,
+Qwen3-Reranker-4B GPU4 `:8003`, Qwen3-VL-Embedding-8B GPU5 `:8007` — визуальный
+поиск по сканам (systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1).
 Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,
 Keycloak `:8180`) + `deploy/langfuse/` (`:8200`) + `deploy/monitoring/`
 (Prometheus `:9090`, Grafana `:3001`, скрейпит публичный `/metrics` API);
