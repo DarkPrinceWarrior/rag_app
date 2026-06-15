@@ -30,6 +30,8 @@ class SegmentOut(BaseModel):
     # геометрия для pdf.js-вьювера (§ 7): bbox в пунктах + размер страницы
     bbox: list[float] | None = None
     page_size: list[float] | None = None
+    # сырые ячейки таблицы со спанами — для рендера объединённых ячеек в UI
+    table_cells: list[list[dict]] | None = None
 
     @classmethod
     def from_segment(cls, s: Segment) -> SegmentOut:
@@ -37,6 +39,7 @@ class SegmentOut(BaseModel):
         meta = s.meta or {}
         out.bbox = meta.get("bbox_pt")
         out.page_size = meta.get("page_size_pt")
+        out.table_cells = meta.get("table_cells")
         return out
 
 

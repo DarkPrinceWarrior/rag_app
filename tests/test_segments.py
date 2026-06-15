@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from rag_app.db.models import SegmentKind
-from rag_app.pipeline.segments import content_list_to_segments, parse_table_html
+from rag_app.pipeline.segments import content_list_to_segments, parse_table, parse_table_html
 
 
 def test_table_html_parsing() -> None:
@@ -25,6 +25,31 @@ def test_table_colspan_rowspan_grid() -> None:
     grid = parse_table_html(html)
     assert grid == [["Pump", "500 rpm", ""], ["", "Flow", "Head"], ["A", "1", "2"]]
     assert len({len(r) for r in grid}) == 1  # все строки одной ширины
+    # сырые ячейки со спанами — для merged-рендера в UI
+    cells, _ = parse_table(html)
+    assert cells[0] == [
+        {"text": "Pump", "colspan": 1, "rowspan": 2},
+        {"text": "500 rpm", "colspan": 2, "rowspan": 1},
+    ]
+    assert cells[1] == [
+        {"text": "Flow", "colspan": 1, "rowspan": 1},
+        {"text": "Head", "colspan": 1, "rowspan": 1},
+    ]
+
+
+def test_table_segment_carries_cells() -> None:
+    items = [
+        {
+            "type": "table",
+            "table_body": "<table><tr><td colspan=2>H</td></tr><tr><td>a</td><td>b</td></tr></table>",
+            "page_idx": 0,
+        }
+    ]
+    seg = content_list_to_segments(items)[0]
+    assert seg.kind == SegmentKind.table
+    assert seg.meta["table_cells"][0][0] == {"text": "H", "colspan": 2, "rowspan": 1}
+    # превью построчно — одна строка на строку таблицы
+    assert seg.source_text == "H\na | b"
 
 
 def test_content_list_mapping() -> None:

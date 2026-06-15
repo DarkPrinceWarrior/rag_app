@@ -17,20 +17,25 @@ export interface Highlight {
 
 const SCALE = 1.4
 
+/** Контролируемая страница: `page` приходит сверху, стрелки зовут `onPageChange`
+ *  (правая панель перевода листается синхронно). numPages сообщается наверх. */
 export function PdfPane({
   docId,
+  page,
   highlight,
-  pageHint,
+  onPageChange,
+  onNumPages,
 }: {
   docId: string
+  page: number
   highlight: Highlight | null
-  pageHint?: number
+  onPageChange: (p: number) => void
+  onNumPages?: (n: number) => void
 }) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const [numPages, setNumPages] = useState(0)
-  const [pageNum, setPageNum] = useState(1)
   const [err, setErr] = useState('')
 
   useEffect(() => {
@@ -47,6 +52,7 @@ export function PdfPane({
         if (cancelled) return
         pdfRef.current = pdf
         setNumPages(pdf.numPages)
+        onNumPages?.(pdf.numPages)
       } catch (e) {
         if (!cancelled) setErr(String(e))
       }
@@ -54,34 +60,24 @@ export function PdfPane({
     return () => {
       cancelled = true
     }
-  }, [docId])
+  }, [docId, onNumPages])
 
-  // цитата/выбор → перейти на нужную страницу
-  useEffect(() => {
-    if (highlight) setPageNum(highlight.page)
-  }, [highlight])
-
-  // прокрутка перевода справа → синхронно листаем оригинал слева
-  useEffect(() => {
-    if (pageHint && pageHint >= 1 && pageHint <= numPages) setPageNum(pageHint)
-  }, [pageHint, numPages])
-
-  // рендер страницы + bbox-оверлей
+  // рендер текущей страницы + bbox-оверлей
   useEffect(() => {
     const pdf = pdfRef.current
     const canvas = canvasRef.current
-    if (!pdf || !canvas || pageNum < 1 || pageNum > numPages) return
+    if (!pdf || !canvas || page < 1 || page > numPages) return
     let cancelled = false
     ;(async () => {
-      const page = await pdf.getPage(pageNum)
+      const pg = await pdf.getPage(page)
       if (cancelled) return
-      const viewport = page.getViewport({ scale: SCALE })
+      const viewport = pg.getViewport({ scale: SCALE })
       canvas.width = viewport.width
       canvas.height = viewport.height
       const ctx = canvas.getContext('2d')!
-      await page.render({ canvasContext: ctx, viewport, canvas }).promise
+      await pg.render({ canvasContext: ctx, viewport, canvas }).promise
       const box = boxRef.current!
-      if (highlight && highlight.page === pageNum && highlight.bbox.length === 4 && highlight.pageSize.length === 2) {
+      if (highlight && highlight.page === page && highlight.bbox.length === 4 && highlight.pageSize.length === 2) {
         const [x0, y0, x1, y1] = highlight.bbox
         const sx = viewport.width / highlight.pageSize[0]
         const sy = viewport.height / highlight.pageSize[1]
@@ -97,22 +93,23 @@ export function PdfPane({
     return () => {
       cancelled = true
     }
-  }, [pageNum, numPages, highlight])
+  }, [page, numPages, highlight])
 
   if (err) return <div className="p-4 text-sm text-destructive">Не удалось открыть PDF: {err}</div>
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-        <Button variant="ghost" size="sm" disabled={pageNum <= 1} onClick={() => setPageNum((p) => p - 1)}>
+        <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
           ←
         </Button>
         <span className="text-muted-foreground">
-          стр. {pageNum} / {numPages || '…'}
+          стр. {page} / {numPages || '…'}
         </span>
-        <Button variant="ghost" size="sm" disabled={pageNum >= numPages} onClick={() => setPageNum((p) => p + 1)}>
+        <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => onPageChange(page + 1)}>
           →
         </Button>
+        <span className="ml-auto text-xs text-muted-foreground">оригинал</span>
       </div>
       <div className="flex-1 overflow-auto bg-muted/40 p-3">
         <div className="relative mx-auto w-fit shadow">

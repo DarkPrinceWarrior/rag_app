@@ -97,6 +97,31 @@ class _TableHTMLParser(HTMLParser):
             out.append(row)
         return out
 
+    def cells(self) -> list[list[dict[str, Any]]]:
+        """Сырые строки с сохранением спанов — для рендера merged-ячеек в UI.
+
+        Текст ячейки приводится к одной строке (внутренние переводы строк —
+        в пробел), чтобы число строк превью совпадало с числом строк таблицы
+        (перевод сохраняет разметку построчно).
+        """
+        out: list[list[dict[str, Any]]] = []
+        for raw_row in self._raw:
+            row = [
+                {"text": " ".join(t.split()), "colspan": cs, "rowspan": rs}
+                for (t, cs, rs) in raw_row
+            ]
+            if any(c["text"] for c in row):
+                out.append(row)
+        return out
+
+
+def parse_table(html: str) -> tuple[list[list[dict[str, Any]]], list[list[str]]]:
+    """(сырые ячейки со спанами, ровная сетка) из <table> HTML."""
+    parser = _TableHTMLParser()
+    parser.feed(html or "")
+    grid = [row for row in parser.grid() if any(cell.strip() for cell in row)]
+    return parser.cells(), grid
+
 
 def parse_table_html(html: str) -> list[list[str]]:
     parser = _TableHTMLParser()
@@ -168,18 +193,22 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
             )
 
         elif itype == "table":
-            rows = parse_table_html(item.get("table_body") or "")
+            cells, rows = parse_table(item.get("table_body") or "")
             caption = _join_captions(item.get("table_caption"), item.get("table_footnote"))
-            if not rows and not caption:
+            if not cells and not caption:
                 continue
-            preview = "\n".join(" | ".join(row) for row in rows)
+            # превью для перевода/RAG — по СЫРЫМ ячейкам (одна строка на строку
+            # таблицы): так перевод построчно совпадает с table_cells, и UI может
+            # восстановить объединённые ячейки (colspan/rowspan) с переводом.
+            preview = "\n".join(" | ".join(c["text"] for c in row) for row in cells)
             drafts.append(
                 SegmentDraft(
                     0,
                     SegmentKind.table,
                     source_text=(caption + "\n" + preview).strip(),
                     page_idx=page_idx,
-                    meta={**base_meta, "table_rows": rows, "caption": caption},
+                    # table_cells — для merged-рендера; table_rows — ровная сетка для RAG/экспорта
+                    meta={**base_meta, "table_cells": cells, "table_rows": rows, "caption": caption},
                 )
             )
 

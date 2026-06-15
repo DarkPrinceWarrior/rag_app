@@ -55,6 +55,13 @@ export interface Segment {
   validation: Record<string, unknown> | null
   bbox?: number[] | null
   page_size?: number[] | null
+  table_cells?: TableCell[][] | null
+}
+
+export interface TableCell {
+  text: string
+  colspan: number
+  rowspan: number
 }
 
 export interface Citation {

@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, type Segment } from '@/lib/api'
+import { api, type Segment, type TableCell } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 
@@ -25,48 +25,42 @@ function highlightOf(s: Segment): Highlight | null {
 
 function Viewer() {
   const { id } = Route.useParams()
-  const { seg, page } = Route.useSearch()
+  const { seg, page: pageParam } = Route.useSearch()
   const [msg, setMsg] = useState('')
   const [cited, setCited] = useState<string | null>(null)
   const [active, setActive] = useState<Highlight | null>(null)
-  // какая страница оригинала (слева) показывается — следует за прокруткой перевода
-  const [pageHint, setPageHint] = useState(1)
-  const rightRef = useRef<HTMLDivElement>(null)
-
-  // scroll-spy: верхняя видимая страница перевода → переключаем оригинал слева
-  function syncPage() {
-    const cont = rightRef.current
-    if (!cont) return
-    const threshold = cont.getBoundingClientRect().top + 64
-    let cur = 1
-    cont.querySelectorAll<HTMLElement>('[data-page]').forEach((el) => {
-      if (el.getBoundingClientRect().top <= threshold) cur = Number(el.dataset.page)
-    })
-    setPageHint(cur)
-  }
+  // текущая страница (общая для оригинала слева и перевода справа)
+  const [page, setPage] = useState(1)
+  const [numPages, setNumPages] = useState(0)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
   const isPdf = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
 
-  // переход от цитаты/поиска: bbox на PDF + скролл и подсветка в тексте
+  // переход от цитаты/поиска: страница + bbox + подсветка в тексте
   useEffect(() => {
     if (!segsQ.data) return
     if (seg) {
       const s = segsQ.data.find((x) => x.id === seg)
       if (s) {
+        if (s.page_idx != null) setPage(s.page_idx + 1)
         const h = highlightOf(s)
         if (h) setActive(h)
-        document.querySelector(`[data-seg="${seg}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
         setCited(seg)
-        const t = setTimeout(() => setCited(null), 4000)
-        return () => clearTimeout(t)
+        const t = setTimeout(() => {
+          document.querySelector(`[data-seg="${seg}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        }, 50)
+        const t2 = setTimeout(() => setCited(null), 4000)
+        return () => {
+          clearTimeout(t)
+          clearTimeout(t2)
+        }
       }
-    } else if (page != null) {
-      if (isPdf) setActive({ page, bbox: [], pageSize: [] })
-      else document.getElementById(`page-${page}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    } else if (pageParam != null) {
+      if (isPdf) setPage(pageParam)
+      else document.getElementById(`page-${pageParam}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     }
-  }, [segsQ.data, seg, page, isPdf])
+  }, [segsQ.data, seg, pageParam, isPdf])
 
   async function reexport() {
     setMsg('Экспорт в очереди…')
@@ -97,41 +91,54 @@ function Viewer() {
 
   const segs = segsQ.data ?? []
 
-  // PDF: слева канвас оригинала с подсветкой bbox, справа перевод —
-  // сплошным документом с сохранением структуры (заголовки/списки/таблицы).
+  // PDF: слева оригинал постранично, справа перевод ТОЙ ЖЕ страницы; листаются синхронно.
   if (isPdf) {
+    const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
     return (
       <div>
         {header}
         <div className="flex h-[calc(100vh-97px)]">
           <div className="w-1/2 border-r">
-            <PdfPane docId={id} highlight={active} pageHint={pageHint} />
+            <PdfPane docId={id} page={page} highlight={active} onPageChange={setPage} onNumPages={setNumPages} />
           </div>
-          <div ref={rightRef} onScroll={syncPage} className="w-1/2 overflow-auto">
-            <p className="border-b px-6 py-2 text-xs text-muted-foreground">
-              Клик по фрагменту — подсветка в оригинале слева. Правка сохраняется по клику вне поля.
-            </p>
-            <article className="mx-auto max-w-3xl px-6 py-4">
-              <DocFlow
-                segs={segs}
-                field="translated"
-                editable
-                citedId={cited}
-                onSaved={setMsg}
-                onPick={(s) => {
-                  const h = highlightOf(s)
-                  if (h) setActive(h)
-                }}
-              />
-            </article>
+          <div className="flex w-1/2 flex-col">
+            <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
+              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                ←
+              </Button>
+              <span className="text-muted-foreground">
+                стр. {page} / {numPages || '…'}
+              </span>
+              <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
+                →
+              </Button>
+              <span className="ml-auto text-xs text-muted-foreground">
+                перевод · клик по фрагменту — подсветка слева
+              </span>
+            </div>
+            <div className="flex-1 overflow-auto">
+              <article className="mx-auto max-w-3xl px-6 py-4">
+                <DocFlow
+                  segs={pageSegs}
+                  field="translated"
+                  editable
+                  showPages={false}
+                  citedId={cited}
+                  onSaved={setMsg}
+                  onPick={(s) => {
+                    const h = highlightOf(s)
+                    if (h) setActive(h)
+                  }}
+                />
+              </article>
+            </div>
           </div>
         </div>
       </div>
     )
   }
 
-  // не-PDF (OOXML / txt): оригинал | перевод — оба сплошным документом,
-  // структура как в оригинале (без разбиения на карточки-секции).
+  // не-PDF (OOXML / txt): оригинал | перевод — оба сплошным документом со структурой.
   return (
     <div>
       {header}
@@ -169,6 +176,7 @@ function DocFlow({
   field,
   editable,
   citedId,
+  showPages = true,
   onSaved,
   onPick,
 }: {
@@ -176,6 +184,7 @@ function DocFlow({
   field: Field
   editable: boolean
   citedId: string | null
+  showPages?: boolean
   onSaved?: (m: string) => void
   onPick?: (s: Segment) => void
 }) {
@@ -184,7 +193,7 @@ function DocFlow({
   let i = 0
   while (i < segs.length) {
     const s = segs[i]
-    if (s.page_idx != null && s.page_idx !== lastPage) {
+    if (showPages && s.page_idx != null && s.page_idx !== lastPage) {
       lastPage = s.page_idx
       nodes.push(<PageSep key={`p-${s.id}`} n={s.page_idx + 1} />)
     }
@@ -358,8 +367,7 @@ function Editable({
     setTimeout(() => onSaved?.(''), 2000)
   }
 
-  if (!editable)
-    return <div className={'whitespace-pre-wrap ' + className}>{value}</div>
+  if (!editable) return <div className={'whitespace-pre-wrap ' + className}>{value}</div>
 
   return (
     <div
@@ -376,8 +384,66 @@ function Editable({
   )
 }
 
-/** Таблица как настоящая <table>; правка ячеек реасемблируется в '|'-формат. */
+/** Таблица с настоящими объединёнными ячейками (colSpan/rowSpan) из table_cells.
+ *  Перевод берётся построчно из translated_text (та же разметка `\n` и ` | `).
+ *  Документы без table_cells (старый парс) — старый рендер из текста. */
 function TableBlock({
+  s,
+  field,
+  editable,
+  onSaved,
+}: {
+  s: Segment
+  field: Field
+  editable: boolean
+  onSaved?: (m: string) => void
+}) {
+  const cells = s.table_cells
+  if (!cells || cells.length === 0) return <LegacyTable s={s} field={field} editable={editable} onSaved={onSaved} />
+
+  // translated_text = [строки подписи] + N строк ячеек (по одной на строку таблицы)
+  const lines = textOf(s, field)
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
+  const n = cells.length
+  const capLines = lines.slice(0, Math.max(0, lines.length - n))
+  const cellLines = lines.slice(Math.max(0, lines.length - n))
+  // строки шапки = сколько строк накрывает rowspan первой строки
+  const headerRows = Math.max(1, ...cells[0].map((c) => c.rowspan))
+
+  const cellText = (c: TableCell, ri: number, ci: number): string => {
+    if (field === 'source') return c.text
+    const parts = (cellLines[ri] ?? '').split(' | ')
+    return parts[ci] ?? c.text // если перевод сбил разметку — исходный текст ячейки
+  }
+
+  return (
+    <div className="my-2 overflow-x-auto">
+      {capLines.length > 0 && <div className="mb-1 text-xs font-medium text-muted-foreground">{capLines.join(' ')}</div>}
+      <table className="border-collapse text-sm">
+        <tbody>
+          {cells.map((row, ri) => (
+            <tr key={ri} className={ri < headerRows ? 'bg-muted/50 font-medium' : ''}>
+              {row.map((c, ci) => (
+                <td
+                  key={ci}
+                  colSpan={c.colspan > 1 ? c.colspan : undefined}
+                  rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
+                  className="border border-border px-2.5 py-1 align-top"
+                >
+                  {cellText(c, ri, ci)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Фолбэк для документов без table_cells: ячейки из ` | `-текста, редактируемые. */
+function LegacyTable({
   s,
   field,
   editable,
@@ -416,14 +482,14 @@ function TableBlock({
   return (
     <table ref={ref} onBlur={editable ? save : undefined} className="w-full border-collapse text-sm">
       <tbody>
-        {rows.map((cells, ri) => (
+        {rows.map((rowCells, ri) => (
           <tr key={ri} className={ri === 0 ? 'bg-muted/50 font-medium' : ''}>
-            {cells.map((c, ci) => (
+            {rowCells.map((c, ci) => (
               <td
                 key={ci}
                 contentEditable={editable}
                 suppressContentEditableWarning
-                colSpan={cells.length === 1 ? 99 : 1}
+                colSpan={rowCells.length === 1 ? 99 : 1}
                 className="border border-border px-2.5 py-1 align-top outline-none focus:bg-accent/40"
               >
                 {c}
