@@ -205,27 +205,49 @@ async def _translate_validated(
 async def _translate_segment(translator: Translator, seg: Segment, context: SegmentContext) -> dict[str, Any]:
     """Возвращает values для UPDATE сегмента."""
     if seg.kind == SegmentKind.table:
-        rows: list[list[str]] = seg.meta.get("table_rows") or []
+        grid: list[list[str]] = seg.meta.get("table_rows") or []
+        cells: list[list[dict[str, Any]]] | None = seg.meta.get("table_cells")
         caption: str = seg.meta.get("caption") or ""
-        rows_ru: list[list[str]] = []
         failures: list[dict[str, Any]] = []
-        for r_i, row in enumerate(rows):
-            row_ru: list[str] = []
-            for c_i, cell in enumerate(row):
-                cell_ru, vr = await _translate_validated(translator, cell, context)
-                row_ru.append(cell_ru)
-                if not vr.ok:
-                    failures.append({"row": r_i, "col": c_i, **vr.as_dict()})
-            rows_ru.append(row_ru)
-        caption_ru, cap_vr = await _translate_validated(translator, caption, context)
-        if not cap_vr.ok:
-            failures.append({"caption": True, **cap_vr.as_dict()})
+        cache: dict[str, str] = {}  # перевод каждой уникальной ячейки один раз
+
+        async def tr(text: str, loc: dict[str, Any] | None = None) -> str:
+            if text not in cache:
+                ru, vr = await _translate_validated(translator, text, context)
+                cache[text] = ru
+                if not vr.ok and loc is not None:
+                    failures.append({**loc, **vr.as_dict()})
+            return cache[text]
+
         meta = dict(seg.meta)
+        meta["caption_ru"] = await tr(caption, {"caption": True}) if caption else ""
+
+        # ровная сетка → table_rows_ru (нужна DOCX-экспорту, export_docx.py)
+        rows_ru: list[list[str]] = []
+        for r_i, row in enumerate(grid):
+            row_ru = [await tr(cell, {"row": r_i, "col": c_i}) for c_i, cell in enumerate(row)]
+            rows_ru.append(row_ru)
         meta["table_rows_ru"] = rows_ru
-        meta["caption_ru"] = caption_ru
-        preview = "\n".join(" | ".join(r) for r in rows_ru)
+
+        # сырые ячейки со спанами → table_cells_ru (для merged-рендера во вьювере,
+        # перевод по позиции ячейки — подзаголовки не «уезжают»). Кэш переиспользует
+        # уже переведённые тексты из сетки выше.
+        if cells:
+            cells_ru: list[list[dict[str, Any]]] = []
+            for row in cells:
+                row_ru_cells: list[dict[str, Any]] = []
+                for c in row:
+                    row_ru_cells.append(
+                        {"text": await tr(c["text"]), "colspan": c["colspan"], "rowspan": c["rowspan"]}
+                    )
+                cells_ru.append(row_ru_cells)
+            meta["table_cells_ru"] = cells_ru
+            preview = "\n".join(" | ".join(c["text"] for c in row) for row in cells_ru)
+        else:
+            preview = "\n".join(" | ".join(r) for r in rows_ru)
+
         return {
-            "translated_text": (caption_ru + "\n" + preview).strip(),
+            "translated_text": (meta["caption_ru"] + "\n" + preview).strip(),
             "meta": meta,
             "needs_review": bool(failures),
             "validation": {"cells": failures} if failures else None,

@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, type Segment, type TableCell } from '@/lib/api'
+import { api, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 
@@ -399,8 +399,26 @@ function Editable({
   )
 }
 
-/** Таблица с настоящими объединёнными ячейками (colSpan/rowSpan) из table_cells.
- *  Перевод берётся построчно из translated_text (та же разметка `\n` и ` | `).
+// MinerU иногда отдаёт формулы/«°C» как ломаный LaTeX ($1 3 0 ^ { \circ } \complement$).
+// Чистим к читаемому виду для отображения (правка таблиц read-only — безопасно).
+function cleanMath(s: string): string {
+  return s
+    .replace(/\$([^$]*)\$/g, (_m, x) => x)
+    .replace(/\^?\s*\{\s*\\circ\s*\}/g, '°')
+    .replace(/\\circ/g, '°')
+    .replace(/\\complement/g, 'C')
+    .replace(/\\times/g, '×')
+    .replace(/\\,/g, ' ')
+    .replace(/\^\{\s*([^}]*)\}/g, '$1')
+    .replace(/[{}]/g, '')
+    .replace(/\\\*/g, '*')
+    .replace(/\s*°\s*C/g, ' °C')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+/** Таблица с объединёнными ячейками (colSpan/rowSpan). Перевод берётся ПО ПОЗИЦИИ
+ *  ячейки из table_cells_ru (а не из ` | `-блоба) — подзаголовки не «уезжают».
  *  Документы без table_cells (старый парс) — старый рендер из текста. */
 function TableBlock({
   s,
@@ -413,28 +431,17 @@ function TableBlock({
   editable: boolean
   onSaved?: (m: string) => void
 }) {
-  const cells = s.table_cells
+  const cells = field === 'source' ? s.table_cells : (s.table_cells_ru ?? s.table_cells)
   if (!cells || cells.length === 0) return <LegacyTable s={s} field={field} editable={editable} onSaved={onSaved} />
-
-  // translated_text = [строки подписи] + N строк ячеек (по одной на строку таблицы)
-  const lines = textOf(s, field)
-    .split('\n')
-    .filter((l) => l.trim().length > 0)
-  const n = cells.length
-  const capLines = lines.slice(0, Math.max(0, lines.length - n))
-  const cellLines = lines.slice(Math.max(0, lines.length - n))
+  const caption = field === 'source' ? s.caption : (s.caption_ru ?? s.caption)
   // строки шапки = сколько строк накрывает rowspan первой строки
   const headerRows = Math.max(1, ...cells[0].map((c) => c.rowspan))
 
-  const cellText = (c: TableCell, ri: number, ci: number): string => {
-    if (field === 'source') return c.text
-    const parts = (cellLines[ri] ?? '').split(' | ')
-    return parts[ci] ?? c.text // если перевод сбил разметку — исходный текст ячейки
-  }
-
   return (
     <div className="my-2 overflow-x-auto">
-      {capLines.length > 0 && <div className="mb-1 text-xs font-medium text-muted-foreground">{capLines.join(' ')}</div>}
+      {caption && (
+        <div className="mb-1 whitespace-pre-line text-xs font-medium text-muted-foreground">{cleanMath(caption)}</div>
+      )}
       <table className="border-collapse text-sm">
         <tbody>
           {cells.map((row, ri) => (
@@ -446,7 +453,7 @@ function TableBlock({
                   rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
                   className="border border-border px-2.5 py-1 align-top"
                 >
-                  {cellText(c, ri, ci)}
+                  {cleanMath(c.text)}
                 </td>
               ))}
             </tr>

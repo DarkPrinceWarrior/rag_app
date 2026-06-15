@@ -56,6 +56,9 @@ export interface Segment {
   bbox?: number[] | null
   page_size?: number[] | null
   table_cells?: TableCell[][] | null
+  table_cells_ru?: TableCell[][] | null
+  caption?: string | null
+  caption_ru?: string | null
 }
 
 export interface TableCell {
