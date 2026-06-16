@@ -31,6 +31,7 @@ from rag_app.db.models import (
 )
 from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
 from rag_app.llm.embeddings import Embedder
+from rag_app.llm.vision import VisionClient
 from rag_app.llm.visual import VisualEmbedder
 from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
@@ -424,6 +425,14 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
             )
             await session.commit()
         logger.info("index %s: %d чанков", doc_id, len(drafts))
+        # pdf_scan (скан/чертёж/P&ID): дообогащаем VL-описанием смысла изображения
+        # и переиндексируем. Маркер meta.vl_describe на сегментах не даёт зациклиться.
+        if settings.vl_enabled and not any((s.meta or {}).get("vl_describe") for s in segments):
+            doc = await _get_doc(ctx, doc_id)
+            if doc.kind == DocumentKind.pdf_scan.value:
+                await ctx["redis"].enqueue_job(
+                    "describe_images", doc_id_str, _job_id=f"vl:{doc_id}:{uuid.uuid4().hex[:8]}"
+                )
         return f"indexed: {len(drafts)} chunks"
     except Exception as exc:
         logger.exception("index %s failed", doc_id)
@@ -433,6 +442,114 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
             )
             await session.commit()
         raise
+
+
+# ---------------------------------------------------------------- VL: описание рисунков
+
+def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, scale: float) -> list[tuple[int, bytes]]:
+    """Страницы PDF → PNG (pypdfium2). pdfium не потокобезопасен — под общим локом."""
+    import io
+
+    import pypdfium2 as pdfium
+
+    out: list[tuple[int, bytes]] = []
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            for i in range(min(len(pdf), max_pages)):
+                pil = pdf[i].render(scale=scale).to_pil().convert("RGB")
+                buf = io.BytesIO()
+                pil.save(buf, format="PNG")
+                out.append((i, buf.getvalue()))
+        finally:
+            pdf.close()
+    return out
+
+
+async def describe_images(ctx: dict, doc_id_str: str) -> str:
+    """VL-обогащение сканов/чертежей (pdf_scan): рендерим страницы → Qwen3-VL
+    раскрывает СМЫСЛ изображения по-русски → сегменты-описания (kind=image) →
+    переиндексация. Для P&ID/чертежей/фото, где OCR извлекает мало текста."""
+    if not settings.vl_enabled:
+        return "vl disabled"
+    doc_id = uuid.UUID(doc_id_str)
+    storage: Storage = ctx["storage"]
+    doc = await _get_doc(ctx, doc_id)
+    if doc.kind != DocumentKind.pdf_scan.value:
+        return f"skip: kind={doc.kind}"
+    try:
+        with tempfile.TemporaryDirectory(prefix="rag_vl_") as tmp:
+            local = Path(tmp) / Path(doc.filename).name
+            await storage.download_to(settings.bucket_originals, doc.s3_key_original, local)
+            pages = await asyncio.to_thread(
+                _render_pdf_pages, local.read_bytes(), settings.vl_max_pages, settings.vl_render_scale
+            )
+        vision = VisionClient()
+        described: list[tuple[int, str]] = []
+        for pidx, png in pages:
+            try:
+                desc = await vision.describe(png)
+            except Exception as exc:  # noqa: BLE001 — страница пропускается, не валим документ
+                logger.warning("vl describe %s p%d: %s", doc_id, pidx, exc)
+                continue
+            if desc:
+                described.append((pidx, desc))
+        if not described:
+            return "vl: нет описаний"
+
+        async with ctx["sessionmaker"]() as session:
+            # идемпотентность: убрать прежние VL-описания этого документа
+            await session.execute(
+                delete(Segment).where(
+                    Segment.document_id == doc_id,
+                    Segment.meta.op("->>")("vl_describe") == "true",
+                )
+            )
+            base_idx = (
+                await session.execute(
+                    select(func.coalesce(func.max(Segment.idx), 0)).where(
+                        Segment.document_id == doc_id
+                    )
+                )
+            ).scalar_one()
+            for i, (pidx, desc) in enumerate(described, 1):
+                session.add(
+                    Segment(
+                        document_id=doc_id,
+                        idx=base_idx + i,
+                        page_idx=pidx,
+                        kind=SegmentKind.image,
+                        source_text=desc,
+                        translated_text=desc,  # VL уже выдаёт русский — переводить нечего
+                        meta={"vl_describe": True},
+                    )
+                )
+            cnt = (
+                await session.execute(
+                    select(func.count()).select_from(Segment).where(Segment.document_id == doc_id)
+                )
+            ).scalar_one()
+            trc = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Segment)
+                    .where(Segment.document_id == doc_id, Segment.translated_text.isnot(None))
+                )
+            ).scalar_one()
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id)
+                .values(segment_count=cnt, translated_count=trc)
+            )
+            await session.commit()
+
+        await ctx["redis"].enqueue_job(
+            "index_document", doc_id_str, _job_id=f"index:{doc_id}:{uuid.uuid4().hex[:8]}"
+        )
+        return f"vl: {len(described)} описаний на {len(pages)} стр."
+    except Exception as exc:  # noqa: BLE001 — VL необязателен, не валим документ
+        logger.exception("describe_images %s failed", doc_id)
+        return f"vl error: {exc}"
 
 
 # ------------------------------------------------- визуальный индекс (§ 12.1 шаг 4)
@@ -594,7 +711,20 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                     values["s3_key_export_pdf"] = mono_key
                     values["s3_key_export_pdf_dual"] = dual_key
                 else:
-                    values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
+                    # BabelDOC (PDF с вёрсткой) бывает медленным/виснет на больших
+                    # сканоподобных PDF — таймаут не должен блокировать документ:
+                    # DOCX уже собран выше, отдаём его и идём в индекс.
+                    try:
+                        values.update(
+                            await asyncio.wait_for(
+                                _export_pdf_layout(ctx, doc, local_pdf, tmp_path),
+                                timeout=settings.babeldoc_timeout_s,
+                            )
+                        )
+                    except (TimeoutError, Exception) as exc:  # noqa: BLE001
+                        logger.warning(
+                            "export %s: BabelDOC PDF не собрался (%s) — оставляем DOCX", doc_id, exc
+                        )
         elif doc.kind == DocumentKind.text:
             # plain TXT (ТЗ §4.2): только редактируемый DOCX из сегментов
             data = await asyncio.to_thread(build_docx, doc.filename, segments)

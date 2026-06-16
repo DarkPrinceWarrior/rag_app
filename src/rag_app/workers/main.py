@@ -21,6 +21,7 @@ from rag_app.rag.memory import MemoryService
 from rag_app.storage.s3 import Storage
 from rag_app.workers.memory_tasks import consolidate_memory, extract_memory
 from rag_app.workers.tasks import (
+    describe_images,
     export_document,
     index_document,
     index_pages_visual,
@@ -58,6 +59,7 @@ class WorkerSettings:
         export_document,
         index_document,
         index_pages_visual,
+        describe_images,
         extract_memory,
         consolidate_memory,
     ]

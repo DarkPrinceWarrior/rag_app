@@ -144,6 +144,20 @@ async def retry_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
     return DocumentOut.from_doc(doc)
 
 
+@router.post("/{doc_id}/describe")
+async def describe_document(request: Request, doc_id: uuid.UUID) -> dict:
+    """Запуск VL-описания рисунков документа (скан/чертёж/P&ID) по требованию.
+    Раскрывает смысл изображений текстом и переиндексирует (см. describe_images)."""
+    doc = await _get_or_404(request, doc_id)
+    if not settings.vl_enabled:
+        raise HTTPException(409, "VL-описание выключено (vl_enabled=false)")
+    await request.app.state.arq.enqueue_job(
+        "describe_images", str(doc_id), _job_id=f"vl:{doc_id}:{uuid.uuid4().hex[:8]}"
+    )
+    await audit(request, "describe", "document", str(doc_id))
+    return {"status": "queued", "kind": doc.kind}
+
+
 class ReparseOcrIn(BaseModel):
     # en | east_slavic (рус/укр/бел) | cyrillic | latin | ch | … (см. mineru -l)
     lang: str = "east_slavic"

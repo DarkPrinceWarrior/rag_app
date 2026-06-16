@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 4096
     translate_concurrency: int = 12
     translate_max_retries: int = 3
+    # BabelDOC (PDF с вёрсткой) виснет на больших сканоподобных PDF — потолок,
+    # после которого экспорт довольствуется DOCX и идёт в индекс (не блокирует док).
+    babeldoc_timeout_s: int = 420
 
     # --- Быстрый контур виджета: HY-MT1.5-7B, GPU1 :8005 (roadmap § 12.1 п.5) ---
     # Преемник WMT25-чемпиона Hunyuan-MT-7B (A/B 2026-06-15: нативный шаблон 0.8303,
@@ -68,6 +71,17 @@ class Settings(BaseSettings):
         "Given a search query, retrieve document pages that answer the query"
     )
     visual_render_scale: float = 2.0  # 144 DPI (требует --enforce-eager у сервиса)
+
+    # --- Генеративный VL для описания/объяснения рисунков (GPU2 :8008) ---
+    # Qwen3-VL-8B-Instruct: для сканов-чертежей, P&ID, схем, графиков, фото —
+    # раскрывает СМЫСЛ изображения текстом (на русском). В отличие от visual_*
+    # (только эмбеддинги для поиска) — этот генерирует описание.
+    vl_enabled: bool = True
+    vl_base_url: str = "http://127.0.0.1:8008/v1"
+    vl_model: str = "qwen3-vl"
+    vl_max_tokens: int = 1200
+    vl_render_scale: float = 2.2  # рендер страницы PDF в картинку для VL
+    vl_max_pages: int = 12  # потолок страниц-картинок на документ (латентность)
 
     rerank_base_url: str = "http://127.0.0.1:8003"
     rerank_model: str = "qwen3-reranker-4b"
