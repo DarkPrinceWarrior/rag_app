@@ -37,6 +37,7 @@ from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc, write_glossary_csv
 from rag_app.pipeline.export_docx import build_docx
+from rag_app.pipeline.office_render import render_to_pdf
 from rag_app.pipeline.parse import (
     PDFIUM_LOCK,
     load_block_geometry,
@@ -751,6 +752,19 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                     settings.bucket_exports, source_key, dst.read_bytes(), _OOXML_MIME[ext]
                 )
                 values["s3_key_export_source"] = source_key
+                # просмотр «как в Microsoft»: оригинал и перевод → PDF (LibreOffice),
+                # показываются в pdf.js-вьювере вместо плоского текста
+                if settings.office_render_enabled:
+                    try:
+                        orig_pdf = await render_to_pdf(src, tmp_path, settings.office_render_timeout_s)
+                        ru_pdf = await render_to_pdf(dst, tmp_path, settings.office_render_timeout_s)
+                        ok_key, rk_key = f"{doc_id}/view_orig.pdf", f"{doc_id}/view_ru.pdf"
+                        await storage.put_bytes(settings.bucket_exports, ok_key, orig_pdf, "application/pdf")
+                        await storage.put_bytes(settings.bucket_exports, rk_key, ru_pdf, "application/pdf")
+                        values["s3_key_view_orig"] = ok_key
+                        values["s3_key_view_ru"] = rk_key
+                    except Exception as exc:  # noqa: BLE001 — рендер необязателен
+                        logger.warning("export %s: LibreOffice-рендер не удался (%s)", doc_id, exc)
 
         async with ctx["sessionmaker"]() as session:
             await session.execute(update(Document).where(Document.id == doc_id).values(**values))

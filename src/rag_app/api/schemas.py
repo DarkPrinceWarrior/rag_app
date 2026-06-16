@@ -24,12 +24,14 @@ class DocumentOut(BaseModel):
     exports: list[str] = []  # доступные виды скачивания (kind для /download/{kind})
     folder_id: uuid.UUID | None = None
     chunk_count: int = 0  # RAG-индекс
+    has_view: bool = False  # есть PDF-рендер OOXML (оригинал+перевод «как в Microsoft»)
     created_at: datetime
 
     @classmethod
     def from_doc(cls, doc: Document, review_count: int = 0) -> DocumentOut:
         out = cls.model_validate(doc)
         out.review_count = review_count
+        out.has_view = bool(doc.s3_key_view_orig and doc.s3_key_view_ru)
         out.exports = [
             kind
             for kind, attr in (

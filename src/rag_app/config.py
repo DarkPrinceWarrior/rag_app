@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # BabelDOC (PDF с вёрсткой) виснет на больших сканоподобных PDF — потолок,
     # после которого экспорт довольствуется DOCX и идёт в индекс (не блокирует док).
     babeldoc_timeout_s: int = 420
+    # Рендер OOXML (docx/xlsx/pptx) в PDF через LibreOffice headless — для просмотра
+    # «как в Microsoft» (оригинал и перевод в pdf.js-вьювере, а не плоским текстом).
+    office_render_enabled: bool = True
+    office_render_timeout_s: int = 150
 
     # --- Быстрый контур виджета: HY-MT1.5-7B, GPU1 :8005 (roadmap § 12.1 п.5) ---
     # Преемник WMT25-чемпиона Hunyuan-MT-7B (A/B 2026-06-15: нативный шаблон 0.8303,

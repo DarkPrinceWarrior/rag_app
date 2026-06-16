@@ -199,6 +199,12 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> StreamingR
         bucket, key = settings.bucket_originals, doc.s3_key_original
         media = doc.content_type or "application/octet-stream"
         out_name = doc.filename
+    elif kind in ("view_orig", "view_ru"):
+        # PDF-рендер OOXML для просмотра «как в Microsoft» (LibreOffice)
+        key = doc.s3_key_view_orig if kind == "view_orig" else doc.s3_key_view_ru
+        if not key:
+            raise HTTPException(404, "PDF-просмотр не готов")
+        bucket, media, out_name = settings.bucket_exports, "application/pdf", Path(key).name
     elif kind in _EXPORT_KINDS:
         attr, media = _EXPORT_KINDS[kind]
         key = getattr(doc, attr)

@@ -25,12 +25,18 @@ export function PdfPane({
   highlight,
   onPageChange,
   onNumPages,
+  urlKind = 'original',
+  label = 'оригинал',
+  scale = SCALE,
 }: {
   docId: string
   page: number
   highlight: Highlight | null
   onPageChange: (p: number) => void
   onNumPages?: (n: number) => void
+  urlKind?: string // источник PDF: original | view_orig | view_ru
+  label?: string
+  scale?: number
 }) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -43,7 +49,7 @@ export function PdfPane({
     ;(async () => {
       try {
         const token = await bearer()
-        const resp = await fetch(downloadUrl(docId, 'original'), {
+        const resp = await fetch(downloadUrl(docId, urlKind), {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
         if (!resp.ok) throw new Error(`PDF: ${resp.status}`)
@@ -60,7 +66,7 @@ export function PdfPane({
     return () => {
       cancelled = true
     }
-  }, [docId, onNumPages])
+  }, [docId, urlKind, onNumPages])
 
   // рендер текущей страницы + bbox-оверлей
   useEffect(() => {
@@ -71,7 +77,7 @@ export function PdfPane({
     ;(async () => {
       const pg = await pdf.getPage(page)
       if (cancelled) return
-      const viewport = pg.getViewport({ scale: SCALE })
+      const viewport = pg.getViewport({ scale })
       canvas.width = viewport.width
       canvas.height = viewport.height
       const ctx = canvas.getContext('2d')!
@@ -93,7 +99,7 @@ export function PdfPane({
     return () => {
       cancelled = true
     }
-  }, [page, numPages, highlight])
+  }, [page, numPages, highlight, scale])
 
   if (err) return <div className="p-4 text-sm text-destructive">Не удалось открыть PDF: {err}</div>
 
@@ -109,7 +115,7 @@ export function PdfPane({
         <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => onPageChange(page + 1)}>
           →
         </Button>
-        <span className="ml-auto text-xs text-muted-foreground">оригинал</span>
+        <span className="ml-auto text-xs text-muted-foreground">{label}</span>
       </div>
       <div className="flex-1 overflow-auto bg-muted/40 p-3">
         <div className="relative mx-auto w-fit shadow">

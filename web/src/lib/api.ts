@@ -24,6 +24,7 @@ export interface Document {
   exports: string[]
   folder_id: string | null
   error: string | null
+  has_view?: boolean // есть PDF-рендер OOXML (оригинал+перевод «как в Microsoft»)
   created_at: string
 }
 

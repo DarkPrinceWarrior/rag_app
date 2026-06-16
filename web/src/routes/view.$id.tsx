@@ -38,6 +38,10 @@ function Viewer() {
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
   const isPdf = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
+  // OOXML с PDF-рендером (LibreOffice) — показываем «как в Microsoft»: оригинал и
+  // перевод двумя pdf.js-панелями, синхронно, вместо плоского текста.
+  const hasOfficeView =
+    !!docQ.data && ['docx', 'xlsx', 'pptx'].includes(docQ.data.kind) && !!docQ.data.has_view
 
   // переход от цитаты/поиска: страница + bbox + подсветка в тексте
   useEffect(() => {
@@ -160,7 +164,43 @@ function Viewer() {
     )
   }
 
-  // не-PDF (OOXML / txt): оригинал | перевод — оба сплошным документом со структурой.
+  // OOXML с PDF-рендером (LibreOffice): «как в Microsoft» — оригинал и перевод
+  // двумя pdf.js-панелями, листаются синхронно.
+  if (hasOfficeView) {
+    return (
+      <div>
+        {header}
+        <div className="flex h-[calc(100vh-97px)]">
+          <div className="w-1/2 border-r">
+            <PdfPane
+              docId={id}
+              urlKind="view_orig"
+              label="оригинал"
+              scale={1.0}
+              page={page}
+              highlight={null}
+              onPageChange={setPage}
+              onNumPages={setNumPages}
+            />
+          </div>
+          <div className="w-1/2">
+            <PdfPane
+              docId={id}
+              urlKind="view_ru"
+              label="перевод"
+              scale={1.0}
+              page={page}
+              highlight={null}
+              onPageChange={setPage}
+            />
+          </div>
+        </div>
+        <DocAssistant docId={id} page={page} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // не-PDF без рендера (txt, или OOXML до готовности view): оригинал | перевод текстом.
   return (
     <div>
       {header}

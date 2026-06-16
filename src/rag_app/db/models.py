@@ -101,6 +101,10 @@ class Document(Base):
     s3_key_export_pdf_dual: Mapped[str | None] = mapped_column(String(1024), default=None)
     # OOXML-ветка: переведённый файл исходного формата (docx/xlsx/pptx)
     s3_key_export_source: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # Рендер OOXML в PDF (LibreOffice) для просмотра «как в Microsoft»:
+    # оригинал и перевод — в pdf.js-вьювере вместо плоского текста.
+    s3_key_view_orig: Mapped[str | None] = mapped_column(String(1024), default=None)
+    s3_key_view_ru: Mapped[str | None] = mapped_column(String(1024), default=None)
 
     page_count: Mapped[int | None] = mapped_column(Integer, default=None)
     segment_count: Mapped[int] = mapped_column(Integer, default=0)
