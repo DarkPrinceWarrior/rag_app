@@ -19,6 +19,7 @@ from sqlalchemy import text as sql
 
 from rag_app.config import settings
 from rag_app.db.models import MemoryItem
+from rag_app.rag.memory.rls import apply_scope_guc
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -192,6 +193,10 @@ class InternalAdapter:
     ) -> MemoryItem:
         """Создать item (или обновить активный с тем же fingerprint). Эмбеддит
         content. Без commit — коммитит вызывающий сервис."""
+        # GUC обязателен под RLS FORCE: и для SELECT (fingerprint), и для INSERT
+        # (WITH CHECK). Ставим тут, чтобы покрыть ВСЕ пути записи item (summary,
+        # promote, manual) — иначе INSERT падает «violates row-level security».
+        await apply_scope_guc(session, scope_obj)
         emb = await self._embed(content)
         existing = None
         if fingerprint:

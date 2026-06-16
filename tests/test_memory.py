@@ -52,9 +52,13 @@ def test_gate_blocks_low_trust() -> None:
 
 
 def test_gate_blocks_low_relevance() -> None:
-    d = MemoryGate().evaluate(_hit(rerank=0.05), _scope())
+    # порог явный: дефолт=0.0 (reranker памяти даёт ~0, жёсткий блок убивал выдачу);
+    # тут проверяем саму логику relevance-гейта при заданном пороге
+    d = MemoryGate(min_rerank=0.3).evaluate(_hit(rerank=0.05), _scope())
     assert d.decision == "block"
     assert d.blocked_by == "relevance"
+    # при дефолтном пороге 0.0 низкий, но ненулевой rerank проходит
+    assert MemoryGate().evaluate(_hit(rerank=0.05), _scope()).decision == "allow"
 
 
 def test_gate_blocks_secret_in_chat() -> None:

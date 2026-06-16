@@ -103,9 +103,13 @@ class Settings(BaseSettings):
     tenant_id: str = "00000000-0000-0000-0000-000000000000"
     memory_provider: str = "internal"  # internal | mem0 (свопается за MemoryAdapter, Этап 4)
     mem0_base_url: str = "http://127.0.0.1:8088"
-    # gate-пороги (§5): доверие источника (confidence) и релевантность (rerank)
+    # gate-пороги (§5): доверие источника (confidence) и релевантность (rerank).
+    # rerank-порог=0: Qwen3-Reranker заточен под документные пассажи и даёт
+    # коротким фактам памяти скоры ~0 (паре «как обращаться»↔«зовут Руслан» ≈0),
+    # поэтому жёсткий relevance-блок убивал всю выдачу. Релевантность держим
+    # порядком reranker'а + dense/sparse-поиском + cap по scope (memory_max_*).
     memory_gate_min_confidence: float = 0.5
-    memory_gate_min_rerank: float = 0.30
+    memory_gate_min_rerank: float = 0.0
     # сколько items впрыскивается в промпт после gate, по scope
     memory_max_user: int = 5
     memory_max_project: int = 5
