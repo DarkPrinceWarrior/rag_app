@@ -34,6 +34,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _downgrade_scope(scope: str, ctx: MemoryScope) -> str:
+    """Нельзя ставить scope шире доступного контекста, иначе item-сирота
+    (project_id/document_id = NULL) никогда не пройдёт scope-фильтр ретрива.
+    Нет проекта/документа/треда в контексте → опускаем до user (владелец достаёт)."""
+    if scope == "project" and ctx.project_id is None:
+        return "user"
+    if scope == "document" and ctx.document_id is None:
+        return "user"
+    if scope == "thread" and ctx.thread_id is None:
+        return "user"
+    return scope
+
+
 def _scope_of(cand: MemoryCandidate) -> MemoryScope:
     return MemoryScope(
         tenant_id=cand.tenant_id,
@@ -90,7 +103,7 @@ async def promote_candidate(
             _decide(cand, "rejected", actor, now)
             return None
         kind = proposed.get("kind", "fact")
-        scope = proposed.get("scope", "user")
+        scope = _downgrade_scope(proposed.get("scope", "user"), scope_obj)
         fp = cand.fingerprint or fingerprint(kind, scope, None, content)
         supersedes_id = None
         if cand.action in ("supersede", "update") and cand.target_item_id is not None:
