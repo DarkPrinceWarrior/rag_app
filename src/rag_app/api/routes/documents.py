@@ -9,12 +9,14 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy import text as sql
 
 from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
 from rag_app.api.schemas import DocumentOut
 from rag_app.config import settings
 from rag_app.db.models import Document, DocumentStatus, Segment
+from rag_app.rag.memory.rls import apply_scope_guc
 
 router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
 
@@ -201,6 +203,52 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> StreamingR
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{quoted}"'},
     )
+
+
+@router.delete("/{doc_id}", status_code=204)
+async def delete_document(request: Request, doc_id: uuid.UUID) -> None:
+    """Удаление документа из библиотеки: объекты в S3 (оригинал, артефакт парсинга,
+    экспорты) + запись в БД (каскадом — сегменты, чанки, эмбеддинги страниц,
+    чат-сессии этого документа) + чистка памяти, привязанной к документу."""
+    doc = await _get_or_404(request, doc_id)
+    storage = request.app.state.storage
+
+    # 1) S3 — best-effort по всем известным ключам документа
+    await storage.remove_object(settings.bucket_originals, doc.s3_key_original)
+    if doc.s3_key_content_list:
+        await storage.remove_object(settings.bucket_artifacts, doc.s3_key_content_list)
+    for attr, _media in _EXPORT_KINDS.values():
+        key = getattr(doc, attr)
+        if key:
+            await storage.remove_object(settings.bucket_exports, key)
+
+    # 2) БД — удаление документа (FK ondelete=CASCADE уносит segments/chunks/
+    #    page_embeddings/chat_sessions+messages этого документа)
+    async with request.app.state.sessionmaker() as session:
+        obj = await session.get(Document, doc_id)
+        if obj is not None:
+            await session.delete(obj)
+            await session.commit()
+
+    # 3) Память документа (слой памяти расцеплён с FK) — мягкое удаление; под
+    #    RLS FORCE нужен GUC скоупа владельца. Никогда не блокирует удаление.
+    user: User = request.state.user
+    try:
+        memory = request.app.state.memory
+        async with request.app.state.sessionmaker() as session:
+            await apply_scope_guc(session, memory.scope_for(user.sub, document_id=doc_id))
+            await session.execute(
+                sql(
+                    "UPDATE memory_items SET status='deleted', deleted_at=now()"
+                    " WHERE user_id=:u AND document_id=:d AND status<>'deleted'"
+                ),
+                {"u": user.sub, "d": str(doc_id)},
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 — чистка памяти не должна валить удаление
+        pass
+
+    await audit(request, "delete", "document", str(doc_id), {"filename": doc.filename})
 
 
 async def _get_or_404(request: Request, doc_id: uuid.UUID) -> Document:

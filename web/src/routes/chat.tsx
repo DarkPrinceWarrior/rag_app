@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type ChatSession, type Citation } from '@/lib/api'
+import { Trash2, FileText, X } from 'lucide-react'
+import { api, type ChatSession, type Citation, type Document } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
+import { cn } from '@/lib/utils'
 import { streamChat } from '@/lib/sse'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
+import { Markdown } from '@/components/Markdown'
 
 export const Route = createFileRoute('/chat')({
   validateSearch: (s: Record<string, unknown>): { doc?: string; sid?: string } => ({
@@ -31,6 +35,7 @@ function Chat() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [temporary, setTemporary] = useState(false) // временный чат — без памяти
+  const [source, setSource] = useState<Citation | null>(null) // открытая панель источника
   const [sid, setSid] = useState<string | null>(sidParam ?? null) // активная сессия
   const sessionId = useRef<string | null>(sidParam ?? null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -81,6 +86,15 @@ function Chat() {
     a.download = /filename="?([^"]+)"?/.exec(cd)?.[1] || `chat.${fmt}`
     a.click()
     URL.revokeObjectURL(a.href)
+  }
+
+  async function deleteSession(s: ChatSession, e: React.MouseEvent) {
+    e.stopPropagation()
+    if (busy) return
+    if (!confirm(`Удалить чат «${s.title}»?`)) return
+    await api.deleteSession(s.id)
+    queryClient.invalidateQueries({ queryKey: ['chat-sessions'] })
+    if (sid === s.id) newChat()
   }
 
   const docsQ = useQuery({
@@ -134,96 +148,278 @@ function Chat() {
     bottomRef.current?.scrollIntoView({ block: 'end' })
   }
 
+  const onPickDoc = (v: string) => {
+    setDocId(v)
+    newChat()
+  }
+  const started = messages.length > 0
+
   return (
     <div className="mx-auto flex h-[calc(100vh-49px)] max-w-5xl gap-3 px-4">
       {/* Сайдбар истории чатов */}
-      <aside className="hidden w-56 shrink-0 flex-col py-3 md:flex">
+      <aside className="hidden w-60 shrink-0 flex-col py-3 md:flex">
         <Button variant="outline" size="sm" className="mb-2" onClick={newChat} disabled={busy}>
           + Новый чат
         </Button>
-        <div className="flex-1 space-y-0.5 overflow-auto">
+        <div className="flex-1 space-y-0.5 overflow-auto pr-1">
           {sessionsQ.data?.length === 0 && (
             <p className="px-1 pt-2 text-xs text-muted-foreground">История пуста</p>
           )}
           {sessionsQ.data?.map((s) => (
-            <button
+            <div
               key={s.id}
-              onClick={() => openSession(s)}
-              title={s.title}
-              className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent ${
-                s.id === sid ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground'
-              }`}
+              className={cn(
+                'group flex items-center rounded-md',
+                s.id === sid ? 'bg-accent' : 'hover:bg-accent/60',
+              )}
             >
-              {s.title}
-            </button>
+              <button
+                onClick={() => openSession(s)}
+                title={s.title}
+                className={cn(
+                  'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs',
+                  s.id === sid ? 'font-medium text-accent-foreground' : 'text-muted-foreground',
+                )}
+              >
+                {s.title}
+              </button>
+              <button
+                onClick={(e) => deleteSession(s, e)}
+                title="Удалить чат"
+                className="mr-1 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-background hover:text-destructive group-hover:opacity-70 hover:!opacity-100"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           ))}
         </div>
       </aside>
 
       {/* Колонка чата */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 py-3">
-          <span className="text-sm text-muted-foreground">Документ:</span>
-          <select
-            value={docId}
-            onChange={(e) => {
-              setDocId(e.target.value)
-              newChat()
-            }}
-            className="h-9 rounded-md border bg-card px-2 text-sm"
-          >
-            <option value="">Вся библиотека</option>
-            {docsQ.data?.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.filename}
-              </option>
-            ))}
-          </select>
-          <label className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground" title="Не сохранять и не использовать долговременную память в этом чате">
-            <input type="checkbox" checked={temporary} onChange={(e) => setTemporary(e.target.checked)} />
-            Временный
-          </label>
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">Выжимка:</span>
-            <Button variant="outline" size="sm" disabled={!sid} onClick={() => exportChat('md')}>
-              MD
-            </Button>
-            <Button variant="outline" size="sm" disabled={!sid} onClick={() => exportChat('docx')}>
-              DOCX
-            </Button>
+        {!started ? (
+          /* Пустой чат: ввод по центру, как в Claude/ChatGPT */
+          <div className="flex flex-1 flex-col items-center justify-center px-2 pb-12">
+            <h2 className="text-xl font-semibold">Чат с документами</h2>
+            <p className="mb-5 mt-1 text-sm text-muted-foreground">
+              Задайте вопрос — ответ придёт со ссылками на источники.
+            </p>
+            <div className="w-full max-w-2xl">
+              <Composer
+                value={input}
+                setValue={setInput}
+                onSend={send}
+                busy={busy}
+                autoFocus
+                placeholder="Например: сравни требования к испытаниям и сведи в таблицу"
+              />
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                <DocSelect docId={docId} onChange={onPickDoc} docs={docsQ.data ?? []} />
+                <TempToggle temporary={temporary} setTemporary={setTemporary} />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 py-3">
+              <DocSelect docId={docId} onChange={onPickDoc} docs={docsQ.data ?? []} />
+              {/* «Временный» выбирается только при старте нового чата */}
+              {!sid && <TempToggle temporary={temporary} setTemporary={setTemporary} />}
+              {sid && (
+                <div className="ml-auto flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">Сохранить:</span>
+                  <Button variant="outline" size="sm" onClick={() => exportChat('md')}>
+                    MD
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => exportChat('docx')}>
+                    DOCX
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 space-y-3 overflow-auto pb-4">
+              {messages.map((m, i) => (
+                <Bubble key={i} m={m} onCite={setSource} activeCite={source} />
+              ))}
+              <div ref={bottomRef} />
+            </div>
+
+            <div className="border-t pt-3 pb-6">
+              <Composer
+                value={input}
+                setValue={setInput}
+                onSend={send}
+                busy={busy}
+                placeholder="Спросите ещё что-нибудь…"
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {source && <SourcePanel citation={source} onClose={() => setSource(null)} />}
+    </div>
+  )
+}
+
+/** Боковая панель источника цитаты: текст процитированного фрагмента + переход
+ *  во вьювер. Открывается прямо в чате — не надо уходить и возвращаться. */
+function SourcePanel({ citation, onClose }: { citation: Citation; onClose: () => void }) {
+  const segsQ = useQuery({
+    queryKey: ['segments', citation.document_id],
+    queryFn: () => api.getSegments(citation.document_id),
+  })
+  const cited = (segsQ.data ?? []).filter((s) => citation.segment_ids?.includes(s.id))
+  const page = citation.page_start != null ? citation.page_start + 1 : undefined
+  return (
+    <div className="fixed bottom-0 right-0 top-[49px] z-30 flex w-[min(92vw,420px)] flex-col border-l bg-card shadow-2xl">
+      <header className="flex items-start gap-2 border-b px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Источник [{citation.n}]
+          </div>
+          <div className="truncate text-sm font-medium">{citation.filename}</div>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {citation.heading_path}
+            {page ? ` · стр. ${page}` : ''}
           </div>
         </div>
+        <button onClick={onClose} title="Закрыть" className="shrink-0 rounded p-1 hover:bg-accent">
+          <X className="h-4 w-4" />
+        </button>
+      </header>
 
-        <div className="flex-1 space-y-3 overflow-auto pb-4">
-          {messages.length === 0 && (
-            <p className="mt-8 text-center text-sm text-muted-foreground">
-              Задайте вопрос по переведённым документам — ответ придёт со ссылками на источники.
-            </p>
-          )}
-          {messages.map((m, i) => (
-            <Bubble key={i} m={m} />
-          ))}
-          <div ref={bottomRef} />
-        </div>
+      <div className="flex-1 overflow-auto px-4 py-3">
+        {segsQ.isLoading ? (
+          <p className="text-sm text-muted-foreground">Загрузка…</p>
+        ) : cited.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Текст фрагмента не найден в документе — откройте во вьювере.
+          </p>
+        ) : (
+          cited.map((s) => (
+            <div key={s.id} className="mb-4">
+              <div className="whitespace-pre-wrap text-sm text-foreground/90">
+                {s.translated_text || s.source_text}
+              </div>
+              {s.translated_text && s.source_text && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">оригинал</summary>
+                  <div className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{s.source_text}</div>
+                </details>
+              )}
+            </div>
+          ))
+        )}
+      </div>
 
-        <div className="flex gap-2 border-t py-3">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), send())}
-            placeholder="Например: сравни требования к испытаниям и сведи в таблицу"
-            className="flex-1 rounded-md border bg-card px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <Button onClick={send} disabled={busy || !input.trim()}>
-            {busy ? '…' : 'Спросить'}
+      <div className="border-t p-3">
+        <Link
+          to="/view/$id"
+          params={{ id: citation.document_id }}
+          search={{ seg: citation.segment_ids?.[0], page }}
+        >
+          <Button variant="outline" size="sm" className="w-full">
+            Открыть во вьювере
           </Button>
-        </div>
+        </Link>
       </div>
     </div>
   )
 }
 
-function Bubble({ m }: { m: Msg }) {
+/** Поле ввода: многострочное, Enter — отправка, Shift+Enter — перенос. */
+function Composer({
+  value,
+  setValue,
+  onSend,
+  busy,
+  placeholder,
+  autoFocus,
+}: {
+  value: string
+  setValue: (v: string) => void
+  onSend: () => void
+  busy: boolean
+  placeholder: string
+  autoFocus?: boolean
+}) {
+  return (
+    <div className="flex items-end gap-2 rounded-xl border bg-card p-2 shadow-sm transition focus-within:ring-2 focus-within:ring-ring">
+      <textarea
+        autoFocus={autoFocus}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            onSend()
+          }
+        }}
+        rows={1}
+        placeholder={placeholder}
+        className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
+      />
+      <Button onClick={onSend} disabled={busy || !value.trim()}>
+        {busy ? '…' : 'Спросить'}
+      </Button>
+    </div>
+  )
+}
+
+/** Выбор документа для чата — единый селектор приложения. */
+function DocSelect({
+  docId,
+  onChange,
+  docs,
+}: {
+  docId: string
+  onChange: (v: string) => void
+  docs: Document[]
+}) {
+  const options = [
+    { value: '', label: 'Вся библиотека' },
+    ...docs.map((d) => ({ value: d.id, label: d.filename })),
+  ]
+  return (
+    <Select
+      value={docId}
+      onChange={onChange}
+      options={options}
+      icon={<FileText className="h-4 w-4" />}
+      className="w-[260px]"
+    />
+  )
+}
+
+function TempToggle({
+  temporary,
+  setTemporary,
+}: {
+  temporary: boolean
+  setTemporary: (v: boolean) => void
+}) {
+  return (
+    <label
+      className="flex cursor-pointer items-center gap-1.5 rounded-lg border bg-card px-3 py-1.5 text-xs text-muted-foreground"
+      title="Не сохранять и не использовать долговременную память в этом чате"
+    >
+      <input type="checkbox" checked={temporary} onChange={(e) => setTemporary(e.target.checked)} />
+      Временный чат
+    </label>
+  )
+}
+
+function Bubble({
+  m,
+  onCite,
+  activeCite,
+}: {
+  m: Msg
+  onCite: (c: Citation) => void
+  activeCite: Citation | null
+}) {
   if (m.role === 'user')
     return (
       <div className="ml-auto max-w-[80%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
@@ -242,22 +438,27 @@ function Bubble({ m }: { m: Msg }) {
       {m.error ? (
         <div className="text-sm text-destructive">Ошибка: {m.error}</div>
       ) : (
-        <div className="whitespace-pre-wrap rounded-lg bg-card px-3 py-2 text-sm shadow-sm">{m.content || '…'}</div>
+        <div className="rounded-lg bg-card px-3 py-2 shadow-sm">
+          <Markdown content={m.content || '…'} />
+        </div>
       )}
       {m.citations.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {m.citations.map((c) => (
-            <Link
+            <button
               key={c.n}
-              to="/view/$id"
-              params={{ id: c.document_id }}
-              search={{ seg: c.segment_ids?.[0], page: c.page_start != null ? c.page_start + 1 : undefined }}
+              onClick={() => onCite(c)}
               title={c.heading_path}
-              className="rounded-md border bg-accent/40 px-2 py-0.5 text-xs text-accent-foreground hover:bg-accent"
+              className={cn(
+                'rounded-md border px-2 py-0.5 text-xs transition-colors hover:bg-accent',
+                activeCite?.n === c.n && activeCite?.document_id === c.document_id
+                  ? 'border-primary bg-accent text-accent-foreground'
+                  : 'bg-accent/40 text-accent-foreground',
+              )}
             >
               [{c.n}] {c.filename}
               {c.page_start != null ? ` · стр. ${c.page_start + 1}` : ''}
-            </Link>
+            </button>
           ))}
         </div>
       )}

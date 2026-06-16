@@ -5,6 +5,7 @@ import { api, type ExtractTable } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 
 export const Route = createFileRoute('/extract')({ component: Extract })
 
@@ -54,14 +55,15 @@ function Extract() {
         Запрос вроде «вытащи все спецификации труб в таблицу» или «сведи сроки и штрафы». Результат — в XLSX.
       </p>
       <div className="flex flex-wrap gap-2">
-        <select value={docId} onChange={(e) => setDocId(e.target.value)} className="h-9 rounded-md border bg-card px-2 text-sm">
-          <option value="">Вся библиотека</option>
-          {docsQ.data?.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.filename}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={docId}
+          onChange={setDocId}
+          options={[
+            { value: '', label: 'Вся библиотека' },
+            ...(docsQ.data?.map((d) => ({ value: d.id, label: d.filename })) ?? []),
+          ]}
+          className="w-[260px]"
+        />
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}

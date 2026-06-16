@@ -2,10 +2,13 @@ import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { api, EXPORT_LABELS, downloadUrl, type Document } from '@/lib/api'
+import { MoreVertical, Download, Trash2, FolderInput, Check, X } from 'lucide-react'
+import { api, EXPORT_LABELS, downloadUrl, type Document, type Folder } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui/menu'
 import { StatusBadge } from '@/components/StatusBadge'
 
 export const Route = createFileRoute('/')({ component: Library })
@@ -45,7 +48,22 @@ function Library() {
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <FolderChip active={folder === ''} onClick={() => setFolder('')} label="Все" count={docsQ.data?.length} />
         {foldersQ.data?.map((f) => (
-          <FolderChip key={f.id} active={folder === f.id} onClick={() => setFolder(f.id)} label={f.name} count={f.documents} />
+          <FolderChip
+            key={f.id}
+            active={folder === f.id}
+            onClick={() => setFolder(f.id)}
+            label={f.name}
+            count={f.documents}
+            onDelete={() => {
+              if (confirm(`Удалить папку «${f.name}»?\nДокументы из неё не удаляются — останутся в библиотеке без папки.`)) {
+                void api.deleteFolder(f.id).then(() => {
+                  if (folder === f.id) setFolder('')
+                  qc.invalidateQueries({ queryKey: ['folders'] })
+                  qc.invalidateQueries({ queryKey: ['documents'] })
+                })
+              }
+            }}
+          />
         ))}
         <NewFolder onCreated={() => qc.invalidateQueries({ queryKey: ['folders'] })} />
       </div>
@@ -55,7 +73,7 @@ function Library() {
       ) : docs.length === 0 ? (
         <p className="mt-6 text-sm text-muted-foreground">Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX выше.</p>
       ) : (
-        <DocList docs={docs} />
+        <DocList docs={docs} folders={foldersQ.data ?? []} />
       )}
     </div>
   )
@@ -102,18 +120,40 @@ function UploadZone({
   )
 }
 
-function FolderChip({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count?: number }) {
+function FolderChip({
+  active,
+  onClick,
+  label,
+  count,
+  onDelete,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  count?: number
+  onDelete?: () => void
+}) {
   return (
-    <button
-      onClick={onClick}
-      className={
-        'rounded-full border px-3 py-1 text-sm transition-colors ' +
-        (active ? 'border-primary bg-primary text-primary-foreground' : 'bg-card hover:bg-accent')
-      }
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full border text-sm transition-colors',
+        active ? 'border-primary bg-primary text-primary-foreground' : 'bg-card hover:bg-accent',
+      )}
     >
-      {label}
-      {count != null && <span className="ml-1.5 opacity-70">{count}</span>}
-    </button>
+      <button onClick={onClick} className={cn('py-1 pl-3', onDelete ? 'pr-1' : 'pr-3')}>
+        {label}
+        {count != null && <span className="ml-1.5 opacity-70">{count}</span>}
+      </button>
+      {onDelete && (
+        <button
+          onClick={onDelete}
+          title="Удалить папку"
+          className="mr-1 rounded-full p-0.5 opacity-60 transition hover:bg-black/10 hover:opacity-100"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </span>
   )
 }
 
@@ -140,7 +180,12 @@ function NewFolder({ onCreated }: { onCreated: () => void }) {
         autoFocus
         value={name}
         onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && name.trim() && create.mutate()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && name.trim()) create.mutate()
+          if (e.key === 'Escape') setOpen(false)
+        }}
+        // увели курсор, ничего не введя — поле сворачивается (задержка, чтобы успел клик по «ок»)
+        onBlur={() => setTimeout(() => !name.trim() && setOpen(false), 120)}
         placeholder="название"
         className="h-8 w-36"
       />
@@ -151,7 +196,7 @@ function NewFolder({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function DocList({ docs }: { docs: Document[] }) {
+function DocList({ docs, folders }: { docs: Document[]; folders: Folder[] }) {
   const parentRef = useRef<HTMLDivElement>(null)
   const v = useVirtualizer({
     count: docs.length,
@@ -170,7 +215,7 @@ function DocList({ docs }: { docs: Document[] }) {
               style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${item.start}px)` }}
               className="pb-2"
             >
-              <DocRow d={d} />
+              <DocRow d={d} folders={folders} />
             </div>
           )
         })}
@@ -179,7 +224,17 @@ function DocList({ docs }: { docs: Document[] }) {
   )
 }
 
-function DocRow({ d }: { d: Document }) {
+function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
+  const qc = useQueryClient()
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['documents'] })
+    qc.invalidateQueries({ queryKey: ['folders'] }) // счётчики папок
+  }
+  const del = useMutation({ mutationFn: () => api.deleteDocument(d.id), onSuccess: refresh })
+  const move = useMutation({
+    mutationFn: (folderId: string | null) => api.moveDocument(d.id, folderId),
+    onSuccess: refresh,
+  })
   const progress =
     d.status === 'translating' && d.segment_count
       ? `${Math.round((d.translated_count / d.segment_count) * 100)}%`
@@ -192,19 +247,12 @@ function DocRow({ d }: { d: Document }) {
           <StatusBadge status={d.status} />
           {progress && <span>{progress}</span>}
           {d.page_count != null && <span>{d.page_count} стр.</span>}
-          {d.chunk_count > 0 && <span>{d.chunk_count} чанков</span>}
           {d.review_count > 0 && <span className="text-amber-600">⚠ проверить числа: {d.review_count}</span>}
+          {del.isError && <span className="text-destructive">Ошибка удаления</span>}
           {d.error && <span className="text-destructive">{d.error.slice(0, 80)}</span>}
         </div>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-        {d.exports.map((k) => (
-          <a key={k} href={downloadUrl(d.id, k)} onClick={(e) => downloadAuthed(e, downloadUrl(d.id, k))}>
-            <Button variant="outline" size="sm">
-              {EXPORT_LABELS[k] ?? k}
-            </Button>
-          </a>
-        ))}
+      <div className="flex shrink-0 items-center justify-end gap-1.5">
         {d.status === 'done' && (
           <>
             <Link to="/view/$id" params={{ id: d.id }}>
@@ -224,14 +272,90 @@ function DocRow({ d }: { d: Document }) {
             Повторить
           </Button>
         )}
+        <Menu trigger={<MoreVertical className="h-4 w-4" />} title="Действия">
+          {(close) => (
+            <>
+              <MenuLabel>Скачать перевод</MenuLabel>
+              {d.exports.map((k) => (
+                <MenuItem
+                  key={k}
+                  icon={<Download className="h-4 w-4" />}
+                  onClick={() => {
+                    void downloadFile(downloadUrl(d.id, k))
+                    close()
+                  }}
+                >
+                  {EXPORT_LABELS[k] ?? k}
+                </MenuItem>
+              ))}
+              {d.exports.length === 0 && (
+                <div className="px-2 py-1 text-xs text-muted-foreground">перевод ещё не готов</div>
+              )}
+              <MenuSeparator />
+              <MenuItem
+                icon={<Download className="h-4 w-4" />}
+                onClick={() => {
+                  void downloadFile(downloadUrl(d.id, 'original'))
+                  close()
+                }}
+              >
+                Оригинал (как загружен)
+              </MenuItem>
+
+              <MenuSeparator />
+              <MenuLabel>Переместить в папку</MenuLabel>
+              <MenuItem
+                icon={d.folder_id == null ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
+                disabled={move.isPending}
+                onClick={() => {
+                  if (d.folder_id != null) move.mutate(null)
+                  close()
+                }}
+              >
+                Без папки
+              </MenuItem>
+              {folders.map((f) => (
+                <MenuItem
+                  key={f.id}
+                  icon={d.folder_id === f.id ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
+                  disabled={move.isPending}
+                  onClick={() => {
+                    if (d.folder_id !== f.id) move.mutate(f.id)
+                    close()
+                  }}
+                >
+                  {f.name}
+                </MenuItem>
+              ))}
+
+              <MenuSeparator />
+              <MenuItem
+                destructive
+                disabled={del.isPending}
+                icon={<Trash2 className="h-4 w-4" />}
+                onClick={() => {
+                  if (
+                    confirm(
+                      `Удалить «${d.filename}»?\nДокумент, перевод, поисковый индекс и связанные чаты будут удалены безвозвратно.`,
+                    )
+                  ) {
+                    del.mutate()
+                  }
+                  close()
+                }}
+              >
+                Удалить
+              </MenuItem>
+            </>
+          )}
+        </Menu>
       </div>
     </div>
   )
 }
 
 // Скачивание через authFetch (download-роут за require_user) → blob → клик
-async function downloadAuthed(e: React.MouseEvent, url: string) {
-  e.preventDefault()
+async function downloadFile(url: string) {
   const r = await authFetch(url)
   if (!r.ok) return
   const blob = await r.blob()

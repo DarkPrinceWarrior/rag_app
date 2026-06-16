@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type MemoryItem } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
 
 export const Route = createFileRoute('/memory')({ component: MemoryPage })
 
@@ -102,20 +103,18 @@ function MemoryPage() {
 
       {/* Добавление */}
       <div className="mb-4 flex flex-wrap items-end gap-2 rounded-lg border p-3">
-        <select value={scope} onChange={(e) => setScope(e.target.value)} className="h-9 rounded-md border bg-card px-2 text-sm">
-          {SCOPES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        <select value={kind} onChange={(e) => setKind(e.target.value)} className="h-9 rounded-md border bg-card px-2 text-sm">
-          {KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={scope}
+          onChange={setScope}
+          options={SCOPES.map((s) => ({ value: s, label: s }))}
+          className="min-w-[7rem]"
+        />
+        <Select
+          value={kind}
+          onChange={setKind}
+          options={KINDS.map((k) => ({ value: k, label: k }))}
+          className="min-w-[8rem]"
+        />
         <input
           value={content}
           onChange={(e) => setContent(e.target.value)}

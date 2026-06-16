@@ -58,3 +58,11 @@ class Storage:
 
     async def download_to(self, bucket: str, key: str, path: Path) -> None:
         await asyncio.to_thread(self.client.fget_object, bucket, key, str(path))
+
+    async def remove_object(self, bucket: str, key: str) -> None:
+        """Best-effort удаление объекта (для удаления документа). Отсутствие
+        объекта — не ошибка: чистка идёт по ключам, которых могло и не быть."""
+        try:
+            await asyncio.to_thread(self.client.remove_object, bucket, key)
+        except Exception:
+            pass

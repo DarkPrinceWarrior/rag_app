@@ -30,8 +30,7 @@ function RootLayout() {
           <NavLink to="/extract" label="Таблицы" />
           <NavLink to="/translate" label="Фрагмент" />
         </nav>
-        <span className="ml-auto text-xs text-muted-foreground">перевод EN→RU · on-prem</span>
-        <Button variant="ghost" size="sm" onClick={logout}>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={logout}>
           Выйти
         </Button>
       </header>

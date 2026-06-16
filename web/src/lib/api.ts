@@ -1,11 +1,13 @@
 import { authFetch } from '@/lib/auth'
 
-// доступные виды скачивания (kind для /download/{kind}) и их подписи
+// виды скачивания ПЕРЕВОДА (kind для /download/{kind}) и их подписи.
+// Это всё — переведённый документ в разных форматах; «оригинал» (как загружен)
+// скачивается отдельным пунктом меню (kind=original).
 export const EXPORT_LABELS: Record<string, string> = {
-  docx: 'DOCX',
-  pdf: 'PDF (RU)',
-  pdf_dual: 'PDF (EN+RU)',
-  source: 'Исходный формат',
+  docx: 'Перевод — DOCX',
+  pdf: 'Перевод — PDF (рус.)',
+  pdf_dual: 'Перевод — PDF (англ.+рус.)',
+  source: 'Перевод — в исходном формате',
 }
 
 export interface Document {
@@ -155,6 +157,7 @@ async function jdel(path: string): Promise<void> {
 export const api = {
   listDocuments: () => jget<Document[]>('/api/documents'),
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
+  deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
   getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments`),
   reexport: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/reexport`, 'POST'),
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
@@ -165,6 +168,7 @@ export const api = {
 
   listFolders: () => jget<Folder[]>('/api/folders'),
   createFolder: (name: string) => jsend<Folder>('/api/folders', 'POST', { name }),
+  deleteFolder: (id: string) => jdel(`/api/folders/${id}`),
   moveDocument: (id: string, folder_id: string | null) =>
     jsend<{ status: string }>(`/api/documents/${id}/folder`, 'PATCH', { folder_id }),
 
@@ -178,6 +182,7 @@ export const api = {
   listSessions: () => jget<ChatSession[]>('/api/chat/sessions'),
   getSessionMessages: (id: string) =>
     jget<ChatHistoryMessage[]>(`/api/chat/sessions/${id}/messages`),
+  deleteSession: (id: string) => jdel(`/api/chat/sessions/${id}`),
 
   // Память (docs/MEMORY_rev4_mem0_articles.md §8)
   listMemory: (opts: { scope?: string; project_id?: string; q?: string } = {}) => {

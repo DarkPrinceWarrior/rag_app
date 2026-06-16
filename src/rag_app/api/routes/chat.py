@@ -12,11 +12,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
+from sqlalchemy import text as sql
 
 from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
 from rag_app.config import settings
 from rag_app.db.models import ChatMessage, ChatSession
+from rag_app.rag.memory.rls import apply_scope_guc
 from rag_app.observability import log_agent_trace, log_chat_trace
 from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
@@ -164,6 +166,8 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                     document_id=doc_filter,
                     folder_id=body.folder_id,
                     session_id=session_id,
+                    # как _owner_filter в documents.py: admin видит все документы
+                    owner_sub=None if user.is_admin else user.sub,
                 )
                 agent = AgentLoop(app.state.chat_engine.client, tools)
                 async for ev in agent.gather(body.message, history):
@@ -274,6 +278,34 @@ async def list_sessions(request: Request) -> list[dict]:
         }
         for s in rows
     ]
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(request: Request, session_id: uuid.UUID) -> None:
+    """Удаление чата: сессия + сообщения (FK ondelete=CASCADE) + мягкая чистка
+    памяти этого треда (расцеплена с FK; под RLS FORCE нужен GUC скоупа)."""
+    user: User = request.state.user
+    async with request.app.state.sessionmaker() as db:
+        session = await db.get(ChatSession, session_id)
+        if session is None or not _owner_ok(session, user):
+            raise HTTPException(404, "сессия не найдена")
+        await db.delete(session)
+        await db.commit()
+    try:
+        memory = request.app.state.memory
+        async with request.app.state.sessionmaker() as db:
+            await apply_scope_guc(db, memory.scope_for(user.sub, thread_id=session_id))
+            await db.execute(
+                sql(
+                    "UPDATE memory_items SET status='deleted', deleted_at=now()"
+                    " WHERE user_id=:u AND thread_id=:t AND status<>'deleted'"
+                ),
+                {"u": user.sub, "t": str(session_id)},
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001 — чистка памяти не должна валить удаление
+        pass
+    await audit(request, "delete", "chat_session", str(session_id))
 
 
 @router.get("/sessions/{session_id}/messages")

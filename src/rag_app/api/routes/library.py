@@ -68,6 +68,18 @@ async def move_document(request: Request, doc_id: uuid.UUID, body: DocumentFolde
     return {"status": "ok"}
 
 
+@router.delete("/folders/{folder_id}", status_code=204)
+async def delete_folder(request: Request, folder_id: uuid.UUID) -> None:
+    """Удаление папки. Документы НЕ удаляются: их folder_id обнуляется (FK
+    ondelete=SET NULL) — остаются в библиотеке без папки."""
+    async with request.app.state.sessionmaker() as db:
+        folder = await db.get(Folder, folder_id)
+        if folder is None:
+            raise HTTPException(404, "папка не найдена")
+        await db.delete(folder)
+        await db.commit()
+
+
 @router.get("/search/visual")
 async def search_visual(
     request: Request,

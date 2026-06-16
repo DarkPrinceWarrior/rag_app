@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
+import { DocAssistant } from '@/components/DocAssistant'
 
 export const Route = createFileRoute('/view/$id')({
   validateSearch: (s: Record<string, unknown>): { seg?: string; page?: number } => ({
@@ -109,6 +110,10 @@ function Viewer() {
   // PDF: слева оригинал постранично, справа перевод ТОЙ ЖЕ страницы; листаются синхронно.
   if (isPdf) {
     const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
+    const pageText = pageSegs
+      .map(segPlainText)
+      .filter((t) => t.trim())
+      .join('\n')
     return (
       <div>
         {header}
@@ -149,6 +154,7 @@ function Viewer() {
             </div>
           </div>
         </div>
+        <DocAssistant docId={id} page={page} pageText={pageText} filename={docQ.data?.filename} />
       </div>
     )
   }
@@ -157,6 +163,7 @@ function Viewer() {
   return (
     <div>
       {header}
+      <DocAssistant docId={id} filename={docQ.data?.filename} />
       <div className="mx-auto grid max-w-[1600px] grid-cols-2 gap-8 px-6 py-4">
         <section className="border-r pr-8">
           <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Оригинал</div>
@@ -185,6 +192,15 @@ const textOf = (s: Segment, field: Field): string =>
   ((field === 'source' ? s.source_text : s.translated_text) ?? '')
 
 type Field = 'source' | 'translated'
+
+// Текст сегмента для контекста ассистента: таблицы — строками через « | »,
+// остальное — перевод (или оригинал), с очисткой LaTeX-разметки.
+function segPlainText(s: Segment): string {
+  const cells = s.table_cells_ru ?? s.table_cells
+  if (cells && cells.length)
+    return cells.map((row) => row.map((c) => cleanMath(c.text)).join(' | ')).join('\n')
+  return cleanMath(s.translated_text || s.source_text || '')
+}
 
 function DocFlow({
   segs,

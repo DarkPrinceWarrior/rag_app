@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 
 from rag_app.config import settings
-from rag_app.db.models import ChatMessage, Chunk, Document
+from rag_app.db.models import ChatMessage, Chunk, Document, DocumentStatus
 from rag_app.rag.retrieve import RetrievedChunk, Retriever
 
 
@@ -42,12 +42,14 @@ class AgentTools:
         document_id: uuid.UUID | None,
         folder_id: uuid.UUID | None,
         session_id: uuid.UUID,
+        owner_sub: str | None = None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.retriever = retriever
         self.document_id = document_id
         self.folder_id = folder_id
         self.session_id = session_id
+        self.owner_sub = owner_sub
         self.evidence: dict[str, RetrievedChunk] = {}
 
     def _register(self, chunks: list[RetrievedChunk]) -> None:
@@ -117,6 +119,40 @@ class AgentTools:
         body = "\n---\n".join(self._fmt(c, 400) for c in chunks)
         return f"get_tables: {len(chunks)} табл.\n{body}"
 
+    async def list_documents(self) -> str:
+        """Каталог библиотеки: какие документы загружены (а не их содержимое).
+        Для вопросов «какие документы есть», «назови документ из библиотеки»."""
+        async with self.sessionmaker() as db:
+            stmt = select(Document).where(Document.status == DocumentStatus.done)
+            if self.owner_sub is not None:  # RBAC: свои + dev-документы (owner NULL)
+                stmt = stmt.where(
+                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
+                )
+            rows = (
+                (await db.execute(stmt.order_by(Document.created_at.desc()).limit(200)))
+                .scalars()
+                .all()
+            )
+        if not rows:
+            return "list_documents: в библиотеке нет готовых документов."
+        lines = [
+            f"- {d.filename}" + (f" ({d.page_count} стр.)" if d.page_count else "") for d in rows
+        ]
+        catalog = f"Каталог библиотеки — загруженные документы ({len(rows)}):\n" + "\n".join(lines)
+        # Синтетический evidence-чанк: каталог должен попасть в финальный ответ.
+        # Без него evidence-пул пуст → fallback-ретрив подменяет каталог
+        # содержимым документов (агент видел список, а ответ — нет).
+        self._register(
+            [
+                RetrievedChunk(
+                    id=uuid.uuid4(), document_id=uuid.uuid4(), filename="Каталог библиотеки",
+                    heading_path="", kind="catalog", page_start=None, page_end=None,
+                    text_en="", text_ru=catalog, meta={},
+                )
+            ]
+        )
+        return f"list_documents: {catalog}"
+
     async def get_chat_history(self) -> str:
         async with self.sessionmaker() as db:
             rows = (
@@ -144,4 +180,6 @@ class AgentTools:
             return await self.get_tables(document_id or None)
         if action == "get_chat_history":
             return await self.get_chat_history()
+        if action == "list_documents":
+            return await self.list_documents()
         return f"неизвестный инструмент: {action}"

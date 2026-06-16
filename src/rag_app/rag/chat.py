@@ -78,6 +78,8 @@ def extract_citations(answer: str, chunks: list[RetrievedChunk]) -> list[dict[st
             continue
         used.add(n)
         c = chunks[n - 1]
+        if c.kind == "catalog":
+            continue  # синтетический чанк-каталог (list_documents) — не цитируемый источник
         seen.append(
             {
                 "n": n,
