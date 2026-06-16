@@ -238,21 +238,32 @@ class MemoryService:
     async def write_summary(
         self, session: AsyncSession, scope: MemoryScope, summary: str
     ) -> None:
-        """Поглощение thread-summary (§5 п.5) в память: kind=summary scope=thread,
-        идемпотентно по fingerprint(thread). Без commit."""
-        if not settings.memory_enabled or scope.thread_id is None or not summary.strip():
+        """Поглощение сводки диалога (§5 п.5) в память. Без commit.
+
+        Пишем ДВЕ записи (если есть контекст):
+        - kind=summary scope=thread — преемственность внутри этого чата;
+        - kind=summary scope=document — кросс-сессионный контекст по ОДНОМУ
+          документу (ТЗ §4.5: «новый чат по тому же документу помнит, о чём
+          спрашивали раньше»). Ретрив документного scope уже включён.
+
+        Fingerprint сводки — по КЛЮЧУ scope (thread/document), не по тексту:
+        одна актуальная сводка на тред/документ, обновляется (иначе плодились бы
+        почти-дубли при каждой свёртке)."""
+        summary = summary.strip()
+        if not settings.memory_enabled or not summary:
             return
-        fp = fingerprint("summary", "thread", {"thread": str(scope.thread_id)}, summary)
-        await self.adapter.add_or_update(
-            session,
-            scope_obj=scope,
-            scope="thread",
-            kind="summary",
-            content=summary.strip(),
-            confidence=0.9,
-            importance=0.6,
-            fingerprint=fp,
-        )
+        if scope.thread_id is not None:
+            await self.adapter.add_or_update(
+                session, scope_obj=scope, scope="thread", kind="summary", content=summary,
+                confidence=0.9, importance=0.6,
+                fingerprint=fingerprint("summary", "thread", {"thread": str(scope.thread_id)}, ""),
+            )
+        if scope.document_id is not None:
+            await self.adapter.add_or_update(
+                session, scope_obj=scope, scope="document", kind="summary", content=summary,
+                confidence=0.85, importance=0.6,
+                fingerprint=fingerprint("summary", "document", {"document": str(scope.document_id)}, ""),
+            )
 
     async def list_items(
         self,
