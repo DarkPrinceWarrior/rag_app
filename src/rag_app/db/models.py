@@ -16,16 +16,19 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
+    Identity,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 EMBEDDING_DIM = 1024  # BGE-M3 dense
@@ -207,6 +210,12 @@ class ChatSession(Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), default=None
     )
+    # RBAC + субстрат памяти (Этап 0): владелец сессии (OIDC sub; NULL — dev-период)
+    # и папка библиотеки (project scope треда для слоя памяти, §15.0).
+    owner_sub: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="SET NULL"), default=None
+    )
     # Суммаризация старой истории (§ 5 п.5): инкрементальная сводка вытеснённых
     # из окна реплик + сколько самых старых реплик в неё уже свёрнуто.
     summary: Mapped[str | None] = mapped_column(Text, default=None)
@@ -255,4 +264,150 @@ class GlossaryTerm(Base):
     en_term: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     ru_term: Mapped[str] = mapped_column(String(256))
     domain: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# --- Слой памяти (docs/MEMORY_rev4_mem0_articles.md §3, §15) ------------------
+# user_id — text (наш owner_sub / OIDC sub), tenant_id — uuid-константа (single-org);
+# embedding — vector(1024) Qwen3-Embedding-0.6B; tsv — generated (в модель не маппится).
+MEMORY_DIM = 1024
+
+
+class MemoryEvent(Base):
+    """Сырой эпизод (ground-truth): реплика, загрузка документа, клик по цитате,
+    правка. Из событий пересобираются memory_items (§3.2)."""
+
+    __tablename__ = "memory_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    thread_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    event_type: Mapped[str] = mapped_column(Text)
+    role: Mapped[str | None] = mapped_column(Text, default=None)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class MemoryItem(Base):
+    """Извлечённая память (пересобираема): факт/предпочтение/правило/глоссарий/
+    сводка с lifecycle и temporal-валидностью (§3.3)."""
+
+    __tablename__ = "memory_items"
+    __table_args__ = (
+        CheckConstraint("scope IN ('user','project','document','thread','org')", name="chk_scope"),
+        CheckConstraint(
+            "kind IN ('preference','fact','glossary','rule','task','correction','summary')",
+            name="chk_kind",
+        ),
+        CheckConstraint("sensitivity IN ('normal','sensitive','secret')", name="chk_sensitivity"),
+        CheckConstraint("status IN ('active','superseded','deleted')", name="chk_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    thread_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    scope: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    structured: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
+    source_event_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
+    source_document_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=None
+    )
+    confidence: Mapped[float] = mapped_column(Float, default=0.7)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
+    sensitivity: Mapped[str] = mapped_column(Text, default="normal")
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    supersedes: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("memory_items.id"), default=None
+    )
+    status: Mapped[str] = mapped_column(Text, default="active")
+    fingerprint: Mapped[str | None] = mapped_column(Text, default=None)
+    memory_provider: Mapped[str] = mapped_column(Text, default="internal")
+    external_memory_id: Mapped[str | None] = mapped_column(Text, default=None)
+    provider_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(MEMORY_DIM), default=None)
+    retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class MemoryItemSource(Base):
+    """Lineage item↔event (источник истины для purge/пересборки, §3.5)."""
+
+    __tablename__ = "memory_item_sources"
+
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("memory_items.id", ondelete="CASCADE"), primary_key=True
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("memory_events.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class MemoryCandidate(Base):
+    """Кандидат до принятия (§3.4): автоэкстрактор пишет сюда, в memory_items
+    попадает только после accept/auto_accept через consolidation."""
+
+    __tablename__ = "memory_candidates"
+    __table_args__ = (
+        CheckConstraint("action IN ('create','update','delete','supersede')", name="chk_cand_action"),
+        CheckConstraint(
+            "status IN ('pending','accepted','rejected','auto_accepted')", name="chk_cand_status"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    thread_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    action: Mapped[str] = mapped_column(Text)
+    target_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("memory_items.id"), default=None
+    )
+    proposed: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    confidence: Mapped[float] = mapped_column(Float)
+    rationale: Mapped[str | None] = mapped_column(Text, default=None)
+    fingerprint: Mapped[str | None] = mapped_column(Text, default=None)
+    memory_provider: Mapped[str] = mapped_column(Text, default="internal")
+    external_memory_id: Mapped[str | None] = mapped_column(Text, default=None)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    decided_by: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class MemoryAuditLog(Base):
+    """Журнал изменений памяти + gate-блоков + purge (§3.6)."""
+
+    __tablename__ = "memory_audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    event_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    action: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(Text)
+    before: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
+    after: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
+    reason: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

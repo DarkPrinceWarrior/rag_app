@@ -19,6 +19,7 @@ from rag_app.api.routes.documents import router as documents_router
 from rag_app.api.routes.extract import router as extract_router
 from rag_app.api.routes.glossary import router as glossary_router
 from rag_app.api.routes.library import router as library_router
+from rag_app.api.routes.memory import router as memory_router
 from rag_app.api.routes.segments import router as segments_router
 from rag_app.api.routes.widget import router as widget_router
 from rag_app.config import settings
@@ -28,6 +29,7 @@ from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.fast import FastTranslator
 from rag_app.llm.visual import VisualEmbedder
 from rag_app.rag.chat import ChatEngine
+from rag_app.rag.memory import MemoryService
 from rag_app.rag.retrieve import Retriever
 from rag_app.storage.s3 import Storage
 
@@ -48,6 +50,8 @@ async def lifespan(app: FastAPI):
     )
     app.state.retriever = Retriever(Embedder(), Reranker())
     app.state.chat_engine = ChatEngine()
+    # слой памяти — на тех же embedder/reranker (без лишних клиентов), §15.0
+    app.state.memory = MemoryService(app.state.retriever.embedder, app.state.retriever.reranker)
     app.state.visual = VisualEmbedder()
     app.state.fast_translator = FastTranslator()
     app.state.translator = Translator()  # документ-качество (Qwen3+глоссарий) для перевода фрагмента
@@ -74,6 +78,7 @@ app.include_router(glossary_router)
 app.include_router(chat_router)
 app.include_router(library_router)
 app.include_router(extract_router)
+app.include_router(memory_router)
 
 # Метрики Prometheus (§ 10): HTTP-метрики по эндпоинтам (rate/latency/errors).
 # /metrics — публичный (вне require_user-роутеров), Prometheus скрейпит без токена;

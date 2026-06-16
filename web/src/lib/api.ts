@@ -83,6 +83,42 @@ export interface ChatSession {
   id: string
   title: string
   document_id: string | null
+  folder_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ChatHistoryMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  citations: Citation[]
+  created_at: string
+}
+
+export interface MemoryItem {
+  id: string
+  scope: string
+  kind: string
+  content: string
+  sensitivity: string
+  importance: number
+  confidence: number
+  project_id: string | null
+  document_id: string | null
+  thread_id: string | null
+  memory_provider: string
+  created_at: string
+  updated_at: string
+}
+
+export interface MemoryCandidate {
+  id: string
+  action: string
+  status: string
+  confidence: number
+  proposed: Record<string, unknown>
+  rationale: string | null
   created_at: string
 }
 
@@ -109,6 +145,13 @@ async function jsend<T>(path: string, method: string, body?: unknown): Promise<T
   return r.json() as Promise<T>
 }
 
+async function jdel(path: string): Promise<void> {
+  const r = await authFetch(path, { method: 'DELETE' })
+  if (!r.ok && r.status !== 204) {
+    throw new Error(`${r.status}: ${(await r.json().catch(() => ({}))).detail ?? r.statusText}`)
+  }
+}
+
 export const api = {
   listDocuments: () => jget<Document[]>('/api/documents'),
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
@@ -133,6 +176,30 @@ export const api = {
   },
 
   listSessions: () => jget<ChatSession[]>('/api/chat/sessions'),
+  getSessionMessages: (id: string) =>
+    jget<ChatHistoryMessage[]>(`/api/chat/sessions/${id}/messages`),
+
+  // Память (docs/MEMORY_rev4_mem0_articles.md §8)
+  listMemory: (opts: { scope?: string; project_id?: string; q?: string } = {}) => {
+    const p = new URLSearchParams()
+    if (opts.scope) p.set('scope', opts.scope)
+    if (opts.project_id) p.set('project_id', opts.project_id)
+    if (opts.q) p.set('q', opts.q)
+    const qs = p.toString()
+    return jget<MemoryItem[]>(`/api/memory${qs ? '?' + qs : ''}`)
+  },
+  createMemory: (body: { scope: string; kind: string; content: string; sensitivity?: string }) =>
+    jsend<MemoryItem>('/api/memory', 'POST', body),
+  updateMemory: (id: string, body: { content?: string; importance?: number; sensitivity?: string }) =>
+    jsend<MemoryItem>(`/api/memory/${id}`, 'PATCH', body),
+  deleteMemory: (id: string) => jdel(`/api/memory/${id}`),
+  listMemoryCandidates: (status = 'pending') =>
+    jget<MemoryCandidate[]>(`/api/memory/candidates?status=${status}`),
+  acceptCandidate: (id: string) =>
+    jsend<{ item_id: string | null }>(`/api/memory/candidates/${id}/accept`, 'POST'),
+  rejectCandidate: (id: string) =>
+    jsend<MemoryCandidate>(`/api/memory/candidates/${id}/reject`, 'POST'),
+  purgeMemory: () => jsend<{ purged: string; items: number; events: number }>('/api/memory/purge', 'POST', {}),
 
   extractTable: (query: string, document_id: string | null) =>
     jsend<ExtractTable>('/api/extract/table', 'POST', { query, document_id }),

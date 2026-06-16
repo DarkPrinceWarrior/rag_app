@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import logging
 
+from arq import cron
 from arq.connections import RedisSettings
+from openai import AsyncOpenAI
 
 from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.llm.client import Translator
-from rag_app.llm.embeddings import Embedder
+from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.visual import VisualEmbedder
+from rag_app.rag.memory import MemoryService
 from rag_app.storage.s3 import Storage
+from rag_app.workers.memory_tasks import consolidate_memory, extract_memory
 from rag_app.workers.tasks import (
     export_document,
     index_document,
@@ -35,6 +39,12 @@ async def startup(ctx: dict) -> None:
     ctx["translator"] = Translator()
     ctx["visual"] = VisualEmbedder()
     ctx["embedder"] = Embedder()
+    # слой памяти (Этап 2): экстракция/consolidation на тех же embedder/reranker + LLM
+    ctx["reranker"] = Reranker()
+    ctx["memory"] = MemoryService(ctx["embedder"], ctx["reranker"])
+    ctx["llm"] = AsyncOpenAI(
+        base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=120.0
+    )
 
 
 async def shutdown(ctx: dict) -> None:
@@ -48,7 +58,11 @@ class WorkerSettings:
         export_document,
         index_document,
         index_pages_visual,
+        extract_memory,
+        consolidate_memory,
     ]
+    # consolidation памяти раз в полчаса (auto-accept + позже purge)
+    cron_jobs = [cron(consolidate_memory, minute={0, 30}, run_at_startup=False)]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings(

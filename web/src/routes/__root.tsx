@@ -26,6 +26,7 @@ function RootLayout() {
         <nav className="flex items-center gap-1">
           <NavLink to="/" label="Библиотека" />
           <NavLink to="/chat" label="Чат" />
+          <NavLink to="/memory" label="Память" />
           <NavLink to="/extract" label="Таблицы" />
           <NavLink to="/translate" label="Фрагмент" />
         </nav>

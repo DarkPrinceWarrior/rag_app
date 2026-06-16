@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -31,40 +32,67 @@ _THINK_OFF = {"chat_template_kwargs": {"enable_thinking": False}}
 
 # --- Классификатор сложности -------------------------------------------------
 
+# QueryRouter (§2.3.1, §15.2): один проход решает и глубину документного поиска
+# (mode), и нужна ли память. route — пять маршрутов спеки; mode выводится из него
+# (agentic_multi_step → multi_hop), needs_memory включает retrieve_memories.
+_ROUTES = ("doc_only", "memory_only", "doc_plus_memory", "agentic_multi_step", "clarification")
+
 _CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
-        "mode": {"type": "string", "enum": ["single_hop", "multi_hop"]},
+        "route": {"type": "string", "enum": list(_ROUTES)},
+        "needs_memory": {"type": "boolean"},
         "reason": {"type": "string"},
     },
-    "required": ["mode", "reason"],
+    "required": ["route", "needs_memory", "reason"],
     "additionalProperties": False,
 }
 
 _CLASSIFY_SYSTEM = """\
-Ты — классификатор сложности запросов к технической документации. Определи, как
-отвечать на вопрос пользователя:
-- "single_hop": ответ находится в одном месте одним поиском (один факт, один
-  раздел). Примеры: «что сказано про испытания», «найди раздел про ответственность»,
-  «какое расчётное давление».
-- "multi_hop": нужно несколько поисков / сбор по всему документу / сравнение
-  разных мест / экстракция списка или таблицы / опора на прошлые реплики чата.
-  Примеры: «вытащи все спецификации в таблицу», «сравни требования раздела 4 и 5»,
-  «перечисли все сроки и штрафы», «сведи воедино всё про коррозию», «а как это
-  соотносится с тем, что обсуждали выше».
-Верни строгий JSON {mode, reason}. reason — одна короткая фраза по-русски."""
+Ты — маршрутизатор запросов к технической документации с долговременной памятью
+о пользователе. Определи маршрут:
+- "doc_only": ответ целиком в документах одним поиском, память не нужна (один
+  факт/раздел). Примеры: «что сказано про испытания», «какое расчётное давление».
+- "doc_plus_memory": нужны документы И контекст прошлых обсуждений/предпочтений.
+  Примеры: «а что там с поставкой, которую обсуждали», «продолжи по тому договору».
+- "memory_only": ответ только из памяти о пользователе/проекте, без поиска по
+  документам. Примеры: «какой формат отчёта я просил», «что ты обо мне помнишь».
+- "agentic_multi_step": нужно несколько поисков / сбор по всему документу /
+  сравнение мест / экстракция списка-таблицы. Примеры: «вытащи все спецификации
+  в таблицу», «сравни требования раздела 4 и 5», «сведи всё про коррозию».
+- "clarification": вопрос неоднозначен, нужно уточнение.
+needs_memory=true, если для ответа полезен контекст прошлых реплик/предпочтений
+пользователя. Верни строгий JSON {route, needs_memory, reason}. reason — одна
+короткая фраза по-русски."""
 
-# эвристический fallback, если LLM-классификатор недоступен
+# эвристический fallback, если LLM-маршрутизатор недоступен
 _MULTI_HINTS = (
     "сравн", "сопостав", "все ", "всех", "всю", "кажд", "список", "перечисл",
     "таблиц", "сведи", "свод", "вытащ", "извлек", "собери", "сколько всего", "динамик",
 )
+_MEMORY_HINTS = (
+    "обсужда", "ранее", "раньше", "помн", "запомн", "я говорил", "я просил",
+    "как обычно", "мой формат", "моих", "предпочит", "тот договор", "тот документ",
+    "выше по чату", "продолжи",
+)
 
 
-async def classify(client: AsyncOpenAI, question: str, history: list[dict[str, str]]) -> tuple[str, str]:
-    """Возвращает (mode, reason). multi_hop включает агентный цикл."""
+@dataclass
+class Route:
+    mode: str  # single_hop | multi_hop — глубина документного поиска
+    reason: str
+    route: str  # один из _ROUTES
+    needs_memory: bool
+
+
+def _route_to_mode(route: str) -> str:
+    return "multi_hop" if route == "agentic_multi_step" else "single_hop"
+
+
+async def classify(client: AsyncOpenAI, question: str, history: list[dict[str, str]]) -> Route:
+    """Маршрутизация запроса: глубина документного поиска + нужна ли память."""
     if not settings.agent_enabled:
-        return "single_hop", "agent выключен"
+        return Route("single_hop", "agent выключен", "doc_only", False)
     hist = ""
     if history:
         hist = "Контекст диалога:\n" + "\n".join(
@@ -86,13 +114,21 @@ async def classify(client: AsyncOpenAI, question: str, history: list[dict[str, s
             extra_body=_THINK_OFF,
         )
         data = json.loads(resp.choices[0].message.content or "{}")
-        mode = data.get("mode")
-        if mode in ("single_hop", "multi_hop"):
-            return mode, data.get("reason", "")
+        route = data.get("route")
+        if route in _ROUTES:
+            return Route(
+                _route_to_mode(route),
+                data.get("reason", ""),
+                route,
+                bool(data.get("needs_memory", route in ("memory_only", "doc_plus_memory"))),
+            )
     except Exception as exc:
         logger.warning("classify: LLM недоступен (%s) — эвристика", exc)
     ql = question.lower()
-    return ("multi_hop" if any(h in ql for h in _MULTI_HINTS) else "single_hop"), "fallback-эвристика"
+    multi = any(h in ql for h in _MULTI_HINTS)
+    mem = any(h in ql for h in _MEMORY_HINTS)
+    route = "agentic_multi_step" if multi else ("doc_plus_memory" if mem else "doc_only")
+    return Route(_route_to_mode(route), "fallback-эвристика", route, mem or multi)
 
 
 # --- Агентный цикл -----------------------------------------------------------

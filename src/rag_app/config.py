@@ -97,6 +97,26 @@ class Settings(BaseSettings):
     # --- Спец-интенты § 5 п.6: экстракция таблиц (structured output → XLSX) ---
     extract_context_top_k: int = 10  # фрагментов в контекст экстракции
 
+    # --- Слой памяти (docs/MEMORY_rev4_mem0_articles.md §15) ---
+    memory_enabled: bool = True
+    # single-org: tenant_id — константа (env RAG_TENANT_ID); multi-tenant не разворачиваем
+    tenant_id: str = "00000000-0000-0000-0000-000000000000"
+    memory_provider: str = "internal"  # internal | mem0 (свопается за MemoryAdapter, Этап 4)
+    mem0_base_url: str = "http://127.0.0.1:8088"
+    # gate-пороги (§5): доверие источника (confidence) и релевантность (rerank)
+    memory_gate_min_confidence: float = 0.5
+    memory_gate_min_rerank: float = 0.30
+    # сколько items впрыскивается в промпт после gate, по scope
+    memory_max_user: int = 5
+    memory_max_project: int = 5
+    memory_max_document: int = 5
+    memory_max_summary: int = 3
+    memory_raw_limit: int = 20  # кандидатов из поиска ДО gate
+    memory_rerank_top_k: int = 20  # после RRF — в reranker
+    # Этап 2: автоэкстракция и consolidation
+    memory_auto_accept_confidence: float = 0.80  # выше — кандидат принимается без очереди
+    memory_extract_window: int = 12  # последних реплик в окно экстракции
+
     # --- MinerU (парсинг) ---
     mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
     # Путь к бинарю mineru: пусто → сосед текущего python (общий venv). Для VLM

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, update
 
 from rag_app.api.audit import audit
-from rag_app.api.auth import require_user
+from rag_app.api.auth import User, require_user
 from rag_app.config import settings
 from rag_app.db.models import ChatMessage, ChatSession
 from rag_app.observability import log_agent_trace, log_chat_trace
@@ -40,11 +40,19 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _owner_ok(session: ChatSession, user: User) -> bool:
+    """RBAC: admin — любой чат; user — свои + сессии dev-периода (owner NULL)."""
+    return user.is_admin or session.owner_sub is None or session.owner_sub == user.sub
+
+
 @router.post("")
-async def chat(request: Request, body: ChatIn) -> StreamingResponse:
+async def chat(request: Request, body: ChatIn, memory: bool = True) -> StreamingResponse:
     if not body.message.strip():
         raise HTTPException(422, "пустой вопрос")
     app = request.app
+    user: User = request.state.user
+    # временный чат (?memory=off): не пишем/не читаем память (§9, Этап 3)
+    mem_on = memory and settings.memory_enabled
     await audit(
         request,
         "chat_query",
@@ -62,18 +70,31 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
                 if chat_session is None:
                     yield _sse({"type": "error", "detail": "сессия не найдена"})
                     return
+                if not _owner_ok(chat_session, user):
+                    yield _sse({"type": "error", "detail": "сессия не найдена"})
+                    return
             else:
                 chat_session = ChatSession(
                     id=uuid.uuid4(),  # default колонки срабатывает только на flush
                     title=make_session_title(body.message),
                     document_id=body.document_id,
+                    owner_sub=user.sub,
+                    folder_id=body.folder_id,
                 )
                 db.add(chat_session)
                 await db.flush()  # сессия должна попасть в INSERT раньше сообщения (FK)
             db.add(ChatMessage(session_id=chat_session.id, role="user", content=body.message))
-            await db.commit()
             session_id = chat_session.id
             doc_filter = chat_session.document_id or body.document_id
+            project_id = chat_session.folder_id or body.folder_id
+            # scope памяти треда: user=owner, project=папка, document=документ, thread=сессия
+            mem_scope = app.state.memory.scope_for(
+                user.sub, project_id=project_id, document_id=doc_filter, thread_id=session_id
+            )
+            # входящая реплика → memory_events (ground-truth) в том же коммите
+            if mem_on:
+                await app.state.memory.record_message(db, mem_scope, "user", body.message)
+            await db.commit()
 
             all_msgs = (
                 (
@@ -101,6 +122,9 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
                     .where(ChatSession.id == session_id)
                     .values(summary=summary, summary_msg_count=len(older))
                 )
+                # §5 п.5 поглощается памятью: сводка треда → memory_item(kind=summary)
+                if mem_on:
+                    await app.state.memory.write_summary(db, mem_scope, summary)
                 await db.commit()
         history = [{"role": m.role, "content": m.content} for m in recent]
         yield _sse({"type": "session", "session_id": str(session_id)})
@@ -108,11 +132,32 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
         # 2) роутинг по сложности (§ 5 п.7): single-hop hybrid+rerank или
         #    multi-hop агентный цикл сбора контекста
         t_retr = time.monotonic()
-        mode, reason = await classify(app.state.chat_engine.client, body.message, history)
-        yield _sse({"type": "mode", "mode": mode, "reason": reason})
+        route_info = await classify(app.state.chat_engine.client, body.message, history)
+        mode, reason = route_info.mode, route_info.reason
+        yield _sse({"type": "mode", "mode": mode, "reason": reason, "route": route_info.route})
+
+        # память (§4): ретрив по разрешённому scope → gate → отдельный блок промпта
+        memory_block: str | None = None
+        if mem_on and route_info.needs_memory:
+            try:
+                async with sessionmaker() as mdb:
+                    memory_block, mem_hits = await app.state.memory.retrieve_block(
+                        mdb, body.message, mem_scope
+                    )
+                if memory_block:
+                    yield _sse({"type": "memory", "count": len(mem_hits)})
+            except Exception as exc:
+                logger.warning("memory retrieve failed: %s", exc)
+
+        # memory_only (§2.3.1): вопрос о пользователе/проекте — документный поиск
+        # пропускаем, отвечаем из памяти.
+        needs_docs = route_info.route != "memory_only"
         agent: AgentLoop | None = None
+        chunks = []
         try:
-            if mode == "multi_hop":
+            if not needs_docs:
+                pass  # без документного контекста
+            elif mode == "multi_hop":
                 tools = AgentTools(
                     sessionmaker,
                     app.state.retriever,
@@ -134,7 +179,6 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
             yield _sse({"type": "error", "detail": f"поиск не удался: {exc}"})
             return
         if agent is not None:
-            user = getattr(request.state, "user", None)
             log_agent_trace(
                 question=body.message,
                 mode=mode,
@@ -144,44 +188,52 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
                 n_chunks=len(chunks),
                 ms=int((time.monotonic() - t_retr) * 1000),
                 session_id=str(session_id),
-                user_sub=user.sub if user else None,
+                user_sub=user.sub,
             )
-        if not chunks:
-            answer = "В библиотеке не нашлось проиндексированных фрагментов по этому запросу."
-            async with sessionmaker() as db:
-                db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
-                await db.commit()
-            yield _sse({"type": "delta", "text": answer})
-            yield _sse({"type": "done", "citations": []})
-            return
-
-        # 3) стрим ответа
-        parts: list[str] = []
+        # 3) ответ. Нет ни документов, ни памяти → канонический отказ (но дальше
+        #    всё равно фиксируем реплику и ставим экстракцию: входящее сообщение
+        #    могло нести факты для памяти). Иначе — стрим из LLM.
         t_gen = time.monotonic()
-        try:
-            async for delta in app.state.chat_engine.stream_answer(
-                body.message, chunks, history, summary=summary
-            ):
-                parts.append(delta)
-                yield _sse({"type": "delta", "text": delta})
-        except Exception as exc:
-            logger.exception("LLM stream failed")
-            yield _sse({"type": "error", "detail": f"генерация не удалась: {exc}"})
-            return
+        if needs_docs and not chunks and not memory_block:
+            answer = "В библиотеке не нашлось проиндексированных фрагментов по этому запросу."
+            yield _sse({"type": "delta", "text": answer})
+        else:
+            parts: list[str] = []
+            try:
+                async for delta in app.state.chat_engine.stream_answer(
+                    body.message, chunks, history, summary=summary, memory_block=memory_block
+                ):
+                    parts.append(delta)
+                    yield _sse({"type": "delta", "text": delta})
+            except Exception as exc:
+                logger.exception("LLM stream failed")
+                yield _sse({"type": "error", "detail": f"генерация не удалась: {exc}"})
+                return
+            answer = "".join(parts).strip()
 
-        answer = "".join(parts).strip()
-        citations = extract_citations(answer, chunks)
+        citations = extract_citations(answer, chunks) if chunks else []
         async with sessionmaker() as db:
             msg = ChatMessage(
                 session_id=session_id, role="assistant", content=answer, citations=citations
             )
             db.add(msg)
+            await db.flush()
             await db.execute(
                 update(ChatSession).where(ChatSession.id == session_id).values(updated_at=func.now())
             )
+            # ответ → memory_events (ground-truth для асинхронной экстракции, Этап 2)
+            if mem_on:
+                await app.state.memory.record_message(
+                    db, mem_scope, "assistant", answer, source_message_id=msg.id
+                )
             await db.commit()
             message_id = msg.id
-        user = getattr(request.state, "user", None)
+        # асинхронная экстракция кандидатов памяти (вне latency ответа, §4)
+        if mem_on:
+            try:
+                await app.state.arq.enqueue_job("extract_memory", str(session_id))
+            except Exception as exc:
+                logger.warning("extract_memory enqueue failed: %s", exc)
         log_chat_trace(
             question=body.message,
             chunks=chunks,
@@ -189,7 +241,7 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
             model=settings.llm_model,
             ms=int((time.monotonic() - t_gen) * 1000),
             session_id=str(session_id),
-            user_sub=user.sub if user else None,
+            user_sub=user.sub,
         )
         yield _sse({"type": "done", "citations": citations, "message_id": str(message_id)})
 
@@ -202,18 +254,23 @@ async def chat(request: Request, body: ChatIn) -> StreamingResponse:
 
 @router.get("/sessions")
 async def list_sessions(request: Request) -> list[dict]:
-    async with request.app.state.sessionmaker() as db:
-        rows = (
-            (await db.execute(select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(100)))
-            .scalars()
-            .all()
+    user: User = request.state.user
+    stmt = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(100)
+    if not user.is_admin:
+        # свои сессии + сессии dev-периода (owner NULL), как _owner_filter в documents.py
+        stmt = stmt.where(
+            (ChatSession.owner_sub == user.sub) | (ChatSession.owner_sub.is_(None))
         )
+    async with request.app.state.sessionmaker() as db:
+        rows = (await db.execute(stmt)).scalars().all()
     return [
         {
             "id": str(s.id),
             "title": s.title,
             "document_id": str(s.document_id) if s.document_id else None,
+            "folder_id": str(s.folder_id) if s.folder_id else None,
             "created_at": s.created_at.isoformat(),
+            "updated_at": s.updated_at.isoformat(),
         }
         for s in rows
     ]
@@ -221,7 +278,11 @@ async def list_sessions(request: Request) -> list[dict]:
 
 @router.get("/sessions/{session_id}/messages")
 async def session_messages(request: Request, session_id: uuid.UUID) -> list[dict]:
+    user: User = request.state.user
     async with request.app.state.sessionmaker() as db:
+        session = await db.get(ChatSession, session_id)
+        if session is None or not _owner_ok(session, user):
+            raise HTTPException(404, "сессия не найдена")
         rows = (
             (
                 await db.execute(
@@ -250,9 +311,10 @@ async def export_session(
     request: Request, session_id: uuid.UUID, format: str = "md"
 ) -> StreamingResponse:
     """Выжимка/история сессии (§ 5): LLM-сводка + транскрипт + источники → md/docx."""
+    user: User = request.state.user
     async with request.app.state.sessionmaker() as db:
         session = await db.get(ChatSession, session_id)
-        if session is None:
+        if session is None or not _owner_ok(session, user):
             raise HTTPException(404, "сессия не найдена")
         messages = (
             (

@@ -23,16 +23,24 @@ _FAKE_CLIENT = SimpleNamespace(
 
 
 def test_classify_fallback_multi_hop() -> None:
-    mode, reason = asyncio.run(
-        classify(_FAKE_CLIENT, "Сравни раздел 4 и 5 и сведи всё в таблицу", [])
-    )
-    assert mode == "multi_hop"
-    assert "эвристика" in reason
+    r = asyncio.run(classify(_FAKE_CLIENT, "Сравни раздел 4 и 5 и сведи всё в таблицу", []))
+    assert r.mode == "multi_hop"
+    assert r.route == "agentic_multi_step"
+    assert "эвристика" in r.reason
 
 
 def test_classify_fallback_single_hop() -> None:
-    mode, _ = asyncio.run(classify(_FAKE_CLIENT, "Что такое расчётное давление", []))
-    assert mode == "single_hop"
+    r = asyncio.run(classify(_FAKE_CLIENT, "Что такое расчётное давление", []))
+    assert r.mode == "single_hop"
+    assert r.route == "doc_only"
+    assert r.needs_memory is False
+
+
+def test_classify_fallback_memory_hint() -> None:
+    # упоминание прошлых обсуждений → нужна память (doc_plus_memory)
+    r = asyncio.run(classify(_FAKE_CLIENT, "А что там с тем договором, что обсуждали ранее", []))
+    assert r.needs_memory is True
+    assert r.route == "doc_plus_memory"
 
 
 def test_dispatch_unknown_tool() -> None:

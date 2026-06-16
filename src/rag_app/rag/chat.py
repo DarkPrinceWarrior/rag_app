@@ -32,6 +32,17 @@ CHAT_SYSTEM_PROMPT = """\
 3. Числа, единицы измерения и обозначения стандартов переноси без изменений.
 4. Если фрагменты противоречат друг другу — отметь это явно."""
 
+# Маршрут memory_only (§2.3.1): документного контекста нет — отвечаем из памяти
+# о пользователе/проекте и истории диалога; цитаты [n] не требуются.
+MEMORY_ONLY_SYSTEM_PROMPT = """\
+Ты — ассистент по корпоративной технической документации (нефтегаз, строительство, договоры).
+Отвечай на русском языке, кратко и по делу.
+
+Этот вопрос — о пользователе/проекте, не о содержимом документов. Отвечай на
+основании раздела «Память о пользователе и проекте» и истории диалога. Если
+нужных данных в памяти нет — честно скажи, что не располагаешь этой информацией,
+и не выдумывай. Ссылки [n] не нужны (фрагментов документов здесь нет)."""
+
 
 def build_context_block(chunks: list[RetrievedChunk]) -> str:
     parts = []
@@ -108,23 +119,31 @@ class ChatEngine:
         chunks: list[RetrievedChunk],
         history: list[dict[str, str]],
         summary: str | None = None,
+        memory_block: str | None = None,
     ) -> AsyncIterator[str]:
-        context_block = build_context_block(chunks)
-        system = CHAT_SYSTEM_PROMPT
+        # Нет документного контекста (маршрут memory_only / пустой поиск, но есть
+        # память) → отвечаем из памяти, не из строгого doc-only промпта.
+        system = CHAT_SYSTEM_PROMPT if chunks else MEMORY_ONLY_SYSTEM_PROMPT
         if summary:
             system += f"\n\nКраткое содержание более ранней части диалога:\n{summary}"
+        # Блок памяти — ОТДЕЛЬНО от фрагментов документов и как contextual hints
+        # (§1, §6.2): не переопределяет факты/числа/цитаты документа.
+        if memory_block:
+            system += f"\n\n=== Память о пользователе и проекте ===\n{memory_block}"
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         messages.extend(history[-settings.rag_history_messages :])
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"Фрагменты документов:\n\n{context_block}\n\n"
-                    f"Вопрос: {question}\n\n"
-                    "Ответь по правилам (цитаты [n] обязательны)."
-                ),
-            }
-        )
+        if chunks:
+            user_content = (
+                f"Фрагменты документов:\n\n{build_context_block(chunks)}\n\n"
+                f"Вопрос: {question}\n\n"
+                "Ответь по правилам (цитаты [n] обязательны)."
+            )
+        else:
+            user_content = (
+                f"Вопрос: {question}\n\n"
+                "Ответь на основании памяти о пользователе/проекте и истории диалога."
+            )
+        messages.append({"role": "user", "content": user_content})
         stream = await self.client.chat.completions.create(
             model=settings.llm_model,
             messages=messages,

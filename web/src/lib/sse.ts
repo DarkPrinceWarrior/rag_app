@@ -8,9 +8,10 @@ export async function streamChat(
   body: unknown,
   onEvent: (ev: SSEEvent) => void,
   signal?: AbortSignal,
+  memoryOff = false,
 ): Promise<void> {
   const token = await bearer()
-  const resp = await fetch('/api/chat', {
+  const resp = await fetch(memoryOff ? '/api/chat?memory=off' : '/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
