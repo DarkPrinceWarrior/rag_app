@@ -58,11 +58,16 @@ async def _chat(client: httpx.AsyncClient, message: str, *, session_id=None) -> 
     }
 
 
-async def _wait_for_memory(sm, timeout: float = 60.0) -> int:
-    """Ждём, пока live-воркер создаст memory_items для тестового пользователя."""
+async def _wait_for_memory(sm, memory, timeout: float = 60.0) -> int:
+    """Ждём, пока live-воркер создаст memory_items для тестового пользователя.
+    Под RLS FORCE счётчик обязан выставить GUC, иначе вернёт 0 (что само по себе
+    подтверждает enforce)."""
+    from rag_app.rag.memory.rls import apply_scope_guc
+
     waited = 0.0
     while waited < timeout:
         async with sm() as db:
+            await apply_scope_guc(db, memory.scope_for(_TEST_SUB))
             n = (
                 await db.execute(
                     sql(
@@ -100,7 +105,7 @@ async def main() -> None:
             print(f"  ответ: {s1['answer'][:160]}")
 
             print("── Ждём извлечение памяти live-воркером ──")
-            n = await _wait_for_memory(sessionmaker, timeout=75)
+            n = await _wait_for_memory(sessionmaker, app.state.memory, timeout=75)
             print(f"  memory_items создано: {n}")
             async with sessionmaker() as db:
                 items = (

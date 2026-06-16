@@ -36,14 +36,17 @@ async def main() -> None:
     d_a, d_b = uuid.uuid4(), uuid.uuid4()
 
     async def cleanup() -> None:
-        async with sm() as s:
-            await memory.purge_user(s, U_A)
-            await memory.purge_user(s, U_B)
-            await s.commit()
+        # каждый пользователь — в своей транзакции: GUC (SET LOCAL) транзакционный,
+        # под FORCE отложенный audit-INSERT проверяется против GUC момента commit
+        for u in (U_A, U_B):
+            async with sm() as s:
+                await memory.purge_user(s, u)
+                await s.commit()
 
     await cleanup()
 
-    # контролируемый набор: имя → (item.id)
+    # контролируемый набор: имя → item.id. Каждый пользователь — в своей
+    # транзакции (под FORCE GUC транзакционный, аудит-INSERT проверяется на commit).
     async with sm() as s:
         i1 = await memory.add_manual(
             s, memory.scope_for(U_A), scope_kind="user", kind="fact",
@@ -54,6 +57,8 @@ async def main() -> None:
         i3 = await memory.add_manual(
             s, memory.scope_for(U_A, document_id=d_a), scope_kind="document", kind="fact",
             content="ALPHA документный раздел A в документе DA")
+        await s.commit()
+    async with sm() as s:
         i4 = await memory.add_manual(
             s, memory.scope_for(U_B), scope_kind="user", kind="fact",
             content="BETA пользовательский секрет B")
@@ -61,7 +66,7 @@ async def main() -> None:
             s, memory.scope_for(U_B, project_id=p_a), scope_kind="project", kind="fact",
             content="BETA проектный факт B в проекте PA")
         await s.commit()
-        names = {i1.id: "I1", i2.id: "I2", i3.id: "I3", i4.id: "I4", i5.id: "I5"}
+    names = {i1.id: "I1", i2.id: "I2", i3.id: "I3", i4.id: "I4", i5.id: "I5"}
 
     # (контекст запроса, что разрешено видеть)
     contexts = [

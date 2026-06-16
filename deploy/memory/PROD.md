@@ -16,48 +16,44 @@ memory-пути (чат, CRUD, воркер).
 поэтому деплой кода + миграции безопасен: даже при пропущенном GUC чат и память
 работают. Это даёт защиту только от не-владельческих ролей.
 
-### ⚠️ КРИТИЧНО: суперпользователь обходит RLS даже под FORCE
+### RLS FORCE — АКТИВЕН (2026-06-16)
 
-Миграция `0013` включает FORCE на `memory_*` (`relforcerowsecurity=true`), и
-app-level scope-фильтр + gate дают `leakage_rate=0` (доказано
-`scripts/_leakage_suite.py`). **НО** роль `rag` (дефолтный `POSTGRES_USER`
-docker-образа) — **суперпользователь Postgres, а суперпользователи обходят RLS
-безусловно**, даже FORCE. Проверено: `SELECT … FROM memory_items` без GUC под
-`rag` возвращает строки. Значит **FORCE сам по себе пока инертен** — изоляцию
-реально держит app-уровень.
+Миграция `0013` включила FORCE на `memory_*` (`relforcerowsecurity=true`). Чтобы
+FORCE действительно enforce'ил (суперпользователь Postgres обходит RLS даже под
+FORCE), заведены **не-суперпользовательские роли** и сервисы репойнчены на них:
 
-Чтобы RLS-второй-контур заработал, нужны НЕ-суперпользовательские роли
-(требует решения по безопасности прод-БД):
+- **`rag_api`** (`NOSUPERUSER NOBYPASSRLS`) — роль API; RLS к ней применяется,
+  GUC выставляется per-request (`apply_scope_guc` вшит во все memory-пути);
+- **`rag_worker`** (`NOSUPERUSER BYPASSRLS`) — роль воркера; обходит RLS для
+  кросс-юзерных job'ов (consolidation cron, retention purge).
 
-1. **Не-суперюзер роль для API** (RLS применяется только к не-суперюзерам):
+Пароли — в gitignored `/root/projects/rag_app/.env.{api,worker}.local` (chmod 600).
 
-   ```sql
-   CREATE ROLE rag_api LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
-   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_api;
-   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rag_api;
-   ```
+**Проверено:** под `rag_api` запрос без GUC → 0 строк, с верным GUC → свои, с
+чужим GUC → 0 (`scripts/_leakage_suite.py` = 0 утечек по 7 контекстам); чат
+кросс-сессионно работает (rag_api + rag_worker); тест-остатков нет.
 
-   API (`tmux rag_api`) → `RAG_DATABASE_URL` под `rag_api`. GUC выставляется
-   per-request (`apply_scope_guc`, уже вшит во все memory-пути).
+#### ⚠️ Канонический запуск сервисов (после reboot/рестарта — обязательно!)
 
-2. **BYPASSRLS роль для воркера** (consolidation/purge ходят кросс-юзерно):
+Если поднять сервисы СТАРОЙ командой (под `rag`-суперюзером) — **FORCE молча
+станет инертным**. Запускать ТОЛЬКО так (роль берётся из env-файла):
 
-   ```sql
-   CREATE ROLE rag_worker LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
-   GRANT ALL ON ALL TABLES IN SCHEMA public TO rag_worker;
-   GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO rag_worker;
-   ```
+```bash
+tmux new -d -s rag_api "cd /root/projects/rag_app && set -a && . ./.env.api.local && \
+  /root/.local/bin/uv run uvicorn rag_app.api.main:app --port 8100 2>&1 | tee -a /tmp/rag_api.log"
+tmux new -d -s rag_worker "cd /root/projects/rag_app && set -a && . ./.env.worker.local && \
+  /root/.local/bin/uv run arq rag_app.workers.main.WorkerSettings 2>&1 | tee -a /tmp/rag_worker.log"
+```
 
-   Воркеру (`tmux rag_worker`) → `RAG_DATABASE_URL` под `rag_worker`.
+Проверка ролей: `SELECT usename FROM pg_stat_activity WHERE datname='rag_app'` →
+должны быть `rag_api` (API) и `rag_worker` (воркер), не `rag`.
 
-3. Прогнать `scripts/_leakage_suite.py` ПОД `rag_api`-ролью + явный тест
-   «без GUC → 0 строк» (под не-суперюзером он теперь действительно режет).
-4. Smoke под нагрузкой (чат + `/api/memory/*`) — выдача не пустеет (GUC доходит).
-   Откат — `alembic downgrade -1` (NO FORCE).
+#### Ограничение под FORCE
 
-> ⚠️ Без шага 1 (не-суперюзер API) FORCE — только заявленное состояние схемы,
-> фактическая изоляция = app-фильтр + gate (доказан leakage-suite). Системные
-> джобы под RLS одного тенанта не запускать — только `BYPASSRLS` (§3.7).
+`SET LOCAL` GUC — транзакционный: **нельзя писать строки нескольких пользователей
+в одной транзакции** под `rag_api` (отложенный audit-INSERT проверяется на commit
+против последнего GUC). Прод-пути это не нарушают (purge — один юзер на запрос,
+воркер — BYPASSRLS). Откат FORCE — `alembic downgrade -1`.
 
 ## Retention / 152-ФЗ
 
