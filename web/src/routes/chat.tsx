@@ -9,6 +9,8 @@ import { streamChat } from '@/lib/sse'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { Markdown } from '@/components/Markdown'
+import { SegmentBody } from '@/components/SegmentBody'
+import { dedupeCitations } from '@/lib/citations'
 
 export const Route = createFileRoute('/chat')({
   validateSearch: (s: Record<string, unknown>): { doc?: string; sid?: string } => ({
@@ -300,15 +302,7 @@ function SourcePanel({ citation, onClose }: { citation: Citation; onClose: () =>
         ) : (
           cited.map((s) => (
             <div key={s.id} className="mb-4">
-              <div className="whitespace-pre-wrap text-sm text-foreground/90">
-                {s.translated_text || s.source_text}
-              </div>
-              {s.translated_text && s.source_text && (
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-xs text-muted-foreground">оригинал</summary>
-                  <div className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{s.source_text}</div>
-                </details>
-              )}
+              <SegmentBody s={s} />
             </div>
           ))
         )}
@@ -444,7 +438,7 @@ function Bubble({
       )}
       {m.citations.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {m.citations.map((c) => (
+          {dedupeCitations(m.citations).map((c) => (
             <button
               key={c.n}
               onClick={() => onCite(c)}

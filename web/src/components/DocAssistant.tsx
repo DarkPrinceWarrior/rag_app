@@ -4,6 +4,7 @@ import { MessageCircle, X, Loader2 } from 'lucide-react'
 import { streamChat } from '@/lib/sse'
 import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/Markdown'
+import { dedupeCitations } from '@/lib/citations'
 import type { Citation } from '@/lib/api'
 
 /** Плавающий ассистент поверх страницы просмотра: чат, привязанный к открытому
@@ -167,7 +168,7 @@ function ABubble({ m }: { m: AMsg }) {
       )}
       {m.citations.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-1">
-          {m.citations.map((c) => (
+          {dedupeCitations(m.citations).map((c) => (
             <Link
               key={c.n}
               to="/view/$id"
