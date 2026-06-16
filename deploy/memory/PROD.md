@@ -16,36 +16,48 @@ memory-пути (чат, CRUD, воркер).
 поэтому деплой кода + миграции безопасен: даже при пропущенном GUC чат и память
 работают. Это даёт защиту только от не-владельческих ролей.
 
-### Финальный flip в FORCE (после верификации)
+### ⚠️ КРИТИЧНО: суперпользователь обходит RLS даже под FORCE
 
-1. Завести роль воркера с обходом RLS (consolidation/purge ходят кросс-юзерно):
+Миграция `0013` включает FORCE на `memory_*` (`relforcerowsecurity=true`), и
+app-level scope-фильтр + gate дают `leakage_rate=0` (доказано
+`scripts/_leakage_suite.py`). **НО** роль `rag` (дефолтный `POSTGRES_USER`
+docker-образа) — **суперпользователь Postgres, а суперпользователи обходят RLS
+безусловно**, даже FORCE. Проверено: `SELECT … FROM memory_items` без GUC под
+`rag` возвращает строки. Значит **FORCE сам по себе пока инертен** — изоляцию
+реально держит app-уровень.
+
+Чтобы RLS-второй-контур заработал, нужны НЕ-суперпользовательские роли
+(требует решения по безопасности прод-БД):
+
+1. **Не-суперюзер роль для API** (RLS применяется только к не-суперюзерам):
 
    ```sql
-   CREATE ROLE rag_worker LOGIN PASSWORD '...' BYPASSRLS;
+   CREATE ROLE rag_api LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_api;
+   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rag_api;
+   ```
+
+   API (`tmux rag_api`) → `RAG_DATABASE_URL` под `rag_api`. GUC выставляется
+   per-request (`apply_scope_guc`, уже вшит во все memory-пути).
+
+2. **BYPASSRLS роль для воркера** (consolidation/purge ходят кросс-юзерно):
+
+   ```sql
+   CREATE ROLE rag_worker LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
    GRANT ALL ON ALL TABLES IN SCHEMA public TO rag_worker;
    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO rag_worker;
    ```
 
-   Воркеру (`tmux rag_worker`) задать `RAG_DATABASE_URL` под `rag_worker`.
-   API (`tmux rag_api`) остаётся под `rag` (GUC выставляется per-request).
+   Воркеру (`tmux rag_worker`) → `RAG_DATABASE_URL` под `rag_worker`.
 
-2. Прогнать smoke под нагрузкой (чат + `/api/memory/*`) — убедиться, что выдача
-   не пустеет (значит GUC доходит до всех запросов).
+3. Прогнать `scripts/_leakage_suite.py` ПОД `rag_api`-ролью + явный тест
+   «без GUC → 0 строк» (под не-суперюзером он теперь действительно режет).
+4. Smoke под нагрузкой (чат + `/api/memory/*`) — выдача не пустеет (GUC доходит).
+   Откат — `alembic downgrade -1` (NO FORCE).
 
-3. Включить FORCE:
-
-   ```sql
-   ALTER TABLE memory_events     FORCE ROW LEVEL SECURITY;
-   ALTER TABLE memory_items      FORCE ROW LEVEL SECURITY;
-   ALTER TABLE memory_candidates FORCE ROW LEVEL SECURITY;
-   ALTER TABLE memory_audit_log  FORCE ROW LEVEL SECURITY;
-   ```
-
-4. Adversarial leakage-suite (§10): запрос пользователя B не возвращает items A —
-   `leakage_rate = 0`. Откат — `NO FORCE`.
-
-> ⚠️ Не запускать системные джобы (consolidation/purge) под RLS одного тенанта —
-> только `BYPASSRLS`-роль (§3.7). При single-org tenant константа `RAG_TENANT_ID`.
+> ⚠️ Без шага 1 (не-суперюзер API) FORCE — только заявленное состояние схемы,
+> фактическая изоляция = app-фильтр + gate (доказан leakage-suite). Системные
+> джобы под RLS одного тенанта не запускать — только `BYPASSRLS` (§3.7).
 
 ## Retention / 152-ФЗ
 
