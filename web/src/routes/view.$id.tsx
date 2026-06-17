@@ -40,6 +40,8 @@ function Viewer() {
   const [rightText, setRightText] = useState(false)
   // режим «текст»: просмотр (чистый Markdown+формулы) или правка (DocFlow)
   const [edit, setEdit] = useState(false)
+  // страница MD-просмотра DOCX (у DOCX нет page_idx — бьём поток сами)
+  const [docPage, setDocPage] = useState(0)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -49,11 +51,10 @@ function Viewer() {
   const hasOfficeView =
     !!docQ.data && ['docx', 'xlsx', 'pptx'].includes(docQ.data.kind) && !!docQ.data.has_view
 
-  // дефолт правой панели: текстовый PDF и DOCX открываем сразу в «текст» —
-  // связный перевод (DOCX: + картинки/таблицы), без артефактов. BabelDOC-вёрстка
-  // на плотном академическом тексте режет крупные заголовки и рвёт inline-термины
-  // (флаги CLI это не лечат). Сканы/рисунки (pdf_scan) — в «вёрстка» (раскладка и
-  // есть смысл). Ставится один раз на смену типа; ручной тумблер не перетирается.
+  // дефолт правой панели: pdf_text и docx → «текст» (богатый MD-рендер DocRead
+  // с заголовками/абзацами/таблицами/картинками; DOCX бьётся на страницы);
+  // pdf_scan → «вёрстка» (раскладка чертежа и есть содержимое). «как в Microsoft»
+  // (office-PDF) остаётся опцией. Ставится раз на смену типа; тумблер не перетирается.
   const defKindRef = useRef<string | null>(null)
   useEffect(() => {
     const k = docQ.data?.kind
@@ -62,6 +63,7 @@ function Viewer() {
       setRightText(k === 'pdf_text' || k === 'docx')
     }
   }, [docQ.data?.kind])
+  useEffect(() => setDocPage(0), [id])
 
   // переход от цитаты/поиска: страница + bbox + подсветка в тексте
   useEffect(() => {
@@ -234,6 +236,8 @@ function Viewer() {
   // «текст» (чистый MD-просмотр: абзацы/таблицы/картинки, как у PDF) ↔
   // «как в Microsoft» (office-PDF перевода, попиксельная вёрстка).
   if (hasOfficeView && docQ.data?.kind === 'docx') {
+    const docPages = splitDocPages(segs)
+    const dp = Math.min(docPage, docPages.length - 1)
     return (
       <div>
         {header}
@@ -267,29 +271,42 @@ function Viewer() {
                 </button>
               </div>
               {rightText && (
-                <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                  <button
-                    onClick={() => setEdit(false)}
-                    className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                  >
-                    просмотр
-                  </button>
-                  <button
-                    onClick={() => setEdit(true)}
-                    className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                  >
-                    править
-                  </button>
-                </div>
+                <>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="sm" disabled={dp <= 0} onClick={() => setDocPage(dp - 1)}>
+                      ←
+                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      стр. {dp + 1} / {docPages.length}
+                    </span>
+                    <Button variant="ghost" size="sm" disabled={dp >= docPages.length - 1} onClick={() => setDocPage(dp + 1)}>
+                      →
+                    </Button>
+                  </div>
+                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
+                    <button
+                      onClick={() => setEdit(false)}
+                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                    >
+                      просмотр
+                    </button>
+                    <button
+                      onClick={() => setEdit(true)}
+                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                    >
+                      править
+                    </button>
+                  </div>
+                </>
               )}
             </div>
             {rightText ? (
               <div className="flex-1 overflow-auto">
                 <article className="mx-auto max-w-3xl px-6 py-5">
                   {edit ? (
-                    <DocFlow segs={segs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
+                    <DocFlow segs={docPages[dp]} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
                   ) : (
-                    <DocRead segs={segs} plain citedId={cited} />
+                    <DocRead segs={docPages[dp]} citedId={cited} />
                   )}
                 </article>
               </div>
@@ -298,7 +315,12 @@ function Viewer() {
             )}
           </div>
         </div>
-        <DocAssistant docId={id} page={page} filename={docQ.data?.filename} />
+        <DocAssistant
+          docId={id}
+          page={dp + 1}
+          pageText={docPages[dp].map(segPlainText).filter((t) => t.trim()).join('\n')}
+          filename={docQ.data?.filename}
+        />
       </div>
     )
   }
@@ -465,6 +487,29 @@ function eqMarkdown(s: Segment): string {
     .replace(/\$\$$/, '')
     .trim()
   return `$$\n${t}\n$$`
+}
+
+// DOCX без page_idx — бьём поток сегментов на «страницы» для MD-просмотра
+// (богатый Markdown-рендер, как у PDF, но быстро и с листанием). Рвём по
+// бюджету символов, предпочитая границу крупного заголовка; таблицу (серию
+// ячеек одного location.t) не разрезаем.
+function splitDocPages(segs: Segment[], maxChars = 2600): Segment[][] {
+  const pages: Segment[][] = []
+  let cur: Segment[] = []
+  let chars = 0
+  for (const s of segs) {
+    const inTable = s.location?.t != null
+    const topHeading = s.kind === 'heading' && (s.heading_level ?? 9) <= 2
+    if (cur.length && !inTable && (chars >= maxChars || (topHeading && chars >= maxChars * 0.5))) {
+      pages.push(cur)
+      cur = []
+      chars = 0
+    }
+    cur.push(s)
+    chars += (textOf(s, 'translated') || textOf(s, 'source')).length + 24
+  }
+  if (cur.length) pages.push(cur)
+  return pages.length ? pages : [segs]
 }
 
 // Картинка из оригинала: тег <img> не шлёт Bearer, поэтому тянем через
