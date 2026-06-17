@@ -24,7 +24,7 @@ import pypdfium2 as pdfium
 
 from rag_app.config import settings
 from rag_app.db.models import SegmentKind
-from rag_app.pipeline.parse import PDFIUM_LOCK
+from rag_app.pipeline.parse import PDFIUM_LOCK, _cap
 from rag_app.pipeline.segments import SegmentDraft, parse_table
 
 logger = logging.getLogger(__name__)
@@ -100,8 +100,21 @@ def dots_to_segments(page_dir: Path, pdf_path: Path) -> list[SegmentDraft]:
             elements = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if isinstance(elements, dict):
+            elements = [elements]
+        elif not isinstance(elements, list):
+            continue
         psize = sizes[pidx] if pidx < len(sizes) else None
         for el in elements:
+            # dots иногда отдаёт элемент строкой (OCR-фолбэк без разметки) —
+            # трактуем как абзац, а не падаем на el.get(...)
+            if isinstance(el, str):
+                t = el.strip()
+                if t:
+                    drafts.append(SegmentDraft(0, SegmentKind.paragraph, t, pidx))
+                continue
+            if not isinstance(el, dict):
+                continue
             cat = el.get("category")
             text = (el.get("text") or "").strip()
             if cat in _SKIP or not text:
@@ -131,8 +144,9 @@ def dots_to_segments(page_dir: Path, pdf_path: Path) -> list[SegmentDraft]:
                 drafts.append(SegmentDraft(
                     0, SegmentKind.heading, clean, pidx, heading_level=level, meta=meta
                 ))
-            else:  # _PARAGRAPH и всё прочее текстовое
-                drafts.append(SegmentDraft(0, SegmentKind.paragraph, text, pidx, meta=meta))
+            else:  # _PARAGRAPH и всё прочее текстовое (кап под лимит перевода)
+                for piece in _cap([text]):
+                    drafts.append(SegmentDraft(0, SegmentKind.paragraph, piece, pidx, meta=meta))
     for i, d in enumerate(drafts):
         d.idx = i
     return drafts
