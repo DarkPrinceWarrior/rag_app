@@ -1,0 +1,33 @@
+# dots.mocr VLM-сервер (альтернативный парсер pdf_text) — GPU4, порт 8120.
+# rednote-hilab/dots.mocr (3B); CLI dots_mocr/parser.py ходит сюда по OpenAI-API.
+# Сервинг через venv vllm-visual (vLLM 0.22.1 — native dots.ocr/mocr). Память 0.33
+# (~13 ГБ) — GPU4 делит с эмбеддером/реранкером (:8002/:8003).
+[Unit]
+Description=dots.mocr VLM server (GPU4, :8120)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=4
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/services/vllm-visual/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# GPU4 — NUMA node1
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+    /root/services/vllm-visual/.venv/bin/vllm serve /root/models/DotsMOCR \
+    --served-model-name model \
+    --host 127.0.0.1 \
+    --port 8120 \
+    --trust-remote-code \
+    --gpu-memory-utilization 0.33 \
+    --max-model-len 24576 \
+    --chat-template-content-format string
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

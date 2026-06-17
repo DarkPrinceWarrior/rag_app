@@ -37,8 +37,10 @@ from rag_app.llm.visual import VisualEmbedder
 from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc, write_glossary_csv
+from rag_app.pipeline.dots import dots_to_segments, run_dots
 from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.office_render import render_to_pdf
+from rag_app.pipeline.paddle_vl import paddle_to_segments, run_paddle
 from rag_app.pipeline.parse import (
     PDFIUM_LOCK,
     backfill_text_layer,
@@ -97,6 +99,22 @@ async def _upload_segment_images(
 
 # ---------------------------------------------------------------- parse
 
+def _parser_backend(doc: Document) -> str:
+    """Выбранный движок парсинга pdf_text: на документе или дефолт из settings."""
+    return doc.parser_backend or settings.pdf_parser_backend
+
+
+async def _vlm_segments(backend: str, pdf_path: Path, out_dir: Path) -> list[SegmentDraft]:
+    """Парс PDF альтернативным VLM-движком (dots.mocr / PaddleOCR-VL) → SegmentDraft."""
+    if backend == "dots_mocr":
+        page_dir = await run_dots(pdf_path, out_dir)
+        return await asyncio.to_thread(dots_to_segments, page_dir, pdf_path)
+    if backend == "paddle_vl":
+        await run_paddle(pdf_path, out_dir)
+        return await asyncio.to_thread(paddle_to_segments, out_dir)
+    raise RuntimeError(f"неизвестный backend парсера: {backend}")
+
+
 async def parse_document(ctx: dict, doc_id_str: str) -> str:
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
@@ -116,71 +134,99 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 # roadmap § 3.1: детект текстового слоя за миллисекунды;
                 # сканы идут той же командой — mineru -m auto решает постранично
                 n_pages, has_text = await asyncio.to_thread(pdf_info, local_file)
-                out_dir = tmp_path / "mineru_out"
-                if doc.parse_force_ocr:
-                    # битый ToUnicode-cmap текстового слоя → OCR с картинки
-                    # VLM-бэкендом (MinerU 3.3, multilingual — кириллица/таблицы/
-                    # надстрочные); экспорт через оверлей (как скан), а не babeldoc
-                    kind = DocumentKind.pdf_scan
-                    content_list_path = await run_mineru(
-                        local_file,
-                        out_dir,
-                        backend=settings.mineru_force_ocr_backend,
-                        method="ocr",
-                        lang=doc.ocr_lang,
-                    )
+                backend = _parser_backend(doc)
+                out_dir = tmp_path / "parser_out"
+                if not doc.parse_force_ocr and has_text and backend in ("dots_mocr", "paddle_vl"):
+                    # альтернативный VLM-движок (сравнение парсеров): свой формат
+                    # вывода → SegmentDraft напрямую, без mineru content_list/geo
+                    kind = DocumentKind.pdf_text
+                    drafts = await _vlm_segments(backend, local_file, out_dir)
                 else:
-                    kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan
-                    content_list_path = await run_mineru(local_file, out_dir)
-                items = load_content_list(content_list_path)
-                drafts = content_list_to_segments(items)
-                # pdf_text: VLM местами роняет/прореживает целые страницы —
-                # достраиваем их абзацами из текстового слоя (истина для PDF
-                # с текстом), дедуп против VLM. Сканам слой не поможет (no-op).
-                if kind == DocumentKind.pdf_text:
-                    drafts, filled = await asyncio.to_thread(
-                        backfill_text_layer, local_file, drafts
-                    )
-                    if filled:
-                        logger.info("parse %s: достроены страницы из слоя: %s", doc_id, filled)
-                # геометрия в пунктах из middle.json — для оверлея сканов и
-                # подсветки цитат (этап 3); content_list-bbox в другом масштабе
-                geo = load_block_geometry(content_list_path)
-                for d in drafts:
-                    if d.kind in (SegmentKind.table, SegmentKind.image, SegmentKind.equation):
-                        bbox_pt = geo.pop_typed(d.page_idx, d.kind.value)
+                    if doc.parse_force_ocr:
+                        # битый ToUnicode-cmap текстового слоя → OCR с картинки
+                        # VLM-бэкендом (MinerU 3.3, multilingual — кириллица/таблицы/
+                        # надстрочные); экспорт через оверлей (как скан), а не babeldoc
+                        kind = DocumentKind.pdf_scan
+                        content_list_path = await run_mineru(
+                            local_file,
+                            out_dir,
+                            backend=settings.mineru_force_ocr_backend,
+                            method="ocr",
+                            lang=doc.ocr_lang,
+                        )
                     else:
-                        bbox_pt = geo.match_text(d.page_idx, d.source_text)
-                        # списки/оглавления content_list схлопывает в один абзац —
-                        # восстанавливаем переносы и отступы из строк middle.json
-                        reflowed = geo.reflow(d.page_idx, d.source_text)
-                        if reflowed:
-                            d.source_text = reflowed
-                    size = geo.page_sizes.get(d.page_idx) if d.page_idx is not None else None
-                    if bbox_pt and size:
-                        d.meta["bbox_pt"] = bbox_pt
-                        d.meta["page_size_pt"] = list(size)
-                artifact_key = f"{doc_id}/content_list.json"
-                await storage.put_bytes(
-                    settings.bucket_artifacts,
-                    artifact_key,
-                    content_list_path.read_bytes(),
-                    content_type="application/json",
-                )
-                # картинки/рисунки/графики из оригинала → MinIO (для вставки
-                # в MD-просмотр). MinerU извлекает их в out_dir рядом с
-                # content_list; раньше они выбрасывались вместе с tmp.
-                await _upload_segment_images(storage, doc_id, content_list_path.parent, drafts)
+                        kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan
+                        content_list_path = await run_mineru(local_file, out_dir)
+                    items = load_content_list(content_list_path)
+                    drafts = content_list_to_segments(items)
+                    # pdf_text: VLM местами роняет/прореживает целые страницы —
+                    # достраиваем их абзацами из текстового слоя (истина для PDF
+                    # с текстом), дедуп против VLM. Сканам слой не поможет (no-op).
+                    if kind == DocumentKind.pdf_text:
+                        drafts, filled = await asyncio.to_thread(
+                            backfill_text_layer, local_file, drafts
+                        )
+                        if filled:
+                            logger.info("parse %s: достроены страницы из слоя: %s", doc_id, filled)
+                    # геометрия в пунктах из middle.json — для оверлея сканов и
+                    # подсветки цитат (этап 3); content_list-bbox в другом масштабе
+                    geo = load_block_geometry(content_list_path)
+                    for d in drafts:
+                        if d.kind in (SegmentKind.table, SegmentKind.image, SegmentKind.equation):
+                            bbox_pt = geo.pop_typed(d.page_idx, d.kind.value)
+                        else:
+                            bbox_pt = geo.match_text(d.page_idx, d.source_text)
+                            # списки/оглавления content_list схлопывает в один абзац —
+                            # восстанавливаем переносы и отступы из строк middle.json
+                            reflowed = geo.reflow(d.page_idx, d.source_text)
+                            if reflowed:
+                                d.source_text = reflowed
+                        size = geo.page_sizes.get(d.page_idx) if d.page_idx is not None else None
+                        if bbox_pt and size:
+                            d.meta["bbox_pt"] = bbox_pt
+                            d.meta["page_size_pt"] = list(size)
+                    artifact_key = f"{doc_id}/content_list.json"
+                    await storage.put_bytes(
+                        settings.bucket_artifacts,
+                        artifact_key,
+                        content_list_path.read_bytes(),
+                        content_type="application/json",
+                    )
+                    # картинки/рисунки/графики из оригинала → MinIO (для вставки
+                    # в MD-просмотр). MinerU извлекает их в out_dir рядом с
+                    # content_list; раньше они выбрасывались вместе с tmp.
+                    await _upload_segment_images(storage, doc_id, content_list_path.parent, drafts)
             elif ext in ("docx", "xlsx", "pptx"):
                 kind = DocumentKind(ext)
-                # DOCX: встроенные картинки извлекаем в tmp и грузим в MinIO
-                # (для MD-просмотра); xlsx/pptx картинок-сегментов не дают
-                img_dir = tmp_path / "ooxml_img"
-                img_dir.mkdir(exist_ok=True)
-                drafts = await asyncio.to_thread(ooxml.extract, ext, local_file, img_dir)
-                if ext == "docx":
-                    await _upload_segment_images(storage, doc_id, img_dir, drafts)
-                n_pages = (max(d.page_idx for d in drafts) + 1) if ext == "pptx" and drafts else None
+                backend = _parser_backend(doc)
+                if (
+                    ext == "docx"
+                    and not doc.parse_force_ocr
+                    and backend in ("dots_mocr", "paddle_vl")
+                    and settings.office_render_enabled
+                ):
+                    # DOCX через VLM-движок (сравнение парсеров): рендерим в PDF
+                    # (LibreOffice) и парсим его — «текст» покажет VLM-сегменты,
+                    # «как в Microsoft» рендерится отдельным job'ом ниже. Round-trip
+                    # перевода обратно в .docx для этого пути недоступен (нет
+                    # location-ключей) — это режим сравнения, не продакшен-экспорт.
+                    rendered = await render_to_pdf(
+                        local_file, tmp_path, settings.office_render_timeout_s
+                    )
+                    rpdf = tmp_path / "rendered.pdf"
+                    rpdf.write_bytes(rendered)
+                    out_dir = tmp_path / "parser_out"
+                    drafts = await _vlm_segments(backend, rpdf, out_dir)
+                    n_pages, _ = await asyncio.to_thread(pdf_info, rpdf)
+                else:
+                    # DOCX: встроенные картинки извлекаем в tmp и грузим в MinIO
+                    # (для MD-просмотра); xlsx/pptx картинок-сегментов не дают
+                    img_dir = tmp_path / "ooxml_img"
+                    img_dir.mkdir(exist_ok=True)
+                    drafts = await asyncio.to_thread(ooxml.extract, ext, local_file, img_dir)
+                    if ext == "docx":
+                        await _upload_segment_images(storage, doc_id, img_dir, drafts)
+                    n_pages = (max(d.page_idx for d in drafts) + 1) if ext == "pptx" and drafts else None
             elif ext == "txt":
                 # plain-текст (ТЗ §4.2): абзацы (разделённые пустой строкой) → сегменты
                 kind = DocumentKind.text

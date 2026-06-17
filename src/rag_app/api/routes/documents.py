@@ -185,6 +185,37 @@ async def reparse_ocr(request: Request, doc_id: uuid.UUID, body: ReparseOcrIn) -
     return {"status": "queued", "ocr_lang": body.lang}
 
 
+_PARSER_BACKENDS = {"mineru", "dots_mocr", "paddle_vl"}
+
+
+class ReparseIn(BaseModel):
+    # mineru (MinerU2.5-Pro + добор) | dots_mocr | paddle_vl
+    backend: str = "mineru"
+
+
+@router.post("/{doc_id}/reparse")
+async def reparse(request: Request, doc_id: uuid.UUID, body: ReparseIn) -> dict:
+    """Переразбор выбранным движком парсинга pdf_text (mineru | dots_mocr |
+    paddle_vl). Выбор сохраняется на документе и переживает retry/reexport."""
+    if body.backend not in _PARSER_BACKENDS:
+        raise HTTPException(422, f"неизвестный backend: {body.backend}")
+    async with request.app.state.sessionmaker() as session:
+        doc = await session.get(Document, doc_id)
+        if doc is None:
+            raise HTTPException(404, "документ не найден")
+        if doc.status not in (DocumentStatus.error, DocumentStatus.done):
+            raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
+        doc.parser_backend = body.backend
+        doc.parse_force_ocr = False  # выбор движка и форс-OCR взаимоисключающи
+        doc.status = DocumentStatus.uploaded
+        await session.commit()
+    await request.app.state.arq.enqueue_job(
+        "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
+    )
+    await audit(request, "reparse", "document", str(doc_id), {"backend": body.backend})
+    return {"status": "queued", "backend": body.backend}
+
+
 _EXPORT_KINDS = {
     "docx": ("s3_key_export_docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
     "pdf": ("s3_key_export_pdf", "application/pdf"),

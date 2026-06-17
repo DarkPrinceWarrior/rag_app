@@ -29,6 +29,8 @@ class DocumentOut(BaseModel):
     # Вьювер показывает «как в Microsoft» по оригиналу сразу, не дожидаясь перевода.
     has_view_orig: bool = False
     has_view_ru: bool = False
+    # движок парсинга pdf_text: null → дефолт (mineru). mineru | dots_mocr | paddle_vl
+    parser_backend: str | None = None
     created_at: datetime
 
     @classmethod

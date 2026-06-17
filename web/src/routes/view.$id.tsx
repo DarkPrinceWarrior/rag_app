@@ -108,6 +108,23 @@ function Viewer() {
     setTimeout(() => setMsg(''), 8000)
   }
 
+  // Выбор движка парсинга pdf_text/docx (mineru / dots.mocr / PaddleOCR-VL 1.6).
+  // Меняет parser_backend на документе и переразбирает: сегменты и перевод заменятся.
+  async function reparseBackend(backend: string) {
+    const cur = docQ.data?.parser_backend || 'mineru'
+    if (backend === cur) return
+    const names: Record<string, string> = {
+      mineru: 'MinerU2.5-Pro + добор',
+      dots_mocr: 'dots.mocr',
+      paddle_vl: 'PaddleOCR-VL 1.6',
+    }
+    if (!confirm(`Переразобрать через «${names[backend]}»? Текущие сегменты и перевод заменятся.`)) return
+    setMsg(`Переразбор через ${names[backend]} в очереди…`)
+    await api.reparse(id, backend)
+    setMsg('Переразбор запущен — обновите страницу через ~минуту')
+    setTimeout(() => setMsg(''), 8000)
+  }
+
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   const hasTransPdf = !!docQ.data?.exports.includes('pdf')
   const header = (
@@ -131,6 +148,18 @@ function Viewer() {
             текст
           </button>
         </div>
+      )}
+      {(isPdfDoc || docQ.data?.kind === 'docx') && (
+        <select
+          value={docQ.data?.parser_backend || 'mineru'}
+          onChange={(e) => reparseBackend(e.target.value)}
+          title="Движок парсинга: переразобрать документ выбранным парсером"
+          className="rounded-md border bg-background px-2 py-1 text-xs"
+        >
+          <option value="mineru">парсер: MinerU+добор</option>
+          <option value="dots_mocr">парсер: dots.mocr</option>
+          <option value="paddle_vl">парсер: PaddleOCR-VL 1.6</option>
+        </select>
       )}
       {isPdfDoc && (
         <Button variant="outline" size="sm" onClick={reparseOcr} title="Если текст в PDF распознан как латиница-каша">

@@ -27,6 +27,7 @@ export interface Document {
   has_view?: boolean // PDF-рендер OOXML готов целиком (оригинал И перевод)
   has_view_orig?: boolean // рендер оригинала готов (рано, после парсинга)
   has_view_ru?: boolean // рендер перевода готов (на экспорте)
+  parser_backend?: string | null // движок парсинга pdf_text: mineru | dots_mocr | paddle_vl
   created_at: string
 }
 
@@ -168,6 +169,8 @@ export const api = {
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
   reparseOcr: (id: string, lang = 'east_slavic') =>
     jsend<{ status: string; ocr_lang: string }>(`/api/documents/${id}/reparse-ocr`, 'POST', { lang }),
+  reparse: (id: string, backend: string) =>
+    jsend<{ status: string; backend: string }>(`/api/documents/${id}/reparse`, 'POST', { backend }),
   patchSegment: (segId: string, text: string) =>
     jsend<Segment>(`/api/segments/${segId}`, 'PATCH', { translated_text: text }),
 

@@ -164,6 +164,26 @@ class Settings(BaseSettings):
     # списки/оглавления); pipeline — быстрый PP-OCR, но искажает битый cmap.
     mineru_force_ocr_backend: str = "hybrid-engine"
 
+    # --- Выбор парсера pdf_text (на документе можно переопределить) ---
+    # mineru → MinerU2.5-Pro (VLM) + добор из текстового слоя (дефолт, единственный
+    # с middle.json-геометрией для bbox/цитат); dots_mocr → rednote-hilab/dots.mocr
+    # (3B, чистые слитые таблицы); paddle_vl → PaddleOCR-VL 1.6 (0.9B). dots/paddle —
+    # альтернативные движки для сравнения, грузятся на GPU4.
+    pdf_parser_backend: str = "mineru"  # mineru | dots_mocr | paddle_vl
+    # dots.mocr: постоянный vLLM-сервис на GPU4 (deploy/dots-mocr.service) + CLI parser.py
+    dots_url: str = "http://127.0.0.1:8120"
+    dots_model_name: str = "model"
+    dots_repo: str = "/root/parser_trials/dots.mocr"
+    dots_venv_python: str = "/root/parser_trials/dots.mocr/.venv_client/bin/python"
+    dots_prompt: str = "prompt_layout_all_en"
+    dots_num_thread: int = 8
+    dots_timeout_s: int = 1800
+    # PaddleOCR-VL 1.6: on-demand (грузит модель на парс, GPU4), изолированный venv
+    paddle_venv_python: str = "/root/parser_trials/paddle/.venv_paddle/bin/python"
+    paddle_runner: str = "/root/projects/rag_app/deploy/parsers/run_paddle_cli.py"
+    paddle_device: str = "4"
+    paddle_timeout_s: int = 1800
+
     # --- Оверлей сканов (перевод поверх изображения по bbox) ---
     scan_font_path: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
