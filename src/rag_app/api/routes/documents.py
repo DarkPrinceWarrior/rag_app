@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -193,7 +193,7 @@ _EXPORT_KINDS = {
 
 
 @router.get("/{doc_id}/download/{kind}")
-async def download(request: Request, doc_id: uuid.UUID, kind: str) -> StreamingResponse:
+async def download(request: Request, doc_id: uuid.UUID, kind: str) -> Response:
     doc = await _get_or_404(request, doc_id)
     if kind == "original":
         bucket, key = settings.bucket_originals, doc.s3_key_original
@@ -218,11 +218,33 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> StreamingR
     data = await request.app.state.storage.get_bytes(bucket, key)
     await audit(request, "download", "document", str(doc_id), {"kind": kind})
     quoted = out_name.encode("ascii", "ignore").decode() or "document"
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{quoted}"'},
-    )
+    total = len(data)
+    base = {
+        "Content-Disposition": f'attachment; filename="{quoted}"',
+        "Accept-Ranges": "bytes",  # pdf.js тянет страницы лениво порейндж-запросами
+    }
+    # HTTP Range (RFC 7233): большие PDF открываются сразу — pdf.js запрашивает
+    # сначала структуру (хвост файла), затем страницы по мере листания, а не весь
+    # файл целиком. Без Range отдаём всё, но с Accept-Ranges.
+    rng = request.headers.get("range", "")
+    if rng.startswith("bytes="):
+        try:
+            s, _, e = rng[6:].partition("-")
+            start = int(s) if s else 0
+            end = int(e) if e else total - 1
+            end = min(end, total - 1)
+            if start > end or start >= total:
+                raise ValueError
+        except ValueError:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{total}", **base})
+        chunk = data[start : end + 1]
+        return Response(
+            content=chunk,
+            status_code=206,
+            media_type=media,
+            headers={**base, "Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(chunk))},
+        )
+    return Response(content=data, media_type=media, headers={**base, "Content-Length": str(total)})
 
 
 @router.delete("/{doc_id}", status_code=204)

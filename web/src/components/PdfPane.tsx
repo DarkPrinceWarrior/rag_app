@@ -49,12 +49,14 @@ export function PdfPane({
     ;(async () => {
       try {
         const token = await bearer()
-        const resp = await fetch(downloadUrl(docId, urlKind), {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        })
-        if (!resp.ok) throw new Error(`PDF: ${resp.status}`)
-        const data = await resp.arrayBuffer()
-        const pdf = await pdfjs.getDocument({ data }).promise
+        // загрузка по URL: pdf.js тянет страницы лениво порейндж-запросами
+        // (сервер отдаёт Accept-Ranges/206) — большой PDF открывается сразу,
+        // а не качается целиком.
+        const pdf = await pdfjs.getDocument({
+          url: downloadUrl(docId, urlKind),
+          httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
+          withCredentials: false,
+        }).promise
         if (cancelled) return
         pdfRef.current = pdf
         setNumPages(pdf.numPages)
