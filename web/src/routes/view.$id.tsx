@@ -40,8 +40,6 @@ function Viewer() {
   const [rightText, setRightText] = useState(false)
   // режим «текст»: просмотр (чистый Markdown+формулы) или правка (DocFlow)
   const [edit, setEdit] = useState(false)
-  // страница MD-просмотра DOCX (у DOCX нет page_idx — бьём поток сами)
-  const [docPage, setDocPage] = useState(0)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -63,7 +61,6 @@ function Viewer() {
       setRightText(k === 'pdf_text' || k === 'docx')
     }
   }, [docQ.data?.kind])
-  useEffect(() => setDocPage(0), [id])
 
   // переход от цитаты/поиска: страница + bbox + подсветка в тексте
   useEffect(() => {
@@ -233,11 +230,11 @@ function Viewer() {
   }
 
   // DOCX с PDF-рендером: слева оригинал (LibreOffice-PDF), справа переключатель
-  // «текст» (чистый MD-просмотр: абзацы/таблицы/картинки, как у PDF) ↔
-  // «как в Microsoft» (office-PDF перевода, попиксельная вёрстка).
+  // «текст» (MD-просмотр: абзацы/таблицы/картинки, как у PDF) ↔ «как в Microsoft»
+  // (office-PDF перевода). Сегментам на экспорте проставлен page_idx (физ. страница
+  // оригинала) — поэтому правый «текст» листается СИНХРОННО с левым, как у PDF.
   if (hasOfficeView && docQ.data?.kind === 'docx') {
-    const docPages = splitDocPages(segs)
-    const dp = Math.min(docPage, docPages.length - 1)
+    const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
     return (
       <div>
         {header}
@@ -256,7 +253,16 @@ function Viewer() {
           </div>
           <div className="flex w-1/2 flex-col">
             <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-              <div className="flex items-center overflow-hidden rounded-md border text-xs">
+              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                ←
+              </Button>
+              <span className="text-muted-foreground">
+                стр. {page} / {numPages || '…'}
+              </span>
+              <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
+                →
+              </Button>
+              <div className="ml-2 flex items-center overflow-hidden rounded-md border text-xs">
                 <button
                   onClick={() => setRightText(true)}
                   className={'px-2 py-0.5 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
@@ -271,42 +277,31 @@ function Viewer() {
                 </button>
               </div>
               {rightText && (
-                <>
-                  <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="sm" disabled={dp <= 0} onClick={() => setDocPage(dp - 1)}>
-                      ←
-                    </Button>
-                    <span className="text-xs text-muted-foreground">
-                      стр. {dp + 1} / {docPages.length}
-                    </span>
-                    <Button variant="ghost" size="sm" disabled={dp >= docPages.length - 1} onClick={() => setDocPage(dp + 1)}>
-                      →
-                    </Button>
-                  </div>
-                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                    <button
-                      onClick={() => setEdit(false)}
-                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      просмотр
-                    </button>
-                    <button
-                      onClick={() => setEdit(true)}
-                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      править
-                    </button>
-                  </div>
-                </>
+                <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
+                  <button
+                    onClick={() => setEdit(false)}
+                    className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                  >
+                    просмотр
+                  </button>
+                  <button
+                    onClick={() => setEdit(true)}
+                    className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                  >
+                    править
+                  </button>
+                </div>
               )}
             </div>
             {rightText ? (
               <div className="flex-1 overflow-auto">
                 <article className="mx-auto max-w-3xl px-6 py-5">
-                  {edit ? (
-                    <DocFlow segs={docPages[dp]} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
+                  {pageSegs.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
+                  ) : edit ? (
+                    <DocFlow segs={pageSegs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
                   ) : (
-                    <DocRead segs={docPages[dp]} citedId={cited} />
+                    <DocRead segs={pageSegs} citedId={cited} />
                   )}
                 </article>
               </div>
@@ -317,8 +312,8 @@ function Viewer() {
         </div>
         <DocAssistant
           docId={id}
-          page={dp + 1}
-          pageText={docPages[dp].map(segPlainText).filter((t) => t.trim()).join('\n')}
+          page={page}
+          pageText={pageSegs.map(segPlainText).filter((t) => t.trim()).join('\n')}
           filename={docQ.data?.filename}
         />
       </div>
@@ -487,29 +482,6 @@ function eqMarkdown(s: Segment): string {
     .replace(/\$\$$/, '')
     .trim()
   return `$$\n${t}\n$$`
-}
-
-// DOCX без page_idx — бьём поток сегментов на «страницы» для MD-просмотра
-// (богатый Markdown-рендер, как у PDF, но быстро и с листанием). Рвём по
-// бюджету символов, предпочитая границу крупного заголовка; таблицу (серию
-// ячеек одного location.t) не разрезаем.
-function splitDocPages(segs: Segment[], maxChars = 2600): Segment[][] {
-  const pages: Segment[][] = []
-  let cur: Segment[] = []
-  let chars = 0
-  for (const s of segs) {
-    const inTable = s.location?.t != null
-    const topHeading = s.kind === 'heading' && (s.heading_level ?? 9) <= 2
-    if (cur.length && !inTable && (chars >= maxChars || (topHeading && chars >= maxChars * 0.5))) {
-      pages.push(cur)
-      cur = []
-      chars = 0
-    }
-    cur.push(s)
-    chars += (textOf(s, 'translated') || textOf(s, 'source')).length + 24
-  }
-  if (cur.length) pages.push(cur)
-  return pages.length ? pages : [segs]
 }
 
 // Картинка из оригинала: тег <img> не шлёт Bearer, поэтому тянем через

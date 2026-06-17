@@ -501,6 +501,82 @@ def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, scale: float) -> list[tu
     return out
 
 
+_MATCH_NOISE = re.compile(r"[^0-9a-zа-яё]+", re.IGNORECASE)
+
+
+def _norm_match(s: str) -> str:
+    """Нормализация для сопоставления текста: только буквы/цифры, нижний регистр —
+    устойчиво к пунктуации, разным тире (–—-), small-caps, лишним пробелам."""
+    return " ".join(_MATCH_NOISE.sub(" ", s or "").lower().split())
+
+
+def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[uuid.UUID, int], int]:
+    """Сегмент → его ФИЗИЧЕСКАЯ страница в отрендеренном PDF (по тексту оригинала).
+
+    Для DOCX (поток без страниц): сопоставляем каждый абзац странице LibreOffice-
+    рендера — тогда правый «текст»-просмотр листается синхронно с оригиналом, как
+    у PDF. Возвращает ({segment_id: page_idx}, число_страниц). Сегменты идут по
+    порядку, страницы монотонны → ищем ТОЛЬКО от курсора вперёд; несовпавший
+    сегмент остаётся на текущей странице (без прыжков назад в оглавление/колонтитул).
+    """
+    import pypdfium2 as pdfium
+
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            n = len(pdf)
+            pages: list[str] = []
+            for i in range(n):
+                page = pdf[i]
+                tp = page.get_textpage()
+                pages.append(_norm_match(tp.get_text_range()))
+                tp.close()
+                page.close()
+        finally:
+            pdf.close()
+
+    # ЯКОРЯ + ИНТЕРПОЛЯЦИЯ + СНАП. Жадный курсор сбивается на повторяющемся тексте
+    # (колонтитулы, оглавление). (1) Хиты каждого сегмента — страницы, где есть его
+    # ключ (считаем один раз). (2) Якоря — сегменты с УНИКАЛЬНЫМ длинным совпадением
+    # (ровно одна страница), монотонно: надёжный скелет. (3) Для каждого сегмента —
+    # линейная оценка страницы между якорями, затем СНАП к ближайшей к оценке
+    # странице из его хитов (используем все ~99% совпадений → заполняем пробелы).
+    seg_hits: list[list[int]] = []
+    seg_long: list[bool] = []
+    for s in segments:
+        full = _norm_match(s.source_text)
+        key = full[:40]
+        seg_long.append(len(full) >= 15)
+        seg_hits.append([p for p in range(n) if key in pages[p]] if key else [])
+
+    anchors: list[tuple[int, int]] = []
+    last_page = -1
+    for idx, hits in enumerate(seg_hits):
+        if seg_long[idx] and len(hits) == 1 and hits[0] >= last_page:
+            anchors.append((idx, hits[0]))
+            last_page = hits[0]
+
+    out: dict[uuid.UUID, int] = {}
+    if not anchors:
+        return {s.id: 0 for s in segments}, n
+    ai = 0
+    for idx, s in enumerate(segments):
+        while ai + 1 < len(anchors) and anchors[ai + 1][0] <= idx:
+            ai += 1
+        if idx <= anchors[0][0]:
+            est = float(anchors[0][1])
+        elif idx >= anchors[-1][0]:
+            est = float(anchors[-1][1])
+        else:
+            i0, p0 = anchors[ai]
+            i1, p1 = anchors[ai + 1]
+            est = float(p0) if i1 == i0 else p0 + (idx - i0) * (p1 - p0) / (i1 - i0)
+        hits = seg_hits[idx]
+        page = min(hits, key=lambda p: abs(p - est)) if hits else round(est)
+        out[s.id] = max(0, min(int(page), n - 1))
+    return out, n
+
+
 async def describe_images(ctx: dict, doc_id_str: str) -> str:
     """VL-обогащение сканов/чертежей (pdf_scan): рендерим страницы → Qwen3-VL
     раскрывает СМЫСЛ изображения по-русски → сегменты-описания (kind=image) →
@@ -793,6 +869,21 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                         await storage.put_bytes(settings.bucket_exports, rk_key, ru_pdf, "application/pdf")
                         values["s3_key_view_orig"] = ok_key
                         values["s3_key_view_ru"] = rk_key
+                        # DOCX: привязываем сегменты к физическим страницам оригинала
+                        # (LibreOffice-PDF) → правый «текст»-просмотр листается
+                        # синхронно с оригиналом, как у PDF (page_idx был null).
+                        if ext == "docx":
+                            page_map, n_pages = await asyncio.to_thread(
+                                _assign_pdf_pages, orig_pdf, segments
+                            )
+                            if page_map:
+                                async with ctx["sessionmaker"]() as session:
+                                    await session.execute(
+                                        update(Segment),
+                                        [{"id": sid, "page_idx": p} for sid, p in page_map.items()],
+                                    )
+                                    await session.commit()
+                                values["page_count"] = n_pages
                     except Exception as exc:  # noqa: BLE001 — рендер необязателен
                         logger.warning("export %s: LibreOffice-рендер не удался (%s)", doc_id, exc)
 
