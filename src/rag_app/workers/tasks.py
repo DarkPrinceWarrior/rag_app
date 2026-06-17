@@ -712,17 +712,13 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                     values["s3_key_export_pdf"] = mono_key
                     values["s3_key_export_pdf_dual"] = dual_key
                 else:
-                    # BabelDOC (PDF с вёрсткой) бывает медленным/виснет на больших
-                    # сканоподобных PDF — таймаут не должен блокировать документ:
-                    # DOCX уже собран выше, отдаём его и идём в индекс.
+                    # BabelDOC (PDF с вёрсткой) сам убивает подпроцесс по таймауту
+                    # (babeldoc_timeout_s) — на тяжёлых PDF он очень медленный.
+                    # При сбое/таймауте оставляем уже собранный DOCX и идём в индекс,
+                    # документ не блокируется (вьювер рендерит оригинал через pdf.js).
                     try:
-                        values.update(
-                            await asyncio.wait_for(
-                                _export_pdf_layout(ctx, doc, local_pdf, tmp_path),
-                                timeout=settings.babeldoc_timeout_s,
-                            )
-                        )
-                    except (TimeoutError, Exception) as exc:  # noqa: BLE001
+                        values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
+                    except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "export %s: BabelDOC PDF не собрался (%s) — оставляем DOCX", doc_id, exc
                         )

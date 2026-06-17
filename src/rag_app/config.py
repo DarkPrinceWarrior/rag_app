@@ -35,9 +35,6 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 4096
     translate_concurrency: int = 12
     translate_max_retries: int = 3
-    # BabelDOC (PDF с вёрсткой) виснет на больших сканоподобных PDF — потолок,
-    # после которого экспорт довольствуется DOCX и идёт в индекс (не блокирует док).
-    babeldoc_timeout_s: int = 420
     # Рендер OOXML (docx/xlsx/pptx) в PDF через LibreOffice headless — для просмотра
     # «как в Microsoft» (оригинал и перевод в pdf.js-вьювере, а не плоским текстом).
     office_render_enabled: bool = True
@@ -162,7 +159,11 @@ class Settings(BaseSettings):
     babeldoc_enabled: bool = True
     babeldoc_bin: str = "/root/services/babeldoc/.venv/bin/babeldoc"
     babeldoc_qps: int = 8
-    babeldoc_timeout_s: int = 3600
+    # потолок BabelDOC: на тяжёлых image-PDF он очень медленный — по таймауту
+    # подпроцесс убивается, экспорт довольствуется DOCX и идёт в индекс (документ
+    # не блокируется; вёрстку-PDF можно дособрать позже). Вьювер pdf_text и без
+    # BabelDOC рендерит оригинал через pdf.js.
+    babeldoc_timeout_s: int = 600
     # --auto-enable-ocr-workaround на ветке pdf_text: для обычных PDF детект
     # не срабатывает (поведение прежнее), для searchable-сканов (растр +
     # текстовый слой стороннего OCR) BabelDOC включит белые плашки вместо
