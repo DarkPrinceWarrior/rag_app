@@ -160,7 +160,13 @@ class Settings(BaseSettings):
     # --- BabelDOC (PDF→PDF с вёрсткой; AGPL-изоляция в отдельном venv) ---
     babeldoc_enabled: bool = True
     babeldoc_bin: str = "/root/services/babeldoc/.venv/bin/babeldoc"
-    babeldoc_qps: int = 8
+    # BabelDOC переводит каждый текстовый блок отдельным LLM-вызовом. Уводим его
+    # на БЫСТРЫЙ контур HY-MT-7B (:8005, заточен под перевод, отдельный GPU) и
+    # поднимаем параллелизм — иначе на больших PDF он не успевает за таймаут.
+    # Пусто → берётся основной llm_* (как раньше).
+    babeldoc_base_url: str = "http://127.0.0.1:8005/v1"
+    babeldoc_model: str = "hy-mt1.5-7b"
+    babeldoc_qps: int = 30
     # потолок BabelDOC: на тяжёлых image-PDF он очень медленный — по таймауту
     # подпроцесс убивается, экспорт довольствуется DOCX и идёт в индекс (документ
     # не блокируется; вёрстку-PDF можно дособрать позже). Вьювер pdf_text и без

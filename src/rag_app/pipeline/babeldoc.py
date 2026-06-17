@@ -59,12 +59,15 @@ async def run_babeldoc(
         raise BabelDocUnavailableError(f"нет бинаря {babeldoc} — deploy/setup_babeldoc.sh")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    # быстрый контур перевода для BabelDOC (HY-MT), фолбэк — основной LLM
+    bd_base = settings.babeldoc_base_url or settings.llm_base_url
+    bd_model = settings.babeldoc_model or settings.llm_model
     cmd = [
         str(babeldoc),
         "--files", str(input_pdf),
         "--openai",
-        "--openai-model", settings.llm_model,
-        "--openai-base-url", settings.llm_base_url,
+        "--openai-model", bd_model,
+        "--openai-base-url", bd_base,
         "--openai-api-key", settings.llm_api_key,
         "--lang-in", "en",
         "--lang-out", "ru",
