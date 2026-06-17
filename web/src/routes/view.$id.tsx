@@ -45,6 +45,21 @@ function Viewer() {
   const hasOfficeView =
     !!docQ.data && ['docx', 'xlsx', 'pptx'].includes(docQ.data.kind) && !!docQ.data.has_view
 
+  // дефолт правой панели: текстовые PDF открываем сразу в «текст» — связный
+  // перевод без артефактов. BabelDOC-вёрстка на плотном академическом тексте
+  // режет крупные заголовки (выносные кириллицы выше латинской рамки) и рвёт
+  // inline-термины на отдельные боксы с дырами; флаги CLI это не лечат. Сканы
+  // и рисунки (pdf_scan) оставляем в «вёрстка» — там раскладка и есть смысл.
+  // Ставится один раз на смену типа документа; ручной тумблер не перетирается.
+  const defKindRef = useRef<string | null>(null)
+  useEffect(() => {
+    const k = docQ.data?.kind
+    if (k && defKindRef.current !== k) {
+      defKindRef.current = k
+      setRightText(k === 'pdf_text')
+    }
+  }, [docQ.data?.kind])
+
   // переход от цитаты/поиска: страница + bbox + подсветка в тексте
   useEffect(() => {
     if (!segsQ.data) return
