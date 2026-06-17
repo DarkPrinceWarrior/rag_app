@@ -26,6 +26,7 @@ from rag_app.workers.tasks import (
     index_document,
     index_pages_visual,
     parse_document,
+    render_original_view,
     translate_document,
 )
 
@@ -57,6 +58,7 @@ class WorkerSettings:
         parse_document,
         translate_document,
         export_document,
+        render_original_view,
         index_document,
         index_pages_visual,
         describe_images,

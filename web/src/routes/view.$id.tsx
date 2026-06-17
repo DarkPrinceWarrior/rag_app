@@ -44,21 +44,26 @@ function Viewer() {
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
   const isPdf = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
-  // OOXML с PDF-рендером (LibreOffice) — показываем «как в Microsoft»: оригинал и
-  // перевод двумя pdf.js-панелями, синхронно, вместо плоского текста.
-  const hasOfficeView =
-    !!docQ.data && ['docx', 'xlsx', 'pptx'].includes(docQ.data.kind) && !!docQ.data.has_view
+  // OOXML с PDF-рендером (LibreOffice) — «как в Microsoft». Оригинал рендерится
+  // рано (после парсинга) → показываем его, не дожидаясь перевода; перевод
+  // (view_ru) — на экспорте. Раздельные флаги: hasViewOrig / hasViewRu.
+  const isOffice = !!docQ.data && ['docx', 'xlsx', 'pptx'].includes(docQ.data.kind)
+  const hasViewOrig = isOffice && !!docQ.data?.has_view_orig
+  const hasViewRu = isOffice && !!docQ.data?.has_view_ru
 
-  // дефолт правой панели: pdf_text и docx → «текст» (богатый MD-рендер DocRead
-  // с заголовками/абзацами/таблицами/картинками; DOCX бьётся на страницы);
-  // pdf_scan → «вёрстка» (раскладка чертежа и есть содержимое). «как в Microsoft»
-  // (office-PDF) остаётся опцией. Ставится раз на смену типа; тумблер не перетирается.
+  // дефолт правой панели — ПО ПРОИСХОЖДЕНИЮ ФОРМАТА (родной формат = истина вёрстки):
+  // - pdf_text (родной PDF) → «текст» (чистый MD-рендер): BabelDOC-вёрстка портит
+  //   исходную раскладку, а MD читается чисто;
+  // - docx (родной Word) → «как в Microsoft» (office-PDF LibreOffice): точная Word-
+  //   вёрстка строго лучше MD-реконструкции; «текст» остаётся опцией;
+  // - pdf_scan → «вёрстка» (раскладка чертежа и есть содержимое).
+  // Ставится раз на смену типа; ручной тумблер не перетирается.
   const defKindRef = useRef<string | null>(null)
   useEffect(() => {
     const k = docQ.data?.kind
     if (k && defKindRef.current !== k) {
       defKindRef.current = k
-      setRightText(k === 'pdf_text' || k === 'docx')
+      setRightText(k === 'pdf_text')
     }
   }, [docQ.data?.kind])
 
@@ -233,7 +238,7 @@ function Viewer() {
   // «текст» (MD-просмотр: абзацы/таблицы/картинки, как у PDF) ↔ «как в Microsoft»
   // (office-PDF перевода). Сегментам на экспорте проставлен page_idx (физ. страница
   // оригинала) — поэтому правый «текст» листается СИНХРОННО с левым, как у PDF.
-  if (hasOfficeView && docQ.data?.kind === 'docx') {
+  if (hasViewOrig && docQ.data?.kind === 'docx') {
     const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
     return (
       <div>
@@ -305,8 +310,10 @@ function Viewer() {
                   )}
                 </article>
               </div>
-            ) : (
+            ) : hasViewRu ? (
               <PdfPane docId={id} urlKind="view_ru" label="перевод" scale={1.0} page={page} highlight={null} onPageChange={setPage} />
+            ) : (
+              <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
             )}
           </div>
         </div>
@@ -322,7 +329,7 @@ function Viewer() {
 
   // XLSX/PPTX с PDF-рендером: «как в Microsoft» — оригинал и перевод двумя
   // pdf.js-панелями, листаются синхронно (текстовый MD-просмотр им не идёт).
-  if (hasOfficeView) {
+  if (hasViewOrig) {
     return (
       <div>
         {header}
@@ -340,18 +347,34 @@ function Viewer() {
             />
           </div>
           <div className="w-1/2">
-            <PdfPane
-              docId={id}
-              urlKind="view_ru"
-              label="перевод"
-              scale={1.0}
-              page={page}
-              highlight={null}
-              onPageChange={setPage}
-            />
+            {hasViewRu ? (
+              <PdfPane
+                docId={id}
+                urlKind="view_ru"
+                label="перевод"
+                scale={1.0}
+                page={page}
+                highlight={null}
+                onPageChange={setPage}
+              />
+            ) : (
+              <ViewPending text="Перевод ещё готовится…" />
+            )}
           </div>
         </div>
         <DocAssistant docId={id} page={page} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // OOXML, у которого рендер оригинала ещё не готов (идёт обработка) — показываем
+  // статус, а не «сплошной текст» как будто это оригинал. Если обработка
+  // завершилась без рендера (LibreOffice недоступен) — падаем в текстовый fallback.
+  if (isOffice && docQ.data && !['done', 'error'].includes(docQ.data.status)) {
+    return (
+      <div>
+        {header}
+        <ViewPending text="Документ обрабатывается — просмотр «как в Microsoft» готовится…" />
       </div>
     )
   }
@@ -482,6 +505,15 @@ function eqMarkdown(s: Segment): string {
     .replace(/\$\$$/, '')
     .trim()
   return `$$\n${t}\n$$`
+}
+
+// Заглушка-статус, пока office-PDF (оригинал/перевод) ещё рендерится.
+function ViewPending({ text }: { text: string }) {
+  return (
+    <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
+      {text}
+    </div>
+  )
 }
 
 // Картинка из оригинала: тег <img> не шлёт Bearer, поэтому тянем через

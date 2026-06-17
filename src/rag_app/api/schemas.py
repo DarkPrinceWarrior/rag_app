@@ -24,14 +24,20 @@ class DocumentOut(BaseModel):
     exports: list[str] = []  # доступные виды скачивания (kind для /download/{kind})
     folder_id: uuid.UUID | None = None
     chunk_count: int = 0  # RAG-индекс
-    has_view: bool = False  # есть PDF-рендер OOXML (оригинал+перевод «как в Microsoft»)
+    has_view: bool = False  # PDF-рендер OOXML готов целиком (оригинал И перевод)
+    # раздельно: оригинал рендерится рано (после парсинга), перевод — на экспорте.
+    # Вьювер показывает «как в Microsoft» по оригиналу сразу, не дожидаясь перевода.
+    has_view_orig: bool = False
+    has_view_ru: bool = False
     created_at: datetime
 
     @classmethod
     def from_doc(cls, doc: Document, review_count: int = 0) -> DocumentOut:
         out = cls.model_validate(doc)
         out.review_count = review_count
-        out.has_view = bool(doc.s3_key_view_orig and doc.s3_key_view_ru)
+        out.has_view_orig = bool(doc.s3_key_view_orig)
+        out.has_view_ru = bool(doc.s3_key_view_ru)
+        out.has_view = out.has_view_orig and out.has_view_ru
         out.exports = [
             kind
             for kind, attr in (

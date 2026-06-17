@@ -219,6 +219,12 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
         await ctx["redis"].enqueue_job(
             "translate_document", doc_id_str, _job_id=f"translate:{doc_id}:{uuid.uuid4().hex[:8]}"
         )
+        # OOXML: ранний рендер оригинала в PDF параллельно переводу — чтобы
+        # «как в Microsoft» (дефолт DOCX) открывался сразу, не ждя экспорта.
+        if kind in (DocumentKind.docx, DocumentKind.xlsx, DocumentKind.pptx):
+            await ctx["redis"].enqueue_job(
+                "render_original_view", doc_id_str, _job_id=f"vieworig:{doc_id}:{uuid.uuid4().hex[:8]}"
+            )
         return f"parsed [{kind.value}]: {len(drafts)} segments, {n_pages} pages"
 
     except Exception as exc:
@@ -771,6 +777,38 @@ async def _export_pdf_layout(ctx: dict, doc: Document, local_pdf: Path, tmp: Pat
         await storage.put_bytes(settings.bucket_exports, key, dual.read_bytes(), "application/pdf")
         values["s3_key_export_pdf_dual"] = key
     return values
+
+
+async def render_original_view(ctx: dict, doc_id_str: str) -> str:
+    """Ранний рендер ОРИГИНАЛА OOXML в PDF (LibreOffice) — чтобы «как в Microsoft»
+    открывался сразу после парсинга, не дожидаясь перевода/экспорта. Ключ
+    детерминированный (`{doc_id}/view_orig.pdf`); export потом перезапишет тем же.
+    Необязателен (рендер может упасть) — документ не блокируется."""
+    if not settings.office_render_enabled:
+        return "office render disabled"
+    doc_id = uuid.UUID(doc_id_str)
+    storage: Storage = ctx["storage"]
+    doc = await _get_doc(ctx, doc_id)
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    if kind not in ("docx", "xlsx", "pptx"):
+        return f"skip ({kind})"
+    try:
+        with tempfile.TemporaryDirectory(prefix="rag_vieworig_") as tmp:
+            tmp_path = Path(tmp)
+            src = tmp_path / Path(doc.filename).name
+            await storage.download_to(settings.bucket_originals, doc.s3_key_original, src)
+            pdf = await render_to_pdf(src, tmp_path, settings.office_render_timeout_s)
+            key = f"{doc_id}/view_orig.pdf"
+            await storage.put_bytes(settings.bucket_exports, key, pdf, "application/pdf")
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(
+                update(Document).where(Document.id == doc_id).values(s3_key_view_orig=key)
+            )
+            await session.commit()
+        return f"view_orig ready: {key}"
+    except Exception as exc:  # noqa: BLE001 — рендер необязателен
+        logger.warning("render_original_view %s: %s", doc_id, exc)
+        return f"failed: {exc}"
 
 
 async def export_document(ctx: dict, doc_id_str: str) -> str:
