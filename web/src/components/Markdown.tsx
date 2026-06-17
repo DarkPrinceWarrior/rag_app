@@ -1,5 +1,8 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css' // шрифты бандлятся Vite локально (без CDN, § 9)
 import { cn } from '@/lib/utils'
 
 /** Рендер ответа модели как Markdown (GFM): таблицы, списки, жирный, код.
@@ -9,7 +12,8 @@ export function Markdown({ content, className }: { content: string; className?: 
   return (
     <div className={cn('text-sm leading-relaxed [&>:first-child]:mt-0 [&>:last-child]:mb-0', className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           p: ({ children }) => <p className="my-2">{children}</p>,
           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,

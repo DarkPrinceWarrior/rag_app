@@ -1,10 +1,11 @@
-import { useRef, useState, useEffect, type ReactNode } from 'react'
+import { useRef, useState, useEffect, createElement, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
+import { Markdown } from '@/components/Markdown'
 import { cleanMath } from '@/lib/cleanMath'
 
 export const Route = createFileRoute('/view/$id')({
@@ -34,8 +35,10 @@ function Viewer() {
   // текущая страница (общая для оригинала слева и перевода справа)
   const [page, setPage] = useState(1)
   const [numPages, setNumPages] = useState(0)
-  // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (правки)
+  // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
+  // режим «текст»: просмотр (чистый Markdown+формулы) или правка (DocFlow)
+  const [edit, setEdit] = useState(false)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -176,24 +179,46 @@ function Viewer() {
                   <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
                     →
                   </Button>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    перевод · текст · клик по фрагменту — подсветка слева
-                  </span>
+                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
+                    <button
+                      onClick={() => setEdit(false)}
+                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                    >
+                      просмотр
+                    </button>
+                    <button
+                      onClick={() => setEdit(true)}
+                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                    >
+                      править
+                    </button>
+                  </div>
                 </div>
                 <div className="flex-1 overflow-auto">
-                  <article className="mx-auto max-w-3xl px-6 py-4">
-                    <DocFlow
-                      segs={pageSegs}
-                      field="translated"
-                      editable
-                      showPages={false}
-                      citedId={cited}
-                      onSaved={setMsg}
-                      onPick={(s) => {
-                        const h = highlightOf(s)
-                        if (h) setActive(h)
-                      }}
-                    />
+                  <article className="mx-auto max-w-3xl px-6 py-5">
+                    {edit ? (
+                      <DocFlow
+                        segs={pageSegs}
+                        field="translated"
+                        editable
+                        showPages={false}
+                        citedId={cited}
+                        onSaved={setMsg}
+                        onPick={(s) => {
+                          const h = highlightOf(s)
+                          if (h) setActive(h)
+                        }}
+                      />
+                    ) : (
+                      <DocRead
+                        segs={pageSegs}
+                        citedId={cited}
+                        onPick={(s) => {
+                          const h = highlightOf(s)
+                          if (h) setActive(h)
+                        }}
+                      />
+                    )}
                   </article>
                 </div>
               </>
@@ -344,6 +369,123 @@ function DocFlow({
         onSaved={onSaved}
         onPick={onPick}
       />,
+    )
+    i++
+  }
+  return <>{nodes}</>
+}
+
+// --- Чистый просмотр перевода: «документ как на GitHub» ----------------------
+// Заголовки/абзацы — через Markdown (inline-формулы $…$, жирный, ссылки),
+// блок-формулы (kind=equation) — KaTeX из исходного LaTeX (формулы не
+// переводятся), таблицы — TableBlock со спанами, рисунки — подпись. Read-only;
+// правки текста — в DocFlow по тумблеру «править». Это решает и «плавающий»
+// BabelDOC, и пропажу формул в плоском тексте.
+
+// LaTeX блок-формулы → $$…$$ для remark-math (источник бывает $$…$$ или \[…\])
+function eqMarkdown(s: Segment): string {
+  const t = (s.source_text || '')
+    .trim()
+    .replace(/^\\\[/, '')
+    .replace(/\\\]$/, '')
+    .replace(/^\$\$/, '')
+    .replace(/\$\$$/, '')
+    .trim()
+  return `$$\n${t}\n$$`
+}
+
+function DocRead({
+  segs,
+  citedId,
+  onPick,
+}: {
+  segs: Segment[]
+  citedId: string | null
+  onPick?: (s: Segment) => void
+}) {
+  const nodes: ReactNode[] = []
+  let i = 0
+  while (i < segs.length) {
+    const s = segs[i]
+    const cited = citedId === s.id
+    const ring = cited ? ' ' + CITE_CLS : ''
+    const pick = () => onPick?.(s)
+
+    // буллет-списки — группируем подряд идущие пункты
+    if (isListItem(s.kind, textOf(s, 'translated'))) {
+      const items: Segment[] = []
+      while (i < segs.length && isListItem(segs[i].kind, textOf(segs[i], 'translated'))) {
+        items.push(segs[i])
+        i++
+      }
+      nodes.push(
+        <ul key={`l-${items[0].id}`} className="my-2 list-disc space-y-1 pl-6">
+          {items.map((it) => (
+            <li
+              key={it.id}
+              data-seg={it.id}
+              onClick={() => onPick?.(it)}
+              className={citedId === it.id ? CITE_CLS : ''}
+            >
+              <Markdown content={textOf(it, 'translated').replace(BULLET_RE, '')} />
+            </li>
+          ))}
+        </ul>,
+      )
+      continue
+    }
+
+    if (s.kind === 'equation') {
+      nodes.push(
+        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3 overflow-x-auto' + ring}>
+          <Markdown content={eqMarkdown(s)} />
+        </div>,
+      )
+      i++
+      continue
+    }
+
+    if (s.kind === 'table') {
+      nodes.push(
+        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
+          <TableBlock s={s} field="translated" editable={false} />
+        </div>,
+      )
+      i++
+      continue
+    }
+
+    if (s.kind === 'image') {
+      const cap = textOf(s, 'translated') || textOf(s, 'source')
+      if (cap.trim())
+        nodes.push(
+          <figure key={s.id} data-seg={s.id} onClick={pick} className={'my-3 text-sm text-muted-foreground' + ring}>
+            <span className="font-medium">Рис. </span>
+            {cleanMath(cap)}
+          </figure>,
+        )
+      i++
+      continue
+    }
+
+    if (s.kind === 'heading') {
+      const lvl = Math.min(Math.max(s.heading_level ?? 2, 1), 4)
+      nodes.push(
+        createElement(
+          `h${lvl}`,
+          { key: s.id, 'data-seg': s.id, onClick: pick, className: headingClass(lvl) + ring },
+          textOf(s, 'translated') || textOf(s, 'source'),
+        ),
+      )
+      i++
+      continue
+    }
+
+    // абзац — через Markdown (формулы/жирный/ссылки)
+    nodes.push(
+      <div key={s.id} data-seg={s.id} onClick={pick} className={ring}>
+        <Markdown content={textOf(s, 'translated') || textOf(s, 'source')} className="text-[15px] leading-relaxed" />
+      </div>,
     )
     i++
   }
