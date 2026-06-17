@@ -41,6 +41,7 @@ from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.office_render import render_to_pdf
 from rag_app.pipeline.parse import (
     PDFIUM_LOCK,
+    backfill_text_layer,
     load_block_geometry,
     load_content_list,
     pdf_info,
@@ -133,6 +134,15 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                     content_list_path = await run_mineru(local_file, out_dir)
                 items = load_content_list(content_list_path)
                 drafts = content_list_to_segments(items)
+                # pdf_text: VLM местами роняет/прореживает целые страницы —
+                # достраиваем их абзацами из текстового слоя (истина для PDF
+                # с текстом), дедуп против VLM. Сканам слой не поможет (no-op).
+                if kind == DocumentKind.pdf_text:
+                    drafts, filled = await asyncio.to_thread(
+                        backfill_text_layer, local_file, drafts
+                    )
+                    if filled:
+                        logger.info("parse %s: достроены страницы из слоя: %s", doc_id, filled)
                 # геометрия в пунктах из middle.json — для оверлея сканов и
                 # подсветки цитат (этап 3); content_list-bbox в другом масштабе
                 geo = load_block_geometry(content_list_path)

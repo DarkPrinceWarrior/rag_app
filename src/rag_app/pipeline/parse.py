@@ -20,6 +20,8 @@ from typing import Any
 import pypdfium2 as pdfium
 
 from rag_app.config import settings
+from rag_app.db.models import SegmentKind
+from rag_app.pipeline.segments import SegmentDraft
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,173 @@ async def run_mineru(
             logger.warning("mineru backend=%s упал (%s) — фолбэк на pipeline", be, exc)
             return await _run(build("pipeline"))
         raise
+
+
+# Маркеры начала логического абзаца в тексте договора: номер пункта (1. / 1.2 /
+# 1.2.3), подпункт ((a) / (i) / (1)), либо строка-поле «Employer:», «Project:».
+_CLAUSE_START = re.compile(r"^\s*(\d+\.(?:\d+)*\s|\([a-z0-9]{1,4}\)\s|[A-Z][A-Za-z ]{1,28}:\s)")
+# Запись оглавления: текст … лидер-точки … номер страницы в конце строки.
+_TOC_ENTRY = re.compile(r"[.…]{3,}\s*\d+\s*$")
+_BACKFILL_MIN_CHARS = 200  # ниже — страница пустая/декоративная, не достраиваем
+_BACKFILL_COVER = 0.6  # VLM покрыл < 60% символов слоя → достраиваем недостающее
+_PARA_MAX = 1800  # длиннее — дробим по предложениям (лимит перевода на сегмент)
+
+
+def _norm_key(text: str) -> str:
+    """Нормализация для дедупа абзаца против уже извлечённого VLM-текста."""
+    return re.sub(r"[^0-9a-zа-яё]", "", (text or "").lower())
+
+
+def _is_degenerate(text: str) -> bool:
+    """VLM-парсер изредка уходит в repetition-collapse: гигантский повторяющийся
+    блоб мусора (одно слово/символ много раз) — он же ломает перевод (выходит за
+    контекст модели). Реальные абзацы столько не весят и так не повторяются.
+    Таблицы под этот фильтр не попадают (другой kind, структурный preview).
+    """
+    t = text or ""
+    if len(t) > 8000:
+        return True
+    words = t.split()
+    if len(words) >= 60 and len({w.lower() for w in words}) / len(words) < 0.35:
+        return True
+    return False
+
+
+def _cap(items: list[str]) -> list[str]:
+    """Гарантируем, что каждый сегмент влезает в лимит перевода: длинные дробим
+    сначала по строкам (оглавление), затем по предложениям, в крайнем случае —
+    жёстко по символам."""
+    out: list[str] = []
+    for p in items:
+        if len(p) <= _PARA_MAX:
+            if p.strip():
+                out.append(p)
+            continue
+        units = p.split("\n") if "\n" in p else re.split(r"(?<=[.!?])\s+", p)
+        sep = "\n" if "\n" in p else " "
+        buf = ""
+        for u in units:
+            while len(u) > _PARA_MAX:  # одиночный сверхдлинный кусок — по символам
+                if buf:
+                    out.append(buf.strip())
+                    buf = ""
+                out.append(u[:_PARA_MAX])
+                u = u[_PARA_MAX:]
+            if buf and len(buf) + len(u) > _PARA_MAX:
+                out.append(buf.strip())
+                buf = ""
+            buf = (buf + sep + u) if buf else u
+        if buf.strip():
+            out.append(buf.strip())
+    return out
+
+
+def _paragraphs_from_page(raw: str) -> list[str]:
+    """Текстовый слой страницы → логические абзацы.
+
+    Continuation-строки клеятся к абзацу; новый абзац начинается на маркере
+    пункта/подпункта/поля. Страница-оглавление (лидер-точки + номера) отдаётся
+    построчно. Все сегменты проходят через _cap (лимит перевода).
+    """
+    lines = [ln.strip() for ln in raw.replace("\r", "").split("\n") if ln.strip()]
+    if not lines:
+        return []
+    # оглавление: большинство строк кончаются лидер-точками и номером страницы
+    toc = [ln for ln in lines if _TOC_ENTRY.search(ln)]
+    if len(toc) >= max(3, len(lines) * 0.4):
+        cleaned = [re.sub(r"[.…]{2,}", " … ", ln) for ln in lines]
+        return _cap(["\n".join(cleaned)])
+    # ведущая строка-номер (бегущий колонтитул / номер страницы) — отбрасываем
+    if re.fullmatch(r"[ivxlcdm0-9]{1,6}", lines[0].lower()):
+        lines = lines[1:]
+    paras: list[str] = []
+    cur: list[str] = []
+    for ln in lines:
+        if cur and _CLAUSE_START.match(ln):
+            paras.append(" ".join(cur))
+            cur = [ln]
+        else:
+            cur.append(ln)
+    if cur:
+        paras.append(" ".join(cur))
+    return _cap(paras)
+
+
+def backfill_text_layer(
+    pdf_path: Path, drafts: list[SegmentDraft]
+) -> tuple[list[SegmentDraft], list[int]]:
+    """pdf_text: VLM-парсер местами роняет/прореживает целые страницы (пустые /
+    «тонкие»). Текстовый слой PDF — истина: достраиваем такие страницы абзацами
+    из слоя, дедуп против уже извлечённого VLM-текста (хорошие таблицы остаются).
+
+    Возвращает (новый список drafts в порядке страниц с перенумерованным idx,
+    список физических страниц, которые достроили). Если достраивать нечего —
+    исходный список без изменений.
+    """
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        try:
+            n_pages = len(pdf)
+            page_text = [pdf[i].get_textpage().get_text_bounded() or "" for i in range(n_pages)]
+        finally:
+            pdf.close()
+    # VLM repetition-collapse: гигантские повторяющиеся блобы мусора выкидываем.
+    # Они ломают перевод (выходят за контекст модели) и маскируют «непокрытую»
+    # страницу от добора ниже — после удаления страница до-заполнится из слоя.
+    kept: list[SegmentDraft] = []
+    dropped = 0
+    for d in drafts:
+        if d.kind in (SegmentKind.paragraph, SegmentKind.heading) and _is_degenerate(d.source_text):
+            dropped += 1
+            continue
+        kept.append(d)
+    drafts = kept
+    # сколько символов VLM извлёк на странице + нормализованный блоб для дедупа
+    vlm_chars: dict[int, int] = {}
+    vlm_blob: dict[int, str] = {}
+    for d in drafts:
+        if d.page_idx is None:
+            continue
+        vlm_chars[d.page_idx] = vlm_chars.get(d.page_idx, 0) + len(d.source_text or "")
+        vlm_blob[d.page_idx] = vlm_blob.get(d.page_idx, "") + _norm_key(d.source_text or "")
+
+    backfill: dict[int, list[SegmentDraft]] = {}
+    filled: list[int] = []
+    for p in range(n_pages):
+        layer_len = len(page_text[p].strip())
+        if layer_len < _BACKFILL_MIN_CHARS or vlm_chars.get(p, 0) >= layer_len * _BACKFILL_COVER:
+            continue  # страница пустая в оригинале или VLM покрыл её достаточно
+        blob = vlm_blob.get(p, "")
+        new: list[SegmentDraft] = []
+        for para in _paragraphs_from_page(page_text[p]):
+            key = _norm_key(para)[:48]
+            if key and key in blob:
+                continue  # VLM уже извлёк этот абзац — не дублируем
+            new.append(SegmentDraft(0, SegmentKind.paragraph, para, p, meta={"backfill": True}))
+        if new:
+            backfill[p] = new
+            filled.append(p)
+
+    if not backfill and not dropped:
+        return drafts, []
+
+    by_page: dict[int, list[SegmentDraft]] = {}
+    tail: list[SegmentDraft] = []  # page_idx None — в хвост (для pdf не бывает)
+    for d in drafts:
+        if d.page_idx is None:
+            tail.append(d)
+        else:
+            by_page.setdefault(d.page_idx, []).append(d)
+    result: list[SegmentDraft] = []
+    for p in range(n_pages):
+        result.extend(by_page.get(p, []))
+        result.extend(backfill.get(p, []))
+    for p in sorted(k for k in by_page if k >= n_pages):  # рассинхрон page_idx > n
+        result.extend(by_page[p])
+    result.extend(tail)
+    for i, d in enumerate(result):
+        d.idx = i
+    return result, filled
 
 
 def load_content_list(path: Path) -> list[dict[str, Any]]:

@@ -1,0 +1,32 @@
+# MinerU2.5-Pro VLM-сервер парсинга PDF (pdf_text) — GPU5, порт 30010.
+# Обёртка `vllm serve` + MinerULogitsProcessor; ветка pdf_text идёт через него
+# (backend vlm-http-client). Память 0.30 — GPU5 делит с Qwen3-VL-Embedding (:8007).
+# Раньше жил в tmux `mineru_vlm`; перевели в systemd для автостарта/перезапуска.
+[Unit]
+Description=MinerU2.5-Pro VLM server (GPU5, :30010)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=5
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+# .venv/bin ОБЯЗАТЕЛЕН в PATH: vLLM JIT-компилирует ядра через `ninja`; без него
+# движок падает на инициализации (FileNotFoundError: 'ninja') — это и ломало
+# in-process hybrid-engine раньше.
+Environment=PATH=/root/projects/rag_app/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/root/projects/rag_app
+# GPU5 — NUMA node1
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+    /root/projects/rag_app/.venv/bin/mineru-vllm-server \
+    --port 30010 \
+    --gpu-memory-utilization 0.30
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
