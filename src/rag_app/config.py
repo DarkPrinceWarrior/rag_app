@@ -137,7 +137,9 @@ class Settings(BaseSettings):
     memory_extract_window: int = 12  # последних реплик в окно экстракции
 
     # --- MinerU (парсинг) ---
-    mineru_device: str = "cuda:2"  # GPU2 — контур парсинга/OCR (roadmap § 4.3)
+    # GPU2 отдан генеративному VL (:8008) — парсинг MinerU уводим на GPU4
+    # (embed/rerank, есть запас памяти), иначе MinerU и VL конфликтуют по памяти.
+    mineru_device: str = "cuda:4"
     # Путь к бинарю mineru: пусто → сосед текущего python (общий venv). Для VLM
     # через vllm — изолированный venv (.venv-mineru, torch 2.11), чтобы не понижать
     # torch 2.12 в рабочем venv воркера/API.
