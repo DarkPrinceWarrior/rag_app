@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document as DocxDocument
+from docx.oxml.ns import qn
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from pptx import Presentation
 
@@ -41,7 +44,31 @@ def _docx_set_paragraph_text(paragraph: Any, text: str) -> None:
         run.text = ""
 
 
-def extract_docx(path: Path) -> list[SegmentDraft]:
+def _docx_paragraph_images(paragraph: Any, images_dir: Path, drafts: list[SegmentDraft]) -> None:
+    """Встроенные картинки абзаца → файлы в images_dir + сегменты kind=image.
+
+    Картинка лежит в part'ах документа, ссылка — `a:blip r:embed`. Кладём байты
+    в images_dir (img_path в meta), парс-задача потом грузит их в MinIO для
+    вставки в MD-просмотр. Сегмент-картинка идёт сразу за своим абзацем."""
+    for blip in paragraph._p.iterfind(".//" + qn("a:blip")):
+        rid = blip.get(qn("r:embed")) or blip.get(qn("r:link"))
+        if not rid:
+            continue
+        try:
+            part = paragraph.part.related_parts[rid]
+        except KeyError:
+            continue
+        name = Path(str(part.partname)).name
+        try:
+            (images_dir / name).write_bytes(part.blob)
+        except Exception:
+            continue
+        drafts.append(
+            SegmentDraft(idx=len(drafts), kind=SegmentKind.image, source_text="", meta={"img_path": name})
+        )
+
+
+def extract_docx(path: Path, images_dir: Path | None = None) -> list[SegmentDraft]:
     doc = DocxDocument(str(path))
     drafts: list[SegmentDraft] = []
 
@@ -67,13 +94,25 @@ def extract_docx(path: Path) -> list[SegmentDraft]:
             )
         )
 
-    for i, p in enumerate(doc.paragraphs):
-        add(p.text, {"p": i}, p.style.name if p.style else "")
-    for ti, table in enumerate(doc.tables):
-        for ri, row in enumerate(table.rows):
-            for ci, cell in enumerate(row.cells):
-                for pi, p in enumerate(cell.paragraphs):
-                    add(p.text, {"t": ti, "r": ri, "c": ci, "p": pi}, "")
+    # идём по детям body В ПОРЯДКЕ ДОКУМЕНТА (абзацы, таблицы, картинки на своих
+    # местах). Индексы p_idx/t_idx совпадают с doc.paragraphs[i]/doc.tables[ti],
+    # поэтому location-ключи те же, что у inject_docx — экспорт не ломается.
+    p_idx = 0
+    t_idx = 0
+    for child in doc.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            para = Paragraph(child, doc)
+            add(para.text, {"p": p_idx}, para.style.name if para.style else "")
+            if images_dir is not None:
+                _docx_paragraph_images(para, images_dir, drafts)
+            p_idx += 1
+        elif child.tag == qn("w:tbl"):
+            table = Table(child, doc)
+            for ri, row in enumerate(table.rows):
+                for ci, cell in enumerate(row.cells):
+                    for pi, cp in enumerate(cell.paragraphs):
+                        add(cp.text, {"t": t_idx, "r": ri, "c": ci, "p": pi}, "")
+            t_idx += 1
     return drafts
 
 
@@ -199,7 +238,9 @@ EXTRACTORS = {"docx": extract_docx, "xlsx": extract_xlsx, "pptx": extract_pptx}
 INJECTORS = {"docx": inject_docx, "xlsx": inject_xlsx, "pptx": inject_pptx}
 
 
-def extract(kind: str, path: Path) -> list[SegmentDraft]:
+def extract(kind: str, path: Path, images_dir: Path | None = None) -> list[SegmentDraft]:
+    if kind == "docx":
+        return extract_docx(path, images_dir)
     return EXTRACTORS[kind](path)
 
 

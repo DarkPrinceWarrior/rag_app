@@ -71,6 +71,29 @@ async def _get_doc(ctx: dict, doc_id: uuid.UUID) -> Document:
         return doc
 
 
+async def _upload_segment_images(
+    storage: Storage, doc_id: uuid.UUID, base_dir: Path, drafts: list[SegmentDraft]
+) -> None:
+    """Файлы картинок (meta.img_path относительно base_dir) → MinIO для вставки
+    в MD-просмотр. Ключ детерминированный: {doc_id}/img/{имя}; в meta кладём
+    img_s3. Общий для PDF (MinerU) и DOCX (OOXML)."""
+    for d in drafts:
+        rel = d.meta.get("img_path")
+        if not rel:
+            continue
+        img_file = base_dir / rel
+        if not img_file.is_file():
+            continue
+        img_key = f"{doc_id}/img/{img_file.name}"
+        await storage.put_bytes(
+            settings.bucket_artifacts,
+            img_key,
+            img_file.read_bytes(),
+            content_type=mimetypes.guess_type(img_file.name)[0] or "image/jpeg",
+        )
+        d.meta["img_s3"] = img_key
+
+
 # ---------------------------------------------------------------- parse
 
 async def parse_document(ctx: dict, doc_id_str: str) -> str:
@@ -137,25 +160,16 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 # картинки/рисунки/графики из оригинала → MinIO (для вставки
                 # в MD-просмотр). MinerU извлекает их в out_dir рядом с
                 # content_list; раньше они выбрасывались вместе с tmp.
-                img_base = content_list_path.parent
-                for d in drafts:
-                    rel = d.meta.get("img_path")
-                    if not rel:
-                        continue
-                    img_file = img_base / rel
-                    if not img_file.is_file():
-                        continue
-                    img_key = f"{doc_id}/img/{img_file.name}"
-                    await storage.put_bytes(
-                        settings.bucket_artifacts,
-                        img_key,
-                        img_file.read_bytes(),
-                        content_type=mimetypes.guess_type(img_file.name)[0] or "image/jpeg",
-                    )
-                    d.meta["img_s3"] = img_key
+                await _upload_segment_images(storage, doc_id, content_list_path.parent, drafts)
             elif ext in ("docx", "xlsx", "pptx"):
                 kind = DocumentKind(ext)
-                drafts = await asyncio.to_thread(ooxml.extract, ext, local_file)
+                # DOCX: встроенные картинки извлекаем в tmp и грузим в MinIO
+                # (для MD-просмотра); xlsx/pptx картинок-сегментов не дают
+                img_dir = tmp_path / "ooxml_img"
+                img_dir.mkdir(exist_ok=True)
+                drafts = await asyncio.to_thread(ooxml.extract, ext, local_file, img_dir)
+                if ext == "docx":
+                    await _upload_segment_images(storage, doc_id, img_dir, drafts)
                 n_pages = (max(d.page_idx for d in drafts) + 1) if ext == "pptx" and drafts else None
             elif ext == "txt":
                 # plain-текст (ТЗ §4.2): абзацы (разделённые пустой строкой) → сегменты

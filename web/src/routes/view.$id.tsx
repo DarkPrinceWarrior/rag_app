@@ -49,18 +49,17 @@ function Viewer() {
   const hasOfficeView =
     !!docQ.data && ['docx', 'xlsx', 'pptx'].includes(docQ.data.kind) && !!docQ.data.has_view
 
-  // дефолт правой панели: текстовые PDF открываем сразу в «текст» — связный
-  // перевод без артефактов. BabelDOC-вёрстка на плотном академическом тексте
-  // режет крупные заголовки (выносные кириллицы выше латинской рамки) и рвёт
-  // inline-термины на отдельные боксы с дырами; флаги CLI это не лечат. Сканы
-  // и рисунки (pdf_scan) оставляем в «вёрстка» — там раскладка и есть смысл.
-  // Ставится один раз на смену типа документа; ручной тумблер не перетирается.
+  // дефолт правой панели: текстовый PDF и DOCX открываем сразу в «текст» —
+  // связный перевод (DOCX: + картинки/таблицы), без артефактов. BabelDOC-вёрстка
+  // на плотном академическом тексте режет крупные заголовки и рвёт inline-термины
+  // (флаги CLI это не лечат). Сканы/рисунки (pdf_scan) — в «вёрстка» (раскладка и
+  // есть смысл). Ставится один раз на смену типа; ручной тумблер не перетирается.
   const defKindRef = useRef<string | null>(null)
   useEffect(() => {
     const k = docQ.data?.kind
     if (k && defKindRef.current !== k) {
       defKindRef.current = k
-      setRightText(k === 'pdf_text')
+      setRightText(k === 'pdf_text' || k === 'docx')
     }
   }, [docQ.data?.kind])
 
@@ -231,8 +230,81 @@ function Viewer() {
     )
   }
 
-  // OOXML с PDF-рендером (LibreOffice): «как в Microsoft» — оригинал и перевод
-  // двумя pdf.js-панелями, листаются синхронно.
+  // DOCX с PDF-рендером: слева оригинал (LibreOffice-PDF), справа переключатель
+  // «текст» (чистый MD-просмотр: абзацы/таблицы/картинки, как у PDF) ↔
+  // «как в Microsoft» (office-PDF перевода, попиксельная вёрстка).
+  if (hasOfficeView && docQ.data?.kind === 'docx') {
+    return (
+      <div>
+        {header}
+        <div className="flex h-[calc(100vh-97px)]">
+          <div className="w-1/2 border-r">
+            <PdfPane
+              docId={id}
+              urlKind="view_orig"
+              label="оригинал"
+              scale={1.0}
+              page={page}
+              highlight={null}
+              onPageChange={setPage}
+              onNumPages={setNumPages}
+            />
+          </div>
+          <div className="flex w-1/2 flex-col">
+            <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
+              <div className="flex items-center overflow-hidden rounded-md border text-xs">
+                <button
+                  onClick={() => setRightText(true)}
+                  className={'px-2 py-0.5 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                >
+                  текст
+                </button>
+                <button
+                  onClick={() => setRightText(false)}
+                  className={'px-2 py-0.5 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                >
+                  как в Microsoft
+                </button>
+              </div>
+              {rightText && (
+                <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
+                  <button
+                    onClick={() => setEdit(false)}
+                    className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                  >
+                    просмотр
+                  </button>
+                  <button
+                    onClick={() => setEdit(true)}
+                    className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                  >
+                    править
+                  </button>
+                </div>
+              )}
+            </div>
+            {rightText ? (
+              <div className="flex-1 overflow-auto">
+                <article className="mx-auto max-w-3xl px-6 py-5">
+                  {edit ? (
+                    <DocFlow segs={segs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
+                  ) : (
+                    <DocRead segs={segs} plain citedId={cited} />
+                  )}
+                </article>
+              </div>
+            ) : (
+              <PdfPane docId={id} urlKind="view_ru" label="перевод" scale={1.0} page={page} highlight={null} onPageChange={setPage} />
+            )}
+          </div>
+        </div>
+        <DocAssistant docId={id} page={page} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // XLSX/PPTX с PDF-рендером: «как в Microsoft» — оригинал и перевод двумя
+  // pdf.js-панелями, листаются синхронно (текстовый MD-просмотр им не идёт).
   if (hasOfficeView) {
     return (
       <div>
@@ -424,10 +496,12 @@ function DocRead({
   segs,
   citedId,
   onPick,
+  plain = false,
 }: {
   segs: Segment[]
   citedId: string | null
   onPick?: (s: Segment) => void
+  plain?: boolean // DOCX: абзацы как обычный текст (без Markdown/формул), быстро
 }) {
   const nodes: ReactNode[] = []
   let i = 0
@@ -436,6 +510,44 @@ function DocRead({
     const cited = citedId === s.id
     const ring = cited ? ' ' + CITE_CLS : ''
     const pick = () => onPick?.(s)
+
+    // DOCX-таблица: ячейки лежат подряд как сегменты с location.t — собираем
+    // обратно в таблицу (грид по r/c, несколько абзацев в ячейке склеиваем).
+    if (s.location && s.location.t != null) {
+      const t = s.location.t
+      const cells: Segment[] = []
+      while (i < segs.length && segs[i].location?.t === t) {
+        cells.push(segs[i])
+        i++
+      }
+      const maxR = Math.max(0, ...cells.map((c) => c.location?.r ?? 0))
+      const maxC = Math.max(0, ...cells.map((c) => c.location?.c ?? 0))
+      const grid: string[][] = Array.from({ length: maxR + 1 }, () => Array(maxC + 1).fill(''))
+      for (const c of cells) {
+        const r = c.location?.r ?? 0
+        const col = c.location?.c ?? 0
+        const txt = textOf(c, 'translated') || textOf(c, 'source')
+        grid[r][col] = grid[r][col] ? grid[r][col] + '\n' + txt : txt
+      }
+      nodes.push(
+        <div key={`t-${cells[0].id}`} className="my-3 overflow-x-auto">
+          <table className="border-collapse text-sm">
+            <tbody>
+              {grid.map((row, ri) => (
+                <tr key={ri} className={ri === 0 ? 'bg-muted/50 font-medium' : ''}>
+                  {row.map((cell, ci) => (
+                    <td key={ci} className="whitespace-pre-line border border-border px-2.5 py-1 align-top">
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      )
+      continue
+    }
 
     // буллет-списки — группируем подряд идущие пункты
     if (isListItem(s.kind, textOf(s, 'translated'))) {
@@ -509,11 +621,18 @@ function DocRead({
       continue
     }
 
-    // абзац — через Markdown (формулы/жирный/ссылки)
+    // абзац: DOCX — обычный текст (быстро, без формул); PDF — через Markdown
+    const body = textOf(s, 'translated') || textOf(s, 'source')
     nodes.push(
-      <div key={s.id} data-seg={s.id} onClick={pick} className={ring}>
-        <Markdown content={textOf(s, 'translated') || textOf(s, 'source')} className="text-[15px] leading-relaxed" />
-      </div>,
+      plain ? (
+        <p key={s.id} data-seg={s.id} onClick={pick} className={'my-2 whitespace-pre-line text-[15px] leading-relaxed' + ring}>
+          {body}
+        </p>
+      ) : (
+        <div key={s.id} data-seg={s.id} onClick={pick} className={ring}>
+          <Markdown content={body} className="text-[15px] leading-relaxed" />
+        </div>
+      ),
     )
     i++
   }

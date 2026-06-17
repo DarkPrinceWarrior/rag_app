@@ -63,6 +63,7 @@ export interface Segment {
   caption?: string | null
   caption_ru?: string | null
   image_url?: string | null
+  location?: Record<string, number> | null
 }
 
 export interface TableCell {
