@@ -678,7 +678,10 @@ function DocRead({
           {body}
         </p>
       ) : (
-        <div key={s.id} data-seg={s.id} onClick={pick} className={ring}>
+        // my-3 даёт отступ МЕЖДУ абзацами: внутренний <p> Markdown обнуляется
+        // его же правилом first/last-child (один абзац = и первый, и последний),
+        // поэтому пробел держим на обёртке — иначе абзацы слипаются в «стену».
+        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
           <Markdown content={body} className="text-[15px] leading-relaxed" />
         </div>
       ),
