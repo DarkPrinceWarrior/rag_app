@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     # подпроцесс убивается, экспорт довольствуется DOCX и идёт в индекс (документ
     # не блокируется; вёрстку-PDF можно дособрать позже). Вьювер pdf_text и без
     # BabelDOC рендерит оригинал через pdf.js.
-    babeldoc_timeout_s: int = 600
+    babeldoc_timeout_s: int = 1200
     # --auto-enable-ocr-workaround на ветке pdf_text: для обычных PDF детект
     # не срабатывает (поведение прежнее), для searchable-сканов (растр +
     # текстовый слой стороннего OCR) BabelDOC включит белые плашки вместо

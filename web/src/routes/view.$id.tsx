@@ -34,6 +34,8 @@ function Viewer() {
   // текущая страница (общая для оригинала слева и перевода справа)
   const [page, setPage] = useState(1)
   const [numPages, setNumPages] = useState(0)
+  // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (правки)
+  const [rightText, setRightText] = useState(false)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -85,12 +87,29 @@ function Viewer() {
   }
 
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
+  const hasTransPdf = !!docQ.data?.exports.includes('pdf')
   const header = (
     <div className="sticky top-[49px] z-[5] flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
       <span className="truncate text-sm font-medium">
         {docQ.data?.filename} · {docQ.data?.status}
       </span>
       <span className="ml-auto text-xs text-primary">{msg}</span>
+      {isPdfDoc && hasTransPdf && (
+        <div className="flex items-center overflow-hidden rounded-md border text-xs">
+          <button
+            onClick={() => setRightText(false)}
+            className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+          >
+            перевод: вёрстка
+          </button>
+          <button
+            onClick={() => setRightText(true)}
+            className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+          >
+            текст
+          </button>
+        </div>
+      )}
       {isPdfDoc && (
         <Button variant="outline" size="sm" onClick={reparseOcr} title="Если текст в PDF распознан как латиница-каша">
           OCR-распознавание
@@ -127,36 +146,43 @@ function Viewer() {
             <PdfPane docId={id} page={page} highlight={active} onPageChange={setPage} onNumPages={setNumPages} />
           </div>
           <div className="flex w-1/2 flex-col">
-            <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                ←
-              </Button>
-              <span className="text-muted-foreground">
-                стр. {page} / {numPages || '…'}
-              </span>
-              <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
-                →
-              </Button>
-              <span className="ml-auto text-xs text-muted-foreground">
-                перевод · клик по фрагменту — подсветка слева
-              </span>
-            </div>
-            <div className="flex-1 overflow-auto">
-              <article className="mx-auto max-w-3xl px-6 py-4">
-                <DocFlow
-                  segs={pageSegs}
-                  field="translated"
-                  editable
-                  showPages={false}
-                  citedId={cited}
-                  onSaved={setMsg}
-                  onPick={(s) => {
-                    const h = highlightOf(s)
-                    if (h) setActive(h)
-                  }}
-                />
-              </article>
-            </div>
+            {hasTransPdf && !rightText ? (
+              // перевод с сохранённой вёрсткой (BabelDOC) — отдельной pdf.js-панелью
+              <PdfPane docId={id} urlKind="pdf" label="перевод · вёрстка" page={page} highlight={null} onPageChange={setPage} />
+            ) : (
+              <>
+                <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
+                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                    ←
+                  </Button>
+                  <span className="text-muted-foreground">
+                    стр. {page} / {numPages || '…'}
+                  </span>
+                  <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
+                    →
+                  </Button>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    перевод · текст · клик по фрагменту — подсветка слева
+                  </span>
+                </div>
+                <div className="flex-1 overflow-auto">
+                  <article className="mx-auto max-w-3xl px-6 py-4">
+                    <DocFlow
+                      segs={pageSegs}
+                      field="translated"
+                      editable
+                      showPages={false}
+                      citedId={cited}
+                      onSaved={setMsg}
+                      onPick={(s) => {
+                        const h = highlightOf(s)
+                        if (h) setActive(h)
+                      }}
+                    />
+                  </article>
+                </div>
+              </>
+            )}
           </div>
         </div>
         <DocAssistant docId={id} page={page} pageText={pageText} filename={docQ.data?.filename} />
