@@ -36,6 +36,8 @@ class SegmentOut(BaseModel):
     table_cells_ru: list[list[dict]] | None = None
     caption: str | None = None
     caption_ru: str | None = None
+    # URL картинки сегмента-рисунка (извлечена из оригинала) — для MD-просмотра
+    image_url: str | None = None
 
     @classmethod
     def from_segment(cls, s: Segment) -> SegmentOut:
@@ -47,6 +49,9 @@ class SegmentOut(BaseModel):
         out.table_cells_ru = meta.get("table_cells_ru")
         out.caption = meta.get("caption")
         out.caption_ru = meta.get("caption_ru")
+        img = meta.get("img_s3")
+        if img:
+            out.image_url = f"/api/documents/{s.document_id}/image/{img.rsplit('/', 1)[-1]}"
         return out
 
 

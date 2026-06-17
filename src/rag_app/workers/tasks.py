@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import re
 import tempfile
 import time
@@ -133,6 +134,25 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                     content_list_path.read_bytes(),
                     content_type="application/json",
                 )
+                # картинки/рисунки/графики из оригинала → MinIO (для вставки
+                # в MD-просмотр). MinerU извлекает их в out_dir рядом с
+                # content_list; раньше они выбрасывались вместе с tmp.
+                img_base = content_list_path.parent
+                for d in drafts:
+                    rel = d.meta.get("img_path")
+                    if not rel:
+                        continue
+                    img_file = img_base / rel
+                    if not img_file.is_file():
+                        continue
+                    img_key = f"{doc_id}/img/{img_file.name}"
+                    await storage.put_bytes(
+                        settings.bucket_artifacts,
+                        img_key,
+                        img_file.read_bytes(),
+                        content_type=mimetypes.guess_type(img_file.name)[0] or "image/jpeg",
+                    )
+                    d.meta["img_s3"] = img_key
             elif ext in ("docx", "xlsx", "pptx"):
                 kind = DocumentKind(ext)
                 drafts = await asyncio.to_thread(ooxml.extract, ext, local_file)

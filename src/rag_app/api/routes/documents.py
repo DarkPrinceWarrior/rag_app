@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import mimetypes
 import uuid
 from pathlib import Path
 
@@ -245,6 +246,20 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> Response:
             headers={**base, "Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(chunk))},
         )
     return Response(content=data, media_type=media, headers={**base, "Content-Length": str(total)})
+
+
+@router.get("/{doc_id}/image/{name}")
+async def document_image(request: Request, doc_id: uuid.UUID, name: str) -> Response:
+    """Картинка/рисунок, извлечённый из оригинала (MinerU), — для вставки
+    в MD-просмотр перевода. Ключ детерминированный: {doc_id}/img/{имя файла}."""
+    await _get_or_404(request, doc_id)
+    key = f"{doc_id}/img/{Path(name).name}"
+    try:
+        data = await request.app.state.storage.get_bytes(settings.bucket_artifacts, key)
+    except Exception as exc:
+        raise HTTPException(404, "картинка не найдена") from exc
+    media = mimetypes.guess_type(name)[0] or "image/jpeg"
+    return Response(content=data, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.delete("/{doc_id}", status_code=204)

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
 import { Markdown } from '@/components/Markdown'
+import { authFetch } from '@/lib/auth'
 import { cleanMath } from '@/lib/cleanMath'
 
 export const Route = createFileRoute('/view/$id')({
@@ -394,6 +395,31 @@ function eqMarkdown(s: Segment): string {
   return `$$\n${t}\n$$`
 }
 
+// Картинка из оригинала: тег <img> не шлёт Bearer, поэтому тянем через
+// authFetch → object URL (работает и с включённой авторизацией на проде).
+function AuthImage({ src, alt }: { src: string; alt?: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let obj: string | null = null
+    let cancelled = false
+    authFetch(src)
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+      .then((b) => {
+        if (!cancelled) {
+          obj = URL.createObjectURL(b)
+          setUrl(obj)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      if (obj) URL.revokeObjectURL(obj)
+    }
+  }, [src])
+  if (!url) return null
+  return <img src={url} alt={alt || ''} className="mx-auto max-h-[460px] rounded border bg-white" />
+}
+
 function DocRead({
   segs,
   citedId,
@@ -457,11 +483,13 @@ function DocRead({
 
     if (s.kind === 'image') {
       const cap = textOf(s, 'translated') || textOf(s, 'source')
-      if (cap.trim())
+      if (s.image_url || cap.trim())
         nodes.push(
-          <figure key={s.id} data-seg={s.id} onClick={pick} className={'my-3 text-sm text-muted-foreground' + ring}>
-            <span className="font-medium">Рис. </span>
-            {cleanMath(cap)}
+          <figure key={s.id} data-seg={s.id} onClick={pick} className={'my-4' + ring}>
+            {s.image_url && <AuthImage src={s.image_url} alt={cap} />}
+            {cap.trim() && (
+              <figcaption className="mt-1.5 text-center text-sm text-muted-foreground">{cleanMath(cap)}</figcaption>
+            )}
           </figure>,
         )
       i++

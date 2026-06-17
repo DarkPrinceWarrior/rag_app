@@ -62,6 +62,7 @@ export interface Segment {
   table_cells_ru?: TableCell[][] | null
   caption?: string | null
   caption_ru?: string | null
+  image_url?: string | null
 }
 
 export interface TableCell {
