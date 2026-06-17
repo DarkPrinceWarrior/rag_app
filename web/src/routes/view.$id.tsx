@@ -516,6 +516,17 @@ function ViewPending({ text }: { text: string }) {
   )
 }
 
+// MinerU кладёт все пункты раздела в одну ячейку без переносов → расставляем
+// разрывы перед маркерами пунктов/подпунктов, чтобы 1.1 / 1.2 / (a) / (b) шли
+// с новой строки (как в оригинале). Только для длинных «прозовых» ячеек.
+function splitClauses(t: string): string {
+  return (t || '')
+    .replace(/\s*(\((?:[a-zа-я]|[ivxl]{1,4})\))\s*/g, '\n$1 ') // (a) (b) (i) (ii)
+    .replace(/\s*(\d{1,2}(?:\.\d{1,2}){1,2})\s+(?=[A-ZА-Я“"«(])/g, '\n$1 ') // 1.1 / 1.1.1
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+}
+
 // Картинка из оригинала: тег <img> не шлёт Bearer, поэтому тянем через
 // authFetch → object URL (работает и с включённой авторизацией на проде).
 function AuthImage({ src, alt }: { src: string; alt?: string }) {
@@ -633,9 +644,36 @@ function DocRead({
     }
 
     if (s.kind === 'table') {
+      // «Прозовая» таблица договора (MinerU кладёт пункты раздела в одну длинную
+      // ячейку): сохраняем 2-столбцовую структуру (номер | текст), но внутри col
+      // расставляем переносы по маркерам пунктов. Настоящие таблицы (короткие
+      // ячейки) идут штатным TableBlock.
+      const trows = s.table_cells_ru ?? s.table_cells ?? []
+      const clauseTable = trows.flat().some((c) => (c?.text || '').length > 200)
       nodes.push(
-        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
-          <TableBlock s={s} field="translated" editable={false} />
+        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3 overflow-x-auto' + ring}>
+          {clauseTable ? (
+            <table className="border-collapse text-sm">
+              <tbody>
+                {trows.map((row, ri) => (
+                  <tr key={ri}>
+                    {row.map((c, ci) => (
+                      <td
+                        key={ci}
+                        colSpan={c.colspan > 1 ? c.colspan : undefined}
+                        rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
+                        className="whitespace-pre-line border border-border px-2.5 py-1.5 align-top leading-relaxed"
+                      >
+                        {splitClauses(cleanMath(c.text))}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <TableBlock s={s} field="translated" editable={false} />
+          )}
         </div>,
       )
       i++

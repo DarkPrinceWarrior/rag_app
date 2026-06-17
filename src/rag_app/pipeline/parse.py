@@ -73,43 +73,58 @@ async def run_mineru(
     mineru_bin = (
         Path(settings.mineru_bin) if settings.mineru_bin else Path(sys.executable).with_name("mineru")
     )
-    be = backend or settings.mineru_backend
-    cmd = [
-        str(mineru_bin) if mineru_bin.exists() else "mineru",
-        "-p", str(input_pdf),
-        "-o", str(out_dir),
-        "-b", be,
-    ]
-    if be == "pipeline":
-        # -m auto: текстовый слой / OCR выбирается постранично (roadmap § 3.1);
-        # VLM-бэкенды multilingual и метод/язык не принимают
-        cmd += ["-m", method or settings.mineru_method, "-l", lang or settings.mineru_lang]
-    # vllm-движок MinerU не уважает MINERU_DEVICE_MODE и берёт cuda:0 (а там
-    # whisperX) → жёстко пиннингуем нужную карту через CUDA_VISIBLE_DEVICES;
-    # внутри процесса она становится единственной cuda:0.
+    binpath = str(mineru_bin) if mineru_bin.exists() else "mineru"
+    # vllm-движок MinerU не уважает MINERU_DEVICE_MODE и берёт cuda:0 → пиннингуем
+    # карту через CUDA_VISIBLE_DEVICES. PATH с .venv/bin: vllm зовёт `ninja` для
+    # JIT-компиляции — без него VLM-движок падает на инициализации.
     gpu_idx = settings.mineru_device.rsplit(":", 1)[-1]
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu_idx, MINERU_DEVICE_MODE="cuda:0")
-    logger.info("mineru: %s (GPU=%s via CUDA_VISIBLE_DEVICES)", " ".join(cmd), gpu_idx)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+    venv_bin = str(Path(sys.executable).parent)
+    env = dict(
+        os.environ,
+        CUDA_VISIBLE_DEVICES=gpu_idx,
+        MINERU_DEVICE_MODE="cuda:0",
+        PATH=venv_bin + os.pathsep + os.environ.get("PATH", ""),
     )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=settings.mineru_timeout_s)
-    except TimeoutError:
-        proc.kill()
-        raise RuntimeError(f"mineru: таймаут {settings.mineru_timeout_s}s") from None
-    if proc.returncode != 0:
-        tail = out.decode(errors="replace")[-3000:]
-        raise RuntimeError(f"mineru: код {proc.returncode}\n{tail}")
 
-    candidates = sorted(out_dir.rglob("*_content_list.json"))
-    if not candidates:
-        tail = out.decode(errors="replace")[-3000:]
-        raise RuntimeError(f"mineru: content_list.json не найден в {out_dir}\n{tail}")
-    return candidates[0]
+    def build(be: str) -> list[str]:
+        cmd = [binpath, "-p", str(input_pdf), "-o", str(out_dir), "-b", be]
+        if be == "pipeline":
+            # -m auto: текстовый слой / OCR постранично (roadmap § 3.1); -l только pipeline
+            cmd += ["-m", method or settings.mineru_method, "-l", lang or settings.mineru_lang]
+        else:
+            # VLM-бэкенды: http-client требует URL сервера; -t выключает ложные таблицы
+            if be.endswith("-http-client"):
+                cmd += ["-u", settings.mineru_vlm_url]
+            cmd += ["-t", str(settings.mineru_table_enable)]
+        return cmd
+
+    async def _run(cmd: list[str]) -> Path:
+        logger.info("mineru: %s (GPU=%s)", " ".join(cmd), gpu_idx)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=settings.mineru_timeout_s)
+        except TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"mineru: таймаут {settings.mineru_timeout_s}s") from None
+        if proc.returncode != 0:
+            raise RuntimeError(f"mineru: код {proc.returncode}\n{out.decode(errors='replace')[-3000:]}")
+        candidates = sorted(out_dir.rglob("*_content_list.json"))
+        if not candidates:
+            raise RuntimeError(f"mineru: content_list.json не найден в {out_dir}\n{out.decode(errors='replace')[-2000:]}")
+        return candidates[0]
+
+    be = backend or settings.mineru_backend
+    try:
+        return await _run(build(be))
+    except Exception as exc:
+        # VLM-сервер недоступен/упал → не блокируем документ, парсим pipeline'ом
+        # (sorted() предпочтёт «auto/» над «vlm/», если остался частичный вывод)
+        if be != "pipeline" and "pipeline" not in (backend or ""):
+            logger.warning("mineru backend=%s упал (%s) — фолбэк на pipeline", be, exc)
+            return await _run(build("pipeline"))
+        raise
 
 
 def load_content_list(path: Path) -> list[dict[str, Any]]:

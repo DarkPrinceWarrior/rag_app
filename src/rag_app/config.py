@@ -144,7 +144,17 @@ class Settings(BaseSettings):
     # через vllm — изолированный venv (.venv-mineru, torch 2.11), чтобы не понижать
     # torch 2.12 в рабочем venv воркера/API.
     mineru_bin: str | None = None
-    mineru_backend: str = "pipeline"
+    # Бэкенд парсинга pdf_text. vlm-http-client → MinerU2.5-Pro (VLM, OmniDocBench-
+    # лидер): на сложных макетах (договоры с нумерованными пунктами в «висячем»
+    # столбце) НЕ плодит ложные таблицы/склейки страниц и не теряет оглавление —
+    # в отличие от CNN-layout pipeline. Сервер mineru-vllm-server на GPU5 (:30010),
+    # capped-память. При недоступности сервера парсинг падает обратно на pipeline.
+    mineru_backend: str = "vlm-http-client"
+    mineru_vlm_url: str = "http://127.0.0.1:30010"
+    # Детекция таблиц: на текстовых договорах нумерация пунктов читается как
+    # «таблица» и склеивается через страницы → выключаем (текст идёт абзацами
+    # постранично). Настоящие таблицы в pdf_text редки (схемы/спеки — сканы/xlsx).
+    mineru_table_enable: bool = False
     mineru_method: str = "auto"  # auto: текстовый слой / OCR постранично (roadmap § 3.1)
     mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)
     mineru_timeout_s: int = 1800
