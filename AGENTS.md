@@ -80,12 +80,18 @@ adaptive agentic-RAG-чат с цитатами — классификатор s
 `rag/agent.py`, § 5 п.7 — библиотека, браузерное расширение `extension/` на WXT,
 SSO/RBAC/аудит/Langfuse, нагрузочное 20 документов). Оставшиеся доделки и план
 обновления моделей — `docs/roadmap.md` § 12.1 и журнал (последняя строка 📋).
-LLM-сервисы на a100 (после прод-перехода 2026-06-15, roadmap § 12.1):
-**Qwen3.5-35B-A3B GPU3 `:8006` — воркхорс** (перевод + RAG-чат, GPTQ-Int4 no-eager);
-**HY-MT1.5-7B GPU1 `:8005` — быстрый контур** (преемник Hunyuan-MT, ретайрнут);
-Qwen3-32B-AWQ GPU0 `:8001` — фолбэк; Qwen3-Embedding-0.6B GPU4 `:8002`,
-Qwen3-Reranker-4B GPU4 `:8003`, Qwen3-VL-Embedding-8B GPU5 `:8007` — визуальный
-поиск по сканам (systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1).
+LLM-сервисы на a100 (раскладка на 2026-06-18, roadmap § 12.1 + журнал):
+**Qwen3.5-35B-A3B GPU3 `:8006` — воркхорс** (перевод + RAG-чат, GPTQ-Int4 no-eager;
+мультимодальный — берёт image_url); **HY-MT1.5-7B GPU1 `:8005` — быстрый контур**
+(преемник Hunyuan-MT); Qwen3-Embedding-0.6B GPU4 `:8002`, Qwen3-Reranker-4B GPU4
+`:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + dots.mocr GPU4
+`:8120` (альт.); PaddleOCR-VL 1.6 — on-demand (3-й парсер на выбор, `parser_backend`).
+**Свободны GPU0** (Qwen3-32B-AWQ фолбэк ретайрнут 2026-06-18) **и GPU2** (отдана
+соседнему приложению Alma; генеративный Qwen3-VL-8B `:8008` погашен). **Визуальный
+эмбеддер Qwen3-VL-Embedding-8B GPU5 `:8007` запаркован** (`visual_enabled=false` —
+почти не использовался; ревайв = отдельная задача). Правило выбора моделей:
+**on-prem+коммерция → только Apache-2.0** (jina-v4/Nemotron — non-commercial, мимо).
+systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1.
 Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,
 Keycloak `:8180`) + `deploy/langfuse/` (`:8200`) + `deploy/monitoring/`
 (Prometheus `:9090`, Grafana `:3001`, скрейпит публичный `/metrics` API);
