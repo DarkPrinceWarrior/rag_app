@@ -29,9 +29,11 @@ class Settings(BaseSettings):
     bucket_exports: str = "exports"
 
     # --- LLM (vLLM, OpenAI-совместимый endpoint) ---
-    llm_base_url: str = "http://127.0.0.1:8001/v1"
+    # Воркхорс перевода + RAG-чата — Qwen3.5-35B-A3B (GPU3:8006). Qwen3-32B-AWQ
+    # (:8001) ретайрнут 2026-06-18 (GPU0 освобождена) — на дефолт его не возвращаем.
+    llm_base_url: str = "http://127.0.0.1:8006/v1"
     llm_api_key: str = "local"
-    llm_model: str = "qwen3-32b-awq"
+    llm_model: str = "qwen3.5-35b-a3b"
     llm_max_tokens: int = 4096
     translate_concurrency: int = 12
     translate_max_retries: int = 3
