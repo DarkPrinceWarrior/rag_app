@@ -84,12 +84,14 @@ LLM-сервисы на a100 (раскладка на 2026-06-18, roadmap § 12.
 **Qwen3.5-35B-A3B GPU3 `:8006` — воркхорс** (перевод + RAG-чат, GPTQ-Int4 no-eager;
 мультимодальный — берёт image_url); **HY-MT1.5-7B GPU1 `:8005` — быстрый контур**
 (преемник Hunyuan-MT); Qwen3-Embedding-0.6B GPU4 `:8002`, Qwen3-Reranker-4B GPU4
-`:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + dots.mocr GPU4
-`:8120` (альт.); PaddleOCR-VL 1.6 — on-demand (3-й парсер на выбор, `parser_backend`).
-**Свободны GPU0** (Qwen3-32B-AWQ фолбэк ретайрнут 2026-06-18) **и GPU2** (отдана
-соседнему приложению Alma; генеративный Qwen3-VL-8B `:8008` погашен). **Визуальный
-эмбеддер Qwen3-VL-Embedding-8B GPU5 `:8007` запаркован** (`visual_enabled=false` —
-почти не использовался; ревайв = отдельная задача). Правило выбора моделей:
+`:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + dots.mocr GPU0
+`:8120` (альт., перенесён с GPU4 для разгрузки 2026-06-18); PaddleOCR-VL 1.6 —
+on-demand (3-й парсер на выбор, `parser_backend`). GPU0 занял dots.mocr (после
+ретайра Qwen3-32B-AWQ фолбэка); **свободна GPU2** (отдана соседнему приложению
+Alma; генеративный Qwen3-VL-8B `:8008` погашен) — единственный кандидат под
+генеративный VL-апгрейд. **Визуальный эмбеддер Qwen3-VL-Embedding-8B GPU5 `:8007`
+запаркован** (`visual_enabled=false` — почти не использовался; ревайв = отдельная
+задача). Правило выбора моделей:
 **on-prem+коммерция → только Apache-2.0** (jina-v4/Nemotron — non-commercial, мимо).
 systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1.
 Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,

@@ -1,21 +1,24 @@
-# dots.mocr VLM-сервер (альтернативный парсер pdf_text) — GPU4, порт 8120.
+# dots.mocr VLM-сервер (альтернативный парсер pdf_text) — GPU0, порт 8120.
 # rednote-hilab/dots.mocr (3B); CLI dots_mocr/parser.py ходит сюда по OpenAI-API.
 # Сервинг через venv vllm-visual (vLLM 0.22.1 — native dots.ocr/mocr). Память 0.33
-# (~13 ГБ) — GPU4 делит с эмбеддером/реранкером (:8002/:8003).
+# (~13 ГБ). Перенесён с GPU4 на свободную GPU0 (2026-06-18) — разгрузка GPU4
+# (там остались эмбеддер :8002 + реранкер :8003). GPU0 освободилась после ретайра
+# Qwen3-32B-AWQ. На GPU0 исторически живёт on-demand whisperx — память capped 0.33,
+# чтобы оставить ему запас.
 [Unit]
-Description=dots.mocr VLM server (GPU4, :8120)
+Description=dots.mocr VLM server (GPU0, :8120)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=CUDA_VISIBLE_DEVICES=4
+Environment=CUDA_VISIBLE_DEVICES=0
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
 Environment=PATH=/root/services/vllm-visual/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# GPU4 — NUMA node1
-ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+# GPU0 — NUMA node0
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
     /root/services/vllm-visual/.venv/bin/vllm serve /root/models/DotsMOCR \
     --served-model-name model \
     --host 127.0.0.1 \
