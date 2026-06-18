@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 
 from rag_app.api.auth import require_user
+from rag_app.config import settings
 from rag_app.db.models import Document, Folder
 
 router = APIRouter(prefix="/api", tags=["library"], dependencies=[require_user])
@@ -92,6 +93,10 @@ async def search_visual(
     Кириллический запрос прозрачно переводится на английский быстрым контуром:
     кросс-языковость VL-эмбеддера заметно слабее (0.33 против 0.56 на контроле).
     """
+    # Визуальный контур запаркован (vllm-visual-embedding погашен 2026-06-18,
+    # фича почти не использовалась) → не дёргаем мёртвый :8007.
+    if not settings.visual_enabled:
+        raise HTTPException(503, "визуальный поиск выключен (visual_enabled=false)")
     if any("а" <= ch.lower() <= "я" for ch in q):
         q, _ = await request.app.state.fast_translator.translate(q, target_lang="en")
     q_emb = await request.app.state.visual.embed_text_query(q)

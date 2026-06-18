@@ -64,7 +64,12 @@ class Settings(BaseSettings):
         " that answer the query"
     )
     # --- Визуальный контур сканов (§ 12.1 шаг 4): эмбеддинг страниц-картинок ---
-    visual_enabled: bool = True
+    # ЗАПАРКОВАН 2026-06-18: фича почти не использовалась (page_embeddings = 1 строка,
+    # RAG-чат по ней не ходит — только /api/search/visual), а сервис держал ~23 ГБ
+    # GPU5. `vllm-visual-embedding` погашен, флаг выключен (index_pages_visual и ручка
+    # визпоиска становятся no-op/503). Ревайв — отдельной задачей (визуальный retrieval
+    # в чат), модель остаётся Qwen3-VL-Embedding (Apache-2.0), полный dim 4096.
+    visual_enabled: bool = False
     visual_embed_base_url: str = "http://127.0.0.1:8007"
     visual_embed_model: str = "qwen3-vl-embedding-8b"
     # Полный dim: усечение ломает ранжирование (серия не MRL-обученная).
