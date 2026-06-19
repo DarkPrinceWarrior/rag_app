@@ -646,99 +646,33 @@ def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[u
 
 
 async def describe_images(ctx: dict, doc_id_str: str) -> str:
-    """VL-обогащение документов: рендерим страницы → Qwen3.5-VL раскрывает СМЫСЛ
-    изображений по-русски → сегменты-описания (kind=image) → переиндексация.
+    """VL-обогащение СКАНОВ (pdf_scan): вся страница — рисунок (P&ID/чертёж/фото) →
+    Qwen3.5-VL раскрывает смысл по-русски → сегменты-описания (kind=image) →
+    переиндексация. Нужно для сканов без текстового слоя (искомость в чате).
 
-    pdf_scan: вся страница = рисунок (описываем целиком — P&ID/чертёж/фото).
-    pdf_text/docx/pptx: обход страниц (figure-sweep), описываем ТОЛЬКО те, где VL
-    находит рисунок/схему/график; чисто текстовые страницы пропускаются (EMPTY)."""
+    pdf_text/docx/pptx рисунки НЕ предописываются: их вырезанные кропы (img_s3)
+    подаются в Qwen3.5-vision ON-DEMAND в чате (rag/chat.py), а в текст-просмотре —
+    картинка + родная подпись."""
     if not settings.vl_enabled:
         return "vl disabled"
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
     doc = await _get_doc(ctx, doc_id)
     kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
-
-    # crop-режим: если парсер вырезал рисунки в файлы (img_s3 — paddle/mineru),
-    # описываем КРОПЫ (полное разрешение: формулы/подписи/числа ВНУТРИ читаемы) и
-    # пишем описание в сам img-сегмент → картинка + описание под ней, без отдельного
-    # блока. Точнее, чем page-sweep по уменьшенной странице (мелкий текст теряется).
-    async with ctx["sessionmaker"]() as session:
-        img_segs = list(
-            (
-                await session.execute(
-                    select(Segment)
-                    .where(
-                        Segment.document_id == doc_id,
-                        Segment.kind == SegmentKind.image,
-                        Segment.meta.op("->>")("img_s3").isnot(None),
-                    )
-                    .order_by(Segment.idx)
-                )
-            )
-            .scalars()
-            .all()
-        )
-    if img_segs:
-        vision = VisionClient()
-        done = 0
-        async with ctx["sessionmaker"]() as session:
-            # убрать прежние page-sweep описания (vl_describe БЕЗ картинки) — теперь
-            # описание живёт в самом img-сегменте под картинкой, отдельный блок не нужен
-            await session.execute(
-                delete(Segment).where(
-                    Segment.document_id == doc_id,
-                    Segment.meta.op("->>")("vl_describe") == "true",
-                    Segment.meta.op("->>")("img_s3").is_(None),
-                )
-            )
-            await session.commit()
-        async with ctx["sessionmaker"]() as session:
-            for s in img_segs:
-                try:
-                    crop = await storage.get_bytes(settings.bucket_artifacts, s.meta["img_s3"])
-                    desc = await vision.describe_crop(crop)
-                except Exception as exc:  # noqa: BLE001 — рисунок пропускается, не валим документ
-                    logger.warning("vl crop %s seg%d: %s", doc_id, s.idx, exc)
-                    continue
-                if not desc:
-                    continue
-                meta = dict(s.meta or {})
-                meta["vl_describe"] = True
-                await session.execute(
-                    update(Segment)
-                    .where(Segment.id == s.id)
-                    .values(source_text=desc, translated_text=desc, meta=meta)
-                )
-                done += 1
-            await session.commit()
-        await ctx["redis"].enqueue_job(
-            "index_document", doc_id_str, _job_id=f"index:{doc_id}:{uuid.uuid4().hex[:8]}"
-        )
-        logger.info("vl crop %s: %d/%d рисунков описано", doc_id, done, len(img_segs))
-        return f"vl crop: {done}/{len(img_segs)} рисунков описано"
-
-    scan = kind == DocumentKind.pdf_scan.value
-    # источник рендера: PDF-доки — оригинал; OOXML — PDF-рендер просмотра (view_orig)
-    if scan or kind == DocumentKind.pdf_text.value:
-        src_bucket, src_key = settings.bucket_originals, doc.s3_key_original
-    elif kind in ("docx", "pptx") and doc.s3_key_view_orig:
-        src_bucket, src_key = settings.bucket_exports, doc.s3_key_view_orig
-    else:
-        return f"skip: kind={kind} (нет PDF-рендера для VL-обхода)"
-    max_pages = settings.vl_max_pages if scan else settings.vl_sweep_max_pages
+    if kind != DocumentKind.pdf_scan.value:
+        return f"skip: kind={kind} (рисунки описываются on-demand в чате)"
     try:
         with tempfile.TemporaryDirectory(prefix="rag_vl_") as tmp:
             local = Path(tmp) / "src.pdf"
-            await storage.download_to(src_bucket, src_key, local)
+            await storage.download_to(settings.bucket_originals, doc.s3_key_original, local)
             pages = await asyncio.to_thread(
-                _render_pdf_pages, local.read_bytes(), max_pages, settings.vl_render_scale
+                _render_pdf_pages, local.read_bytes(), settings.vl_max_pages, settings.vl_render_scale
             )
         vision = VisionClient()
         described: list[tuple[int, str]] = []
         for pidx, png in pages:
             try:
-                desc = await vision.describe(png) if scan else await vision.describe_figure(png)
+                desc = await vision.describe(png)
             except Exception as exc:  # noqa: BLE001 — страница пропускается, не валим документ
                 logger.warning("vl describe %s p%d: %s", doc_id, pidx, exc)
                 continue

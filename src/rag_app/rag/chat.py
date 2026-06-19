@@ -7,6 +7,7 @@ Agentic-уровень (§ 5 п.7, multi-hop tool-цикл) — следующа
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import uuid
@@ -16,7 +17,9 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from rag_app.config import settings
+from rag_app.llm.vision import _cap_image
 from rag_app.rag.retrieve import RetrievedChunk
+from rag_app.storage.s3 import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,10 @@ CHAT_SYSTEM_PROMPT = """\
 4. Если фрагменты противоречат друг другу — отметь это явно.
 5. Когда просят «свести в таблицу», «сравнить», «перечислить параметры» — оформляй
    ответ Markdown-таблицей (строка заголовка `| Колонка | Колонка |`, разделитель
-   `|---|---|`, затем строки). Для сравнений колонки — это сравниваемые объекты."""
+   `|---|---|`, затем строки). Для сравнений колонки — это сравниваемые объекты.
+6. Если фрагмент-рисунок приложен изображением (схема, чертёж, график, P&ID) —
+   рассмотри его САМ: элементы, формулы, обозначения, числа внутри — и используй
+   в ответе со ссылкой [n] на этот фрагмент."""
 
 # Маршрут memory_only (§2.3.1): документного контекста нет — отвечаем из памяти
 # о пользователе/проекте и истории диалога; цитаты [n] не требуются.
@@ -104,6 +110,7 @@ class ChatEngine:
         self.client = AsyncOpenAI(
             base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=300.0
         )
+        self.storage = Storage()  # вырезанные кропы рисунков → vision on-demand
 
     async def summarize_history(self, prior_summary: str | None, messages: list[Any]) -> str:
         """Инкрементальная сводка вытесненных из окна реплик (§ 5 п.5)."""
@@ -143,11 +150,31 @@ class ChatEngine:
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         messages.extend(history[-settings.rag_history_messages :])
         if chunks:
-            user_content = (
+            text_block = (
                 f"Фрагменты документов:\n\n{build_context_block(chunks)}\n\n"
                 f"Вопрос: {question}\n\n"
                 "Ответь по правилам (цитаты [n] обязательны)."
             )
+            # vision on-demand: к найденным рисункам прикладываем вырезанные кропы —
+            # Qwen3.5 мультимодален, рассмотрит схему/формулы/обозначения на картинке
+            content: list[dict[str, Any]] = [{"type": "text", "text": text_block}]
+            attached = 0
+            for n, c in enumerate(chunks, 1):
+                img_key = (c.meta or {}).get("img_s3")
+                if not img_key or attached >= settings.rag_vision_max_images:
+                    continue
+                try:
+                    data = await self.storage.get_bytes(settings.bucket_artifacts, img_key)
+                    b64 = base64.b64encode(_cap_image(data)).decode("ascii")
+                except Exception as exc:  # noqa: BLE001 — рисунок необязателен
+                    logger.warning("vision attach [%d] %s: %s", n, img_key, exc)
+                    continue
+                content.append({"type": "text", "text": f"Изображение фрагмента [{n}]:"})
+                content.append(
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                )
+                attached += 1
+            user_content: Any = content if attached else text_block
         else:
             user_content = (
                 f"Вопрос: {question}\n\n"
