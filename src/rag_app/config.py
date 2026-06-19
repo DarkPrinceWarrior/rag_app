@@ -42,12 +42,13 @@ class Settings(BaseSettings):
     office_render_enabled: bool = True
     office_render_timeout_s: int = 150
 
-    # --- Быстрый контур виджета: HY-MT1.5-7B, GPU1 :8005 (roadmap § 12.1 п.5) ---
-    # Преемник WMT25-чемпиона Hunyuan-MT-7B (A/B 2026-06-15: нативный шаблон 0.8303,
-    # лучший средний, 0% мусора, 43с). Тот же промпт-формат, та же arch hunyuan_v1_dense.
+    # --- Быстрый контур виджета: Hy-MT2-7B, GPU1 :8005 (roadmap § 12.1 п.5) ---
+    # Hy-MT2-7B принят 2026-06-19 по COMET-A/B (COMETKiwi-22, 300 сегм.): средний
+    # 0.7790 vs 0.7716 у HY-MT1.5 и 0.7516 у прод-Qwen3.5; p10 0.618. bf16 (FP8 на
+    # A100 даёт мусор). Та же arch hunyuan_v1_dense, тот же промпт-формат и сэмплинг.
     fast_llm_enabled: bool = True
     fast_llm_base_url: str = "http://127.0.0.1:8005/v1"
-    fast_llm_model: str = "hy-mt1.5-7b"
+    fast_llm_model: str = "hy-mt2-7b"
     selection_max_chars: int = 4000
     web_translate_max_items: int = 300
     web_translate_concurrency: int = 16
