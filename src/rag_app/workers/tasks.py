@@ -536,6 +536,18 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
                 await ctx["redis"].enqueue_job(
                     "describe_images", doc_id_str, _job_id=f"vl:{doc_id}:{uuid.uuid4().hex[:8]}"
                 )
+        # визуальный индекс (Этап 2): эмбеддинги страниц-рисунков для визуального
+        # retrieval — авто для pdf_scan (все страницы) и любых доков с вырезанными
+        # рисунками (img_s3). index_pages_visual сам отфильтрует страницы.
+        if settings.visual_enabled:
+            vdoc = await _get_doc(ctx, doc_id)
+            vkind = vdoc.kind if isinstance(vdoc.kind, str) else vdoc.kind.value
+            if vkind == DocumentKind.pdf_scan.value or any(
+                (s.meta or {}).get("img_s3") for s in segments
+            ):
+                await ctx["redis"].enqueue_job(
+                    "index_pages_visual", doc_id_str, _job_id=f"vis:{doc_id}:{uuid.uuid4().hex[:8]}"
+                )
         return f"indexed: {len(drafts)} chunks"
     except Exception as exc:
         logger.exception("index %s failed", doc_id)
