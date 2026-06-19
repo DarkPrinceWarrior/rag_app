@@ -81,10 +81,12 @@ adaptive agentic-RAG-чат с цитатами — классификатор s
 SSO/RBAC/аудит/Langfuse, нагрузочное 20 документов). Оставшиеся доделки и план
 обновления моделей — `docs/roadmap.md` § 12.1 и журнал (последняя строка 📋).
 LLM-сервисы на a100 (раскладка на 2026-06-18, roadmap § 12.1 + журнал):
-**Qwen3.5-35B-A3B GPU3 `:8006` — воркхорс** (перевод + RAG-чат, GPTQ-Int4 no-eager;
-мультимодальный — берёт image_url); **Hy-MT2-7B GPU1 `:8005` — быстрый контур**
-(виджет/выделение; принят 2026-06-19 по COMET-A/B вместо HY-MT1.5; bf16 — FP8 на
-A100 даёт мусор); Qwen3-Embedding-0.6B GPU4 `:8002`, Qwen3-Reranker-4B GPU4
+**Qwen3.5-35B-A3B GPU3 `:8006`** (RAG-чат + анализ + описание картинок/схем,
+мультимодальный — берёт image_url; GPTQ-Int4 no-eager; **НЕ переводчик документов**);
+**Hy-MT2-7B GPU1 `:8005` — ВЕСЬ перевод** (документы `HyMTDocTranslator` +
+быстрый контур виджета; спец-MT, принят 2026-06-19 по COMET-A/B; bf16 — FP8 на A100
+даёт мусор; `doc_translate_backend=hymt2`, без Qwen-фолбэка); Qwen3-Embedding-0.6B
+GPU4 `:8002`, Qwen3-Reranker-4B GPU4
 `:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + dots.mocr GPU0
 `:8120` (альт., перенесён с GPU4 для разгрузки 2026-06-18); PaddleOCR-VL 1.6 —
 on-demand (3-й парсер на выбор, `parser_backend`). GPU0 занял dots.mocr (после

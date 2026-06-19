@@ -16,6 +16,7 @@ from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.llm.client import Translator
 from rag_app.llm.embeddings import Embedder, Reranker
+from rag_app.llm.fast import HyMTDocTranslator
 from rag_app.llm.visual import VisualEmbedder
 from rag_app.rag.memory import MemoryService
 from rag_app.storage.s3 import Storage
@@ -38,7 +39,10 @@ async def startup(ctx: dict) -> None:
     ctx["sessionmaker"] = create_sessionmaker(ctx["engine"])
     ctx["storage"] = Storage()
     await ctx["storage"].ensure_buckets()
-    ctx["translator"] = Translator()
+    # Перевод документов: Hy-MT2 (спец-MT) по умолчанию; Qwen3.5-Translator — опц.
+    ctx["translator"] = (
+        HyMTDocTranslator() if settings.doc_translate_backend == "hymt2" else Translator()
+    )
     ctx["visual"] = VisualEmbedder()
     ctx["embedder"] = Embedder()
     # слой памяти (Этап 2): экстракция/consolidation на тех же embedder/reranker + LLM

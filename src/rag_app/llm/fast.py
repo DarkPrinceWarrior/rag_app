@@ -7,12 +7,13 @@ HY-MT1.5-7B (преемник WMT25-чемпиона Hunyuan-MT-7B) на GPU1 :8
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from openai import AsyncOpenAI
 
 from rag_app.config import settings
-from rag_app.llm.client import needs_translation
+from rag_app.llm.client import SegmentContext, needs_translation
 
 logger = logging.getLogger(__name__)
 
@@ -89,3 +90,56 @@ class FastTranslator:
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
         return (resp.choices[0].message.content or "").strip(), settings.llm_model
+
+
+class HyMTDocTranslator:
+    """Перевод ДОКУМЕНТОВ спец-MT-моделью Hy-MT2 (нативный шаблон + term-anchored
+    глоссарий). БЕЗ scaffolding-лесов воркхорса (system-prompt, «Текущий раздел»,
+    <doc>-маркеры — спец-MT эхо-копирует их в перевод) и БЕЗ Qwen3.5-фолбэка:
+    перевод документов целиком на Hy-MT2 (выиграл COMET-A/B 2026-06-19). Сигнатура
+    .translate(text, context, feedback) совпадает с Translator → цикл воркера и
+    числовая валидация работают без изменений. При сбое — RuntimeError (как у
+    Translator: сегмент в ошибку, документ не молчит)."""
+
+    def __init__(self) -> None:
+        self.client = AsyncOpenAI(
+            base_url=settings.fast_llm_base_url, api_key="local", timeout=300.0
+        )
+        self.model = settings.fast_llm_model
+
+    async def translate(
+        self,
+        text: str,
+        context: SegmentContext | None = None,
+        feedback: str | None = None,
+    ) -> str:
+        if not needs_translation(text):
+            return text
+        glossary = context.glossary if context else None
+        prompt = build_fast_prompt(text, "Russian", glossary)
+        if feedback:
+            # числовая валидация отклонила перевод → просим сохранить числа
+            # (нативной инструкцией Hy-MT, без scaffolding'а воркхорса)
+            prompt = "Keep all numbers, units and symbols exactly as in the source.\n" + prompt
+        last_err: Exception | None = None
+        for attempt in range(settings.translate_max_retries):
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,  # детерминизм/консистентность под документы
+                    top_p=0.8,
+                    max_tokens=settings.llm_max_tokens,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                out = (resp.choices[0].message.content or "").strip()
+                if out:
+                    return out
+                raise ValueError("пустой ответ Hy-MT2")
+            except Exception as exc:
+                last_err = exc
+                logger.warning("док-перевод Hy-MT2: попытка %d не удалась: %s", attempt + 1, exc)
+                await asyncio.sleep(2**attempt)
+        raise RuntimeError(
+            f"перевод Hy-MT2 не удался после {settings.translate_max_retries} попыток: {last_err}"
+        )

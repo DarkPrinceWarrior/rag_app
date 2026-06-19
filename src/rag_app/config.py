@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     fast_llm_enabled: bool = True
     fast_llm_base_url: str = "http://127.0.0.1:8005/v1"
     fast_llm_model: str = "hy-mt2-7b"
+    # Движок перевода ДОКУМЕНТОВ (translate_document): hymt2 → Hy-MT2-7B (спец-MT,
+    # нативный шаблон + term-anchored глоссарий, БЕЗ Qwen3.5-фолбэка; выиграл COMET-A/B
+    # 2026-06-19) | qwen3 → воркхорс Qwen3.5-35B (scaffolded). Qwen3.5 остаётся под
+    # RAG-чат/анализ/VL, но не как переводчик документов.
+    doc_translate_backend: str = "hymt2"  # hymt2 | qwen3
     selection_max_chars: int = 4000
     web_translate_max_items: int = 300
     web_translate_concurrency: int = 16
