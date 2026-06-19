@@ -1,0 +1,38 @@
+# PaddleOCR-VL-0.9B genai vLLM-сервер (парсер pdf_text «PaddleOCR-VL 1.6») — GPU0, :8118.
+# VLM-инференс (NaViT-энкодер + ERNIE-4.5-0.3B) для PaddleOCRVL-клиента: runner
+# (deploy/parsers/run_paddle_cli.py) ходит сюда по OpenAI-API (vl_rec_backend=vllm-server),
+# layout-детекция (PP-DocLayoutV3) идёт локально в runner'е. on-demand PaddleOCRVL()
+# в 3.7 виснет без inference-движка — поэтому только через этот постоянный сервер.
+# Изолированный paddle-venv (vllm 0.10.2 — пин PaddleOCR genai-plugin, НЕ трогает
+# основной стек). Модель Apache-2.0, кэш /root/.paddlex/official_models/PaddleOCR-VL-1.6.
+# Память 0.35 (~14 ГБ) — GPU0 делят dots.mocr :8120 + whisperx + layout runner'а.
+# ExecStartPre чинит баг prometheus_fastapi_instrumentator (route.path → 500), идемпотентно.
+[Unit]
+Description=PaddleOCR-VL genai vLLM server (GPU0, :8118)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/root/parser_trials/paddle/.venv_paddle/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/root/parser_trials/paddle/.venv_paddle/bin/python /root/projects/rag_app/deploy/parsers/patch_prometheus.py
+# GPU0 — NUMA node0
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
+    /root/parser_trials/paddle/.venv_paddle/bin/paddlex_genai_server \
+    --model_name PaddleOCR-VL-1.6-0.9B \
+    --model_dir /root/.paddlex/official_models/PaddleOCR-VL-1.6 \
+    --host 127.0.0.1 \
+    --port 8118 \
+    --backend vllm \
+    --backend_config /root/paddle_vllm_cfg.yaml
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+# backend_config для paddlex_genai_server --backend vllm (PaddleOCR-VL-0.9B, GPU0).
+# Доля памяти GPU0 под KV-cache vLLM: GPU0 делят dots.mocr (:8120, ~0.33) + on-demand
+# whisperx + layout-детектор runner'а PaddleOCRVL → держим 0.35 (~14 ГБ), чтобы влезть.
+# Копия на сервере: /root/paddle_vllm_cfg.yaml (ExecStart ссылается на неё).
+gpu_memory_utilization: 0.35

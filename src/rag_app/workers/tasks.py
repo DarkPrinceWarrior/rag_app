@@ -141,6 +141,10 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                     # вывода → SegmentDraft напрямую, без mineru content_list/geo
                     kind = DocumentKind.pdf_text
                     drafts = await _vlm_segments(backend, local_file, out_dir)
+                    # PaddleOCR-VL вырезает рисунки в файлы (dots — нет) → грузим в
+                    # img_s3, чтобы они появились в текст-просмотре (как у MinerU)
+                    if backend == "paddle_vl":
+                        await _upload_segment_images(storage, doc_id, out_dir, drafts)
                 else:
                     if doc.parse_force_ocr:
                         # битый ToUnicode-cmap текстового слоя → OCR с картинки
@@ -217,6 +221,8 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                     rpdf.write_bytes(rendered)
                     out_dir = tmp_path / "parser_out"
                     drafts = await _vlm_segments(backend, rpdf, out_dir)
+                    if backend == "paddle_vl":
+                        await _upload_segment_images(storage, doc_id, out_dir, drafts)
                     n_pages, _ = await asyncio.to_thread(pdf_info, rpdf)
                 else:
                     # DOCX: встроенные картинки извлекаем в tmp и грузим в MinIO

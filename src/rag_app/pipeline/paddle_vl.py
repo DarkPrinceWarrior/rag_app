@@ -24,8 +24,15 @@ from rag_app.pipeline.segments import SegmentDraft, parse_table
 logger = logging.getLogger(__name__)
 
 _TABLE_RE = re.compile(r"<table.*?</table>", re.S | re.I)
-_IMG_RE = re.compile(r"^!\[[^\]]*\]\([^)]*\)$")
+_IMG_RE = re.compile(r"^!\[[^\]]*\]\(([^)]*)\)$")  # markdown ![](path) (старый формат)
+_IMG_HTML = re.compile(r'<img[^>]*\bsrc="([^"]+)"[^>]*>', re.I)  # PaddleOCR-VL: <img src="imgs/...">
+_DIV_TAG = re.compile(r"</?div[^>]*>", re.I)  # PaddleOCR-VL центрирует картинки/подписи в <div>
 _HEAD_RE = re.compile(r"^(#{1,6})\s+(.*)")
+
+
+def _img_meta(rel: str) -> dict:
+    rel = (rel or "").strip().split()[0] if (rel or "").strip() else ""
+    return {"img_path": rel} if rel and not rel.startswith(("http://", "https://", "data:")) else {}
 
 
 async def run_paddle(pdf_path: Path, out_dir: Path) -> Path:
@@ -34,7 +41,11 @@ async def run_paddle(pdf_path: Path, out_dir: Path) -> Path:
     clean = out_dir / "doc.pdf"  # чистое имя (без пробелов/скобок) для стабильных doc_N.md
     shutil.copy(pdf_path, clean)
     cmd = [settings.paddle_venv_python, settings.paddle_runner, str(clean), str(out_dir)]
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES=settings.paddle_device)
+    env = dict(
+        os.environ,
+        CUDA_VISIBLE_DEVICES=settings.paddle_device,
+        PADDLE_VL_SERVER_URL=settings.paddle_vl_server_url,  # VLM на genai vLLM-сервер
+    )
     logger.info("paddle-vl: %s (GPU=%s)", " ".join(cmd), settings.paddle_device)
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
@@ -56,17 +67,27 @@ def _text_blocks(text: str, pidx: int, drafts: list[SegmentDraft]) -> None:
         block = block.strip()
         if not block:
             continue
-        if _IMG_RE.fullmatch(block):
-            drafts.append(SegmentDraft(0, SegmentKind.image, "", pidx))
+        # вырезанные картинки PaddleOCR-VL — HTML <img src="imgs/..."> (часто в <div>);
+        # путь относителен out_dir → _upload_segment_images зальёт в img_s3 и рисунок
+        # появится в текст-просмотре. Каждый <img> — отдельный image-сегмент.
+        for m in _IMG_HTML.finditer(block):
+            drafts.append(SegmentDraft(0, SegmentKind.image, "", pidx, meta=_img_meta(m.group(1))))
+        # чистый текст блока без html-обёрток (<img>, <div style=center> у подписей)
+        clean = _DIV_TAG.sub("", _IMG_HTML.sub("", block)).strip()
+        m_md = _IMG_RE.fullmatch(clean)  # старый markdown-формат ![](path)
+        if m_md:
+            drafts.append(SegmentDraft(0, SegmentKind.image, "", pidx, meta=_img_meta(m_md.group(1))))
             continue
-        hm = _HEAD_RE.match(block)
-        if hm and "\n" not in block:
+        if not clean:
+            continue
+        hm = _HEAD_RE.match(clean)
+        if hm and "\n" not in clean:
             drafts.append(
                 SegmentDraft(0, SegmentKind.heading, hm.group(2).strip(), pidx,
                              heading_level=len(hm.group(1)))
             )
             continue
-        for piece in _cap([block]):
+        for piece in _cap([clean]):
             drafts.append(SegmentDraft(0, SegmentKind.paragraph, piece, pidx))
 
 

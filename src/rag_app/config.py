@@ -203,10 +203,14 @@ class Settings(BaseSettings):
     dots_prompt: str = "prompt_layout_all_en"
     dots_num_thread: int = 8
     dots_timeout_s: int = 1800
-    # PaddleOCR-VL 1.6: on-demand (грузит модель на парс, GPU4), изолированный venv
+    # PaddleOCR-VL-0.9B: VLM-инференс на ПОСТОЯННОМ genai vLLM-сервере (paddlex_
+    # genai_server, GPU0:8118 — on-demand в 3.7 виснет без inference-движка);
+    # layout-детекция локально на paddle_device. Изолированный paddle-venv
+    # (vllm 0.10.2 — пин PaddleOCR genai-plugin, не трогает основной стек).
     paddle_venv_python: str = "/root/parser_trials/paddle/.venv_paddle/bin/python"
     paddle_runner: str = "/root/projects/rag_app/deploy/parsers/run_paddle_cli.py"
-    paddle_device: str = "4"
+    paddle_vl_server_url: str = "http://127.0.0.1:8118/v1"
+    paddle_device: str = "0"
     paddle_timeout_s: int = 1800
 
     # --- Оверлей сканов (перевод поверх изображения по bbox) ---
