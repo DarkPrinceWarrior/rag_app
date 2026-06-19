@@ -1,21 +1,21 @@
-# Визуальный эмбеддер Qwen3-VL-Embedding-8B — GPU5, порт 8007 (§ 12.1 шаг 4).
-# Отдельный контур для сканов/чертежей; текстовый поиск остаётся на GPU4.
+# Визуальный эмбеддер Qwen3-VL-Embedding-8B — GPU2, порт 8007 (§ 12.1 шаг 4).
+# Визуальный контур (эмбеддер + реранкер) на свободной GPU2; текстовый — на GPU4.
 [Unit]
-Description=vLLM Qwen3-VL-Embedding-8B (GPU5, :8007)
+Description=vLLM Qwen3-VL-Embedding-8B (GPU2, :8007)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=CUDA_VISIBLE_DEVICES=5
+Environment=CUDA_VISIBLE_DEVICES=2
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
 # Отдельный venv с последним vLLM: 0.22.1 давал NaN в мультимодальном
 # pooling-пути этой модели (строковый /v1/embeddings работал)
 Environment=PATH=/root/services/vllm-visual/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# GPU5 — NUMA node1
-ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
+# GPU2 — NUMA node0
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
     /root/services/vllm-visual/.venv/bin/vllm serve /root/models/Qwen3-VL-Embedding-8B \
     --served-model-name qwen3-vl-embedding-8b \
     --runner pooling \

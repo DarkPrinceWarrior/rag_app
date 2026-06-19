@@ -738,51 +738,88 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
 
 # ------------------------------------------------- визуальный индекс (§ 12.1 шаг 4)
 
+async def _figure_pages(ctx: dict, doc_id: uuid.UUID) -> set[int]:
+    """Страницы документа, на которых есть вырезанный рисунок (img_s3) — их и
+    эмбеддим визуально для pdf_text/docx/pptx (чисто текстовые покрывает текст-поиск)."""
+    async with ctx["sessionmaker"]() as session:
+        rows = (
+            await session.execute(
+                select(Segment.page_idx)
+                .where(
+                    Segment.document_id == doc_id,
+                    Segment.kind == SegmentKind.image,
+                    Segment.meta.op("->>")("img_s3").isnot(None),
+                    Segment.page_idx.isnot(None),
+                )
+                .distinct()
+            )
+        ).scalars().all()
+    return {p for p in rows if p is not None}
+
+
 async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
-    """Эмбеддинги страниц-картинок для сканов: печати/штампы/чертежи,
-    где текстовый OCR-контур теряет."""
+    """Эмбеддинги страниц-картинок (Qwen3-VL-Embedding-8B) для визуального retrieval:
+    печати/штампы/чертежи/схемы, где текстовый контур слаб. pdf_scan — все страницы
+    (вся страница = визуал); pdf_text/docx/pptx — только страницы с вырезанными
+    рисунками (img_s3), остальное берёт текстовый поиск."""
     doc_id = uuid.UUID(doc_id_str)
     if not settings.visual_enabled:
         return "visual disabled"
     doc = await _get_doc(ctx, doc_id)
-    if doc.kind != DocumentKind.pdf_scan.value:
-        return f"skip: kind={doc.kind}"
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
     storage: Storage = ctx["storage"]
     visual: VisualEmbedder = ctx["visual"]
 
-    def render_pages(pdf_path: Path) -> list[bytes]:
+    # источник рендера + набор страниц (None = все)
+    if kind == DocumentKind.pdf_scan.value:
+        src_bucket, src_key, page_filter = settings.bucket_originals, doc.s3_key_original, None
+    elif kind == DocumentKind.pdf_text.value:
+        src_bucket, src_key = settings.bucket_originals, doc.s3_key_original
+        page_filter = await _figure_pages(ctx, doc_id)
+    elif kind in ("docx", "pptx") and doc.s3_key_view_orig:
+        src_bucket, src_key = settings.bucket_exports, doc.s3_key_view_orig
+        page_filter = await _figure_pages(ctx, doc_id)
+    else:
+        return f"skip: kind={kind}"
+    if page_filter is not None and not page_filter:
+        return "visual: нет страниц с рисунками"
+
+    def render_pages(pdf_path: Path) -> list[tuple[int, bytes]]:
         import io as _io
 
         import pypdfium2 as pdfium
-        from PIL import Image  # noqa: F401
 
         with PDFIUM_LOCK:
             pdf = pdfium.PdfDocument(str(pdf_path))
             try:
-                pages = []
+                out: list[tuple[int, bytes]] = []
                 for i in range(len(pdf)):
+                    if page_filter is not None and i not in page_filter:
+                        continue
                     img = pdf[i].render(scale=settings.visual_render_scale).to_pil().convert("RGB")
                     buf = _io.BytesIO()
                     img.save(buf, format="JPEG", quality=85)
-                    pages.append(buf.getvalue())
-                return pages
+                    out.append((i, buf.getvalue()))
+                return out
             finally:
                 pdf.close()
 
     try:
         with tempfile.TemporaryDirectory(prefix="rag_visual_") as tmp:
             local_pdf = Path(tmp) / "doc.pdf"
-            await storage.download_to(settings.bucket_originals, doc.s3_key_original, local_pdf)
-            jpegs = await asyncio.to_thread(render_pages, local_pdf)
+            await storage.download_to(src_bucket, src_key, local_pdf)
+            pages = await asyncio.to_thread(render_pages, local_pdf)
+        if not pages:
+            return "visual: нет страниц"
 
-        embs: list[list[float]] = []
-        for jpeg in jpegs:  # последовательно: vision-башня прожорлива
-            embs.append(await visual.embed_page(jpeg))
+        embs: list[tuple[int, list[float]]] = []
+        for pidx, jpeg in pages:  # последовательно: vision-башня прожорлива
+            embs.append((pidx, await visual.embed_page(jpeg)))
 
         async with ctx["sessionmaker"]() as session:
             await session.execute(delete(PageEmbedding).where(PageEmbedding.document_id == doc_id))
             session.add_all(
-                PageEmbedding(document_id=doc_id, page_idx=i, emb=e) for i, e in enumerate(embs)
+                PageEmbedding(document_id=doc_id, page_idx=p, emb=e) for p, e in embs
             )
             await session.execute(
                 update(Document)
@@ -790,7 +827,7 @@ async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
                 .values(index_error=None)
             )
             await session.commit()
-        logger.info("visual index %s: %d страниц", doc_id, len(embs))
+        logger.info("visual index %s: %d страниц (%s)", doc_id, len(embs), kind)
         return f"visual indexed: {len(embs)} pages"
     except Exception as exc:
         logger.exception("visual index %s failed", doc_id)
