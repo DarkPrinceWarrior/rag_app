@@ -59,8 +59,8 @@ class FragmentIn(BaseModel):
 
 @router.post("/translate/fragment")
 async def translate_fragment(request: Request, body: FragmentIn) -> dict:
-    """Перевод произвольного фрагмента документ-качеством (Qwen3 + глоссарий) —
-    режим «выделенный фрагмент» из ТЗ §4.2 для веб-приложения."""
+    """Перевод произвольного фрагмента документ-качеством (тот же движок, что и
+    пайплайн документов — Hy-MT2 + глоссарий) — режим «выделенный фрагмент» ТЗ §4.2."""
     text = body.text.strip()
     if len(text) > 8000:
         raise HTTPException(413, "фрагмент длиннее 8000 символов — переведите документ целиком")
@@ -69,7 +69,8 @@ async def translate_fragment(request: Request, body: FragmentIn) -> dict:
     terms = pick_glossary_terms(text, [(r.en_term, r.ru_term) for r in rows])
     t0 = time.monotonic()
     out = await request.app.state.translator.translate(text, SegmentContext(glossary=terms))
-    return {"text": out, "engine": settings.llm_model, "ms": int((time.monotonic() - t0) * 1000)}
+    engine = settings.fast_llm_model if settings.doc_translate_backend == "hymt2" else settings.llm_model
+    return {"text": out, "engine": engine, "ms": int((time.monotonic() - t0) * 1000)}
 
 
 class NodeIn(BaseModel):

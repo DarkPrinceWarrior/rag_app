@@ -26,7 +26,7 @@ from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
 from rag_app.llm.client import Translator
 from rag_app.llm.embeddings import Embedder, Reranker
-from rag_app.llm.fast import FastTranslator
+from rag_app.llm.fast import FastTranslator, HyMTDocTranslator
 from rag_app.llm.visual import VisualEmbedder
 from rag_app.rag.chat import ChatEngine
 from rag_app.rag.memory import MemoryService
@@ -54,7 +54,11 @@ async def lifespan(app: FastAPI):
     app.state.memory = MemoryService(app.state.retriever.embedder, app.state.retriever.reranker)
     app.state.visual = VisualEmbedder()
     app.state.fast_translator = FastTranslator()
-    app.state.translator = Translator()  # документ-качество (Qwen3+глоссарий) для перевода фрагмента
+    # перевод фрагмента — тем же документным движком, что и пайплайн (по умолчанию
+    # Hy-MT2; тумблер doc_translate_backend). Qwen3.5 переводчиком больше не работает.
+    app.state.translator = (
+        HyMTDocTranslator() if settings.doc_translate_backend == "hymt2" else Translator()
+    )
     yield
     await app.state.arq.aclose()
     await app.state.engine.dispose()
