@@ -96,10 +96,14 @@ class Settings(BaseSettings):
     # раскрывает СМЫСЛ изображения текстом (на русском). В отличие от visual_*
     # (только эмбеддинги для поиска) — этот генерирует описание.
     vl_enabled: bool = True
-    vl_base_url: str = "http://127.0.0.1:8008/v1"
-    vl_model: str = "qwen3-vl"
+    # Генеративный VL — воркхорс Qwen3.5-35B-A3B (:8006, мультимодальный; отдельный
+    # Qwen3-VL-8B на GPU2 ретайрнут 2026-06-19). Картинка капается до vl_max_side px
+    # (vision.py) — GPU3 тесная (ctx 8192), большой чертёж иначе переполняет контекст.
+    vl_base_url: str = "http://127.0.0.1:8006/v1"
+    vl_model: str = "qwen3.5-35b-a3b"
     vl_max_tokens: int = 1200
-    vl_render_scale: float = 2.2  # рендер страницы PDF в картинку для VL
+    vl_max_side: int = 1400  # макс. сторона картинки-страницы (кап vision-токенов)
+    vl_render_scale: float = 1.6  # рендер страницы PDF в картинку для VL
     vl_max_pages: int = 12  # потолок страниц-картинок на документ (латентность)
 
     rerank_base_url: str = "http://127.0.0.1:8003"
