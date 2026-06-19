@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     )
     visual_render_scale: float = 2.0  # 144 DPI (требует --enforce-eager у сервиса)
 
+    # --- Визуальный реранкер Qwen3-VL-Reranker-2B (GPU2 :8009) ---
+    # Cross-encoder (query, страница-картинка) → relevance score; раздаётся
+    # отдельным FastAPI-сервисом через transformers (НЕ vLLM: vllm#35412 даёт
+    # реверсивные скоры, а vLLM 0.22/0.23 не знают Qwen3VLForSequenceClassification).
+    visual_rerank_base_url: str = "http://127.0.0.1:8009"
+    visual_rerank_model: str = "qwen3-vl-reranker-2b"
+
     # --- Генеративный VL для описания/объяснения рисунков (GPU2 :8008) ---
     # Qwen3-VL-8B-Instruct: для сканов-чертежей, P&ID, схем, графиков, фото —
     # раскрывает СМЫСЛ изображения текстом (на русском). В отличие от visual_*

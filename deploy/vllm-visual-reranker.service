@@ -1,0 +1,32 @@
+# Визуальный реранкер Qwen3-VL-Reranker-2B — GPU2, порт 8009.
+# Cross-encoder (query, страница-картинка) → relevance score. НЕ vLLM:
+# vllm#35412 даёт реверсивные скоры, а vLLM 0.22/0.23 не знают
+# Qwen3VLForSequenceClassification. Инференс — transformers (FastAPI-сервис
+# scripts/visual_rerank_server.py) в отдельном venv. GPU2 — общая с визуальным
+# эмбеддером (:8007); ~5-6 ГБ при свободных ~17 ГБ.
+[Unit]
+Description=Qwen3-VL-Reranker-2B (transformers, GPU2, :8009)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=2
+Environment=NCCL_P2P_DISABLE=1
+Environment=NCCL_IB_DISABLE=1
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=VISUAL_RERANK_MODEL_PATH=/root/models/Qwen3-VL-Reranker-2B
+Environment=PATH=/root/services/vllm-visual-reranker/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/root/projects/rag_app/scripts
+# GPU2 — NUMA node0
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
+    /root/services/vllm-visual-reranker/.venv/bin/uvicorn visual_rerank_server:app \
+    --host 127.0.0.1 \
+    --port 8009
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
