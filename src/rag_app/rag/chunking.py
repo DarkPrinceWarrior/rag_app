@@ -83,7 +83,15 @@ def segments_to_chunks(segments: list[Segment]) -> list[ChunkDraft]:
         elif seg.kind == SegmentKind.table:
             table_buf = [seg]
             _flush(drafts, stack + ["таблица"], table_buf, kind="table")
-        elif seg.kind in (SegmentKind.paragraph, SegmentKind.equation, SegmentKind.image):
+        elif seg.kind == SegmentKind.image:
+            # VL-описание рисунка/схемы — ОТДЕЛЬНЫМ чанком (точная страница цитаты +
+            # чистый эмбеддинг одного рисунка, не склеивать с соседними). Пустой
+            # плейсхолдер картинки (без описания) пропускаем — нечего индексировать.
+            if (seg.source_text or "").strip():
+                _flush(drafts, stack, buf)
+                buf_chars = 0
+                _flush(drafts, stack, [seg], kind="image")
+        elif seg.kind in (SegmentKind.paragraph, SegmentKind.equation):
             text_len = len(seg.source_text)
             if buf_chars + text_len > settings.chunk_max_chars and buf_chars > settings.chunk_min_chars:
                 _flush(drafts, stack, buf)
@@ -92,11 +100,11 @@ def segments_to_chunks(segments: list[Segment]) -> list[ChunkDraft]:
             buf_chars += text_len
 
     _flush(drafts, stack, buf)
-    # таблицы не фильтруем по длине: короткая спецификация — всё равно ценный чанк
+    # таблицы и рисунки не фильтруем по длине: короткое описание — всё равно ценный чанк
     kept = [
         d
         for d in drafts
-        if d.kind == "table" or len(d.text_en) + len(d.text_ru) >= settings.chunk_min_chars // 2
+        if d.kind in ("table", "image") or len(d.text_en) + len(d.text_ru) >= settings.chunk_min_chars // 2
     ]
     for i, d in enumerate(kept):
         d.idx = i

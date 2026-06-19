@@ -640,28 +640,39 @@ def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[u
 
 
 async def describe_images(ctx: dict, doc_id_str: str) -> str:
-    """VL-обогащение сканов/чертежей (pdf_scan): рендерим страницы → Qwen3-VL
-    раскрывает СМЫСЛ изображения по-русски → сегменты-описания (kind=image) →
-    переиндексация. Для P&ID/чертежей/фото, где OCR извлекает мало текста."""
+    """VL-обогащение документов: рендерим страницы → Qwen3.5-VL раскрывает СМЫСЛ
+    изображений по-русски → сегменты-описания (kind=image) → переиндексация.
+
+    pdf_scan: вся страница = рисунок (описываем целиком — P&ID/чертёж/фото).
+    pdf_text/docx/pptx: обход страниц (figure-sweep), описываем ТОЛЬКО те, где VL
+    находит рисунок/схему/график; чисто текстовые страницы пропускаются (EMPTY)."""
     if not settings.vl_enabled:
         return "vl disabled"
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
     doc = await _get_doc(ctx, doc_id)
-    if doc.kind != DocumentKind.pdf_scan.value:
-        return f"skip: kind={doc.kind}"
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    scan = kind == DocumentKind.pdf_scan.value
+    # источник рендера: PDF-доки — оригинал; OOXML — PDF-рендер просмотра (view_orig)
+    if scan or kind == DocumentKind.pdf_text.value:
+        src_bucket, src_key = settings.bucket_originals, doc.s3_key_original
+    elif kind in ("docx", "pptx") and doc.s3_key_view_orig:
+        src_bucket, src_key = settings.bucket_exports, doc.s3_key_view_orig
+    else:
+        return f"skip: kind={kind} (нет PDF-рендера для VL-обхода)"
+    max_pages = settings.vl_max_pages if scan else settings.vl_sweep_max_pages
     try:
         with tempfile.TemporaryDirectory(prefix="rag_vl_") as tmp:
-            local = Path(tmp) / Path(doc.filename).name
-            await storage.download_to(settings.bucket_originals, doc.s3_key_original, local)
+            local = Path(tmp) / "src.pdf"
+            await storage.download_to(src_bucket, src_key, local)
             pages = await asyncio.to_thread(
-                _render_pdf_pages, local.read_bytes(), settings.vl_max_pages, settings.vl_render_scale
+                _render_pdf_pages, local.read_bytes(), max_pages, settings.vl_render_scale
             )
         vision = VisionClient()
         described: list[tuple[int, str]] = []
         for pidx, png in pages:
             try:
-                desc = await vision.describe(png)
+                desc = await vision.describe(png) if scan else await vision.describe_figure(png)
             except Exception as exc:  # noqa: BLE001 — страница пропускается, не валим документ
                 logger.warning("vl describe %s p%d: %s", doc_id, pidx, exc)
                 continue

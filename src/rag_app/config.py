@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     vl_max_side: int = 1400  # макс. сторона картинки-страницы (кап vision-токенов)
     vl_render_scale: float = 1.6  # рендер страницы PDF в картинку для VL
     vl_max_pages: int = 12  # потолок страниц-картинок на документ (латентность)
+    # figure-sweep для pdf_text/docx/pptx: обход страниц с поиском рисунков —
+    # потолок выше (текстовые страницы дёшевы: VL быстро отвечает EMPTY, ~0.8 с/стр)
+    vl_sweep_max_pages: int = 200
 
     rerank_base_url: str = "http://127.0.0.1:8003"
     rerank_model: str = "qwen3-reranker-4b"
