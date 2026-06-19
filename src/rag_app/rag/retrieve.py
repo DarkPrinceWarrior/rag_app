@@ -17,10 +17,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_app.config import settings
 from rag_app.llm.embeddings import Embedder, Reranker
+from rag_app.llm.visual import VisualEmbedder
+from rag_app.llm.visual_reranker import VisualReranker
+from rag_app.storage.s3 import Storage
 
 logger = logging.getLogger(__name__)
 
 _RRF_K = 60
+
+# Визуальный recall: страницы по эмбеддингу страницы-картинки (Qwen3-VL-Embedding)
+_VISUAL_PAGES_SQL = """
+SELECT p.document_id, p.page_idx, 1 - (p.emb <=> CAST(:qe AS vector)) AS vscore
+FROM page_embeddings p JOIN documents d ON d.id = p.document_id
+WHERE (CAST(:doc_id AS uuid) IS NULL OR p.document_id = :doc_id)
+  AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
+ORDER BY p.emb <=> CAST(:qe AS vector)
+LIMIT :k
+"""
 
 
 @dataclass
@@ -67,6 +80,13 @@ LIMIT :k
 """
 
 
+_IMG_CHUNKS_SQL = f"""
+SELECT {_BASE_FIELDS}
+FROM chunks c JOIN documents d ON d.id = c.document_id
+WHERE c.kind = 'image' AND (c.meta ? 'img_s3') AND c.document_id = ANY(:doc_ids)
+"""
+
+
 def _row_to_chunk(row: Any) -> RetrievedChunk:
     return RetrievedChunk(
         id=row.id,
@@ -83,9 +103,19 @@ def _row_to_chunk(row: Any) -> RetrievedChunk:
 
 
 class Retriever:
-    def __init__(self, embedder: Embedder, reranker: Reranker) -> None:
+    def __init__(
+        self,
+        embedder: Embedder,
+        reranker: Reranker,
+        visual_embedder: VisualEmbedder | None = None,
+        visual_reranker: VisualReranker | None = None,
+        storage: Storage | None = None,
+    ) -> None:
         self.embedder = embedder
         self.reranker = reranker
+        self.visual_embedder = visual_embedder
+        self.visual_reranker = visual_reranker
+        self.storage = storage
 
     async def retrieve(
         self,
@@ -133,4 +163,67 @@ class Retriever:
             logger.warning("reranker недоступен (%s) — отдаю RRF-порядок", exc)
             for c in candidates:
                 c.score = scores[c.id]
-        return candidates[:top_k]
+        result = candidates[:top_k]
+        # Визуальный контур (§ 12.1 шаг 4): релевантные страницы-рисунки по
+        # page_embeddings → их image-чанки → визуальный реранк кропов. Добавляем к
+        # тексту — vision-on-demand подаст кропы в Qwen3.5 (chat.stream_answer).
+        if settings.visual_enabled and self.visual_embedder is not None:
+            result = await self._visual_augment(session, query, result, document_id, folder_id)
+        return result
+
+    async def _visual_augment(
+        self,
+        session: AsyncSession,
+        query: str,
+        result: list[RetrievedChunk],
+        document_id: uuid.UUID | None,
+        folder_id: uuid.UUID | None,
+    ) -> list[RetrievedChunk]:
+        """Визуальный recall (Qwen3-VL-Embedding) + реранк (Qwen3-VL-Reranker) →
+        добавить релевантные image-чанки страниц, которых текстовый поиск не поднял."""
+        try:
+            q_emb = await self.visual_embedder.embed_text_query(query)
+            rows = (
+                await session.execute(
+                    sql(_VISUAL_PAGES_SQL),
+                    {
+                        "qe": str(q_emb),
+                        "doc_id": document_id,
+                        "folder_id": folder_id,
+                        "k": settings.rag_visual_pages_k,
+                    },
+                )
+            ).all()
+        except Exception as exc:  # визуальный контур необязателен
+            logger.warning("visual recall недоступен (%s)", exc)
+            return result
+        if not rows:
+            return result
+        visual_pages = {(r.document_id, r.page_idx) for r in rows}
+        doc_ids = list({r.document_id for r in rows})
+        img_rows = (await session.execute(sql(_IMG_CHUNKS_SQL), {"doc_ids": doc_ids})).all()
+        img_chunks = [
+            _row_to_chunk(r) for r in img_rows if (r.document_id, r.page_start) in visual_pages
+        ]
+        if not img_chunks:
+            return result
+        # визуальный реранк: query × вырезанный рисунок страницы (кроп из img_s3)
+        if self.visual_reranker is not None and self.storage is not None:
+            try:
+                crops: list[bytes] = []
+                for c in img_chunks:
+                    key = (c.meta or {}).get("img_s3")
+                    crops.append(
+                        await self.storage.get_bytes(settings.bucket_artifacts, key)
+                        if key
+                        else b""
+                    )
+                vs = await self.visual_reranker.rerank(query, crops)
+                for c, s in zip(img_chunks, vs, strict=True):
+                    c.score = s
+                img_chunks.sort(key=lambda c: -c.score)
+            except Exception as exc:  # реранк необязателен — порядок по page_embeddings
+                logger.warning("visual rerank недоступен (%s)", exc)
+        have = {c.id for c in result}
+        extra = [c for c in img_chunks if c.id not in have][: settings.rag_visual_top_k]
+        return result + extra

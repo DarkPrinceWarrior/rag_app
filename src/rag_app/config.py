@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     # сколько вырезанных рисунков (img_s3 среди найденных чанков) приложить кропами
     # в мультимодальный запрос Qwen3.5 (vision on-demand в чате) — кап под ctx 8192
     rag_vision_max_images: int = 3
+    # визуальный контур (§12.1 шаг4): сколько страниц поднимает page_embeddings и
+    # сколько image-чанков добавить в контекст после визуального реранка
+    rag_visual_pages_k: int = 10
+    rag_visual_top_k: int = 3
     rag_history_messages: int = 8
     chunk_max_chars: int = 4000  # ~1K токенов
     chunk_min_chars: int = 200  # секции короче — клеим к соседней
