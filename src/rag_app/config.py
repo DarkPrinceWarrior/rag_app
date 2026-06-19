@@ -60,7 +60,12 @@ class Settings(BaseSettings):
 
     # --- Эмбеддинги и reranker (GPU4, vLLM; roadmap § 4.3, § 12.1 шаг 1) ---
     embed_base_url: str = "http://127.0.0.1:8002/v1"
-    embed_model: str = "qwen3-embedding-0.6b"
+    # Qwen3-Embedding-8B (2026-06-19): на реальной библиотеке recall@5 0.975 vs 0.887
+    # у 0.6B (eval_retrieval.py, 80 вопросов). MRL-усечение до embed_dim=1024 (drop-in
+    # в pgvector(1024), HNSW-совместимо; качество как у полного 4096). Сервинг 8B на
+    # Ampere ТРЕБУЕТ --enforce-eager --dtype float16 (иначе NaN → recall≈0).
+    embed_model: str = "qwen3-embedding-8b"
+    embed_dim: int = 1024  # MRL-усечение выхода эмбеддера (нативный 8B = 4096)
     embed_batch_size: int = 32
     # Серия Qwen3-Embedding instruction-aware: запрос идёт с инструкцией
     # («Instruct: …\nQuery: …»), документы — без; пустая строка отключает префикс

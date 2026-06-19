@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import httpx
 from openai import AsyncOpenAI
@@ -16,6 +17,15 @@ from openai import AsyncOpenAI
 from rag_app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _mrl(vec: list[float], dim: int) -> list[float]:
+    """MRL-усечение вектора до dim + L2-нормировка. Текстовая Qwen3-Embedding
+    Matryoshka-обучена → усечение валидно (для нативного dim — no-op). Норму держим
+    для консистентности (косинус `<=>` к ней инвариантен)."""
+    v = vec[:dim]
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
 
 
 class Embedder:
@@ -31,7 +41,7 @@ class Embedder:
         for i in range(0, len(texts), batch):
             chunk = [t.strip()[:8000] or "." for t in texts[i : i + batch]]
             resp = await self.client.embeddings.create(model=settings.embed_model, input=chunk)
-            out.extend(d.embedding for d in resp.data)
+            out.extend(_mrl(d.embedding, settings.embed_dim) for d in resp.data)
         return out
 
     async def embed_query(self, query: str) -> list[float]:
@@ -41,7 +51,7 @@ class Embedder:
         if settings.embed_query_instruction:
             text = f"Instruct: {settings.embed_query_instruction}\nQuery: {text}"
         resp = await self.client.embeddings.create(model=settings.embed_model, input=[text])
-        return resp.data[0].embedding
+        return _mrl(resp.data[0].embedding, settings.embed_dim)
 
 
 # Официальный шаблон Qwen3-Reranker: vLLM с is_original_qwen3_reranker НЕ
