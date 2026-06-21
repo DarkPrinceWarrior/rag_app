@@ -995,11 +995,21 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
         else:
             # OOXML: переводы обратно в копию оригинала, формат и вёрстка не меняются
             ext = doc.kind if isinstance(doc.kind, str) else doc.kind.value
-            translations = {
-                ooxml.location_key(s.meta["location"]): s.translated_text
-                for s in segments
-                if s.translated_text is not None and s.meta.get("location")
-            }
+            if ext == "xlsx":
+                # XLSX дедуплицирован на extract (1 сегмент = 1 уникальный текст);
+                # inject_xlsx применяет перевод ПО ИСХОДНОМУ ТЕКСТУ ячейки → ключ
+                # словаря = source_text, перевод раскладывается на все дубликаты.
+                translations = {
+                    s.source_text: s.translated_text
+                    for s in segments
+                    if s.translated_text is not None
+                }
+            else:
+                translations = {
+                    ooxml.location_key(s.meta["location"]): s.translated_text
+                    for s in segments
+                    if s.translated_text is not None and s.meta.get("location")
+                }
             with tempfile.TemporaryDirectory(prefix="rag_export_") as tmp:
                 tmp_path = Path(tmp)
                 src = tmp_path / Path(doc.filename).name

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, update
 
@@ -64,14 +64,24 @@ class SegmentPatch(BaseModel):
 
 
 @router.get("/documents/{doc_id}/segments", response_model=list[SegmentOut])
-async def list_segments(request: Request, doc_id: uuid.UUID) -> list[SegmentOut]:
+async def list_segments(
+    request: Request,
+    doc_id: uuid.UUID,
+    limit: int = Query(4000, ge=1, le=100_000),
+) -> list[SegmentOut]:
+    # Бэкстоп против патологических документов (xlsx-дата-дампы на сотни тысяч
+    # ячеек вешали вьювер): отдаём первые `limit` сегментов по idx. Дефолт
+    # большой, но конечный — обычные документы (тысячи сегментов) не обрезаются.
     async with request.app.state.sessionmaker() as session:
         if await session.get(Document, doc_id) is None:
             raise HTTPException(404, "документ не найден")
         segments = (
             (
                 await session.execute(
-                    select(Segment).where(Segment.document_id == doc_id).order_by(Segment.idx)
+                    select(Segment)
+                    .where(Segment.document_id == doc_id)
+                    .order_by(Segment.idx)
+                    .limit(limit)
                 )
             )
             .scalars()

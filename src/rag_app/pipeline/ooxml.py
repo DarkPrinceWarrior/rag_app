@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +25,11 @@ from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from pptx import Presentation
 
+from rag_app.config import settings
 from rag_app.db.models import SegmentKind
 from rag_app.pipeline.segments import SegmentDraft
+
+logger = logging.getLogger(__name__)
 
 
 def location_key(location: dict[str, Any]) -> str:
@@ -140,29 +145,75 @@ def inject_docx(src: Path, dst: Path, translations: dict[str, str]) -> int:
 
 # ------------------------------------------------------------------ XLSX
 
+# Слово = ≥2 подряд идущих буквы (латиница/кириллица). Чисто-числовой/кодовый
+# дамп (0.43, 130/130/300, DMFA, pH, Eo) слов в этом смысле не даёт «прозы».
+_WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{2,}")
+
+
+def _is_translatable_xlsx(v: str) -> bool:
+    """Ячейка переводима только если в ней есть осмысленная проза.
+
+    Эвристика (см. roadmap-журнал «xlsx-дамп»): должна быть хотя бы одна
+    «буквенная» группа ≥2 символов И при этом либо пробел (фраза из нескольких
+    токенов), либо длина ≥12 символов. Одиночные короткие токены-коды
+    («DMFA», «BTC», «pH») — НЕ проза, оставляем как есть, чтобы не плодить
+    бессмысленные сегменты на химическом data-дампе."""
+    s = v.strip()
+    if not s or s.startswith("="):
+        return False
+    if not _WORD_RE.search(s):
+        return False
+    return " " in s or len(s) >= 12
+
+
 def extract_xlsx(path: Path) -> list[SegmentDraft]:
     wb = load_workbook(str(path))  # data_only=False: формулы остаются формулами
     drafts: list[SegmentDraft] = []
+    seen: set[str] = set()  # дедуп по исходному тексту: одинаковые строки = 1 сегмент
+    capped = False
+    skipped_dup = 0
     for s_i, ws in enumerate(wb.worksheets):
         for row in ws.iter_rows():
             for cell in row:
                 v = cell.value
-                # только строковые значения; формулы ("=...") и числа не трогаем по построению
-                if not isinstance(v, str) or not v.strip() or v.startswith("="):
+                # только строковые значения; формулы и числа не трогаем по построению
+                if not isinstance(v, str) or not _is_translatable_xlsx(v):
                     continue
+                if v in seen:
+                    skipped_dup += 1
+                    continue
+                if len(drafts) >= settings.xlsx_max_segments:
+                    capped = True
+                    continue
+                seen.add(v)
                 drafts.append(
                     SegmentDraft(
                         idx=len(drafts),
                         kind=SegmentKind.paragraph,
                         source_text=v,
                         page_idx=s_i,
+                        # location — первой встреченной ячейки с этим текстом; inject
+                        # применяет перевод ПО ТЕКСТУ ко всем ячейкам-дубликатам.
                         meta={"location": {"sheet": ws.title, "cell": cell.coordinate}},
                     )
                 )
+    if capped:
+        logger.warning(
+            "extract_xlsx %s: достигнут потолок xlsx_max_segments=%d — часть прозовых "
+            "ячеек отброшена (перевод неполный); скрытых дублей-ячеек: %d",
+            path.name,
+            settings.xlsx_max_segments,
+            skipped_dup,
+        )
     return drafts
 
 
 def inject_xlsx(src: Path, dst: Path, translations: dict[str, str]) -> int:
+    """Записать перевод обратно в .xlsx ПО ИСХОДНОМУ ТЕКСТУ ячейки.
+
+    translations: {исходный_текст_ячейки: перевод}. Перевод применяется ко ВСЕМ
+    ячейкам с тем же исходным текстом (дедуп на extract → один перевод
+    раскладывается на все дубликаты)."""
     wb = load_workbook(str(src))
     applied = 0
     for ws in wb.worksheets:
@@ -170,7 +221,7 @@ def inject_xlsx(src: Path, dst: Path, translations: dict[str, str]) -> int:
             for cell in row:
                 if not isinstance(cell.value, str):
                     continue
-                text = translations.get(location_key({"sheet": ws.title, "cell": cell.coordinate}))
+                text = translations.get(cell.value)
                 if text is not None:
                     cell.value = text
                     applied += 1

@@ -1,5 +1,10 @@
 import { authFetch } from '@/lib/auth'
 
+// Потолок сегментов, который грузит вьювер за один запрос. Бэкстоп против
+// патологических документов (xlsx-дата-дампы на сотни тысяч ячеек вешали
+// «Загрузка…»). Должен совпадать с дефолтом `limit` в API list_segments.
+export const SEGMENTS_LIMIT = 4000
+
 // виды скачивания ПЕРЕВОДА (kind для /download/{kind}) и их подписи.
 // Это всё — переведённый документ в разных форматах; «оригинал» (как загружен)
 // скачивается отдельным пунктом меню (kind=original).
@@ -164,7 +169,7 @@ export const api = {
   listDocuments: () => jget<Document[]>('/api/documents'),
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
   deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
-  getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments`),
+  getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments?limit=${SEGMENTS_LIMIT}`),
   reexport: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/reexport`, 'POST'),
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
   reparseOcr: (id: string, lang = 'east_slavic') =>

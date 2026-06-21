@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, createElement, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, type Segment } from '@/lib/api'
+import { api, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
@@ -43,6 +43,12 @@ function Viewer() {
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
+  // вьювер грузит первые SEGMENTS_LIMIT сегментов (бэкстоп против дата-дампов
+  // на сотни тысяч ячеек). Если их меньше, чем segment_count документа —
+  // показан срез, предупреждаем баннером.
+  const loadedSegs = segsQ.data?.length ?? 0
+  const totalSegs = docQ.data?.segment_count ?? 0
+  const segsTruncated = loadedSegs >= SEGMENTS_LIMIT && totalSegs > loadedSegs
   const isPdf = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   // OOXML с PDF-рендером (LibreOffice) — «как в Microsoft». Оригинал рендерится
   // рано (после парсинга) → показываем его, не дожидаясь перевода; перевод
@@ -128,6 +134,13 @@ function Viewer() {
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   const hasTransPdf = !!docQ.data?.exports.includes('pdf')
   const header = (
+    <>
+    {segsTruncated && (
+      <div className="border-b bg-amber-50 px-5 py-1.5 text-center text-xs text-amber-800">
+        Показаны первые {loadedSegs.toLocaleString('ru')} сегментов из{' '}
+        {totalSegs.toLocaleString('ru')} (документ очень большой — остальные не загружены)
+      </div>
+    )}
     <div className="sticky top-[49px] z-[5] flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
       <span className="truncate text-sm font-medium">
         {docQ.data?.filename} · {docQ.data?.status}
@@ -170,6 +183,7 @@ function Viewer() {
         Пересобрать экспорт
       </Button>
     </div>
+    </>
   )
 
   if (segsQ.isLoading)
