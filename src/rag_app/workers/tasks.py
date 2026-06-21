@@ -247,7 +247,14 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 raise RuntimeError(f"неподдерживаемый формат: .{ext}")
 
         if not drafts:
-            raise RuntimeError("парсер не извлёк ни одного блока")
+            # скан без распознаваемого текста (OCR дал мусор и его отфильтровали,
+            # либо страница — чистый рисунок): не валим документ — кладём
+            # плейсхолдер-картинку, describe_images (VL) обогатит его описанием.
+            if kind == DocumentKind.pdf_scan:
+                drafts = [SegmentDraft(0, SegmentKind.image, "", 0)]
+                logger.info("parse %s: скан без текста — плейсхолдер-картинка (ждём VL)", doc_id)
+            else:
+                raise RuntimeError("парсер не извлёк ни одного блока")
 
         async with ctx["sessionmaker"]() as session:
             await session.execute(delete(Segment).where(Segment.document_id == doc_id))
