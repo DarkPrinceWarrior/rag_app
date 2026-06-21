@@ -28,7 +28,6 @@ function RootLayout() {
           <NavLink to="/chat" label="Чат" />
           <NavLink to="/memory" label="Память" />
           <NavLink to="/extract" label="Таблицы" />
-          <NavLink to="/translate" label="Фрагмент" />
         </nav>
         <Button variant="ghost" size="sm" className="ml-auto" onClick={logout}>
           Выйти
