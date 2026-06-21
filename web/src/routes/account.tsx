@@ -2,16 +2,45 @@ import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type MemoryItem } from '@/lib/api'
-import { authFetch } from '@/lib/auth'
+import { authFetch, currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 
-export const Route = createFileRoute('/memory')({ component: MemoryPage })
+export const Route = createFileRoute('/account')({ component: AccountPage })
 
 const SCOPES = ['user', 'project', 'document', 'thread', 'org']
 const KINDS = ['preference', 'fact', 'glossary', 'rule', 'task', 'correction', 'summary']
 
-function MemoryPage() {
+function AccountPage() {
+  const user = currentUser()
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-5">
+      {/* Карточка пользователя */}
+      <div className="mb-5 flex items-center gap-3 rounded-xl border bg-card p-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-lg font-semibold text-primary">
+          {user.username.slice(0, 1).toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <div className="text-base font-semibold">{user.username}</div>
+          <div className="mt-0.5 flex flex-wrap gap-1">
+            {(user.roles.length ? user.roles : ['user']).map((r) => (
+              <span key={r} className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {r === 'admin' ? 'администратор' : 'пользователь'}
+              </span>
+            ))}
+          </div>
+        </div>
+        <Button variant="outline" size="sm" className="ml-auto" onClick={logout}>
+          Выйти
+        </Button>
+      </div>
+
+      <MemorySection isAdmin={user.isAdmin} />
+    </div>
+  )
+}
+
+function MemorySection({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient()
   const [q, setQ] = useState('')
   const [scope, setScope] = useState('user')
@@ -59,10 +88,12 @@ function MemoryPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-4">
+    <div>
       <div className="mb-3 flex items-center gap-2">
         <h1 className="text-lg font-semibold">Память</h1>
-        <span className="text-xs text-muted-foreground">что приложение помнит о вас и проектах</span>
+        <span className="text-xs text-muted-foreground">
+          что приложение помнит о вас и проектах{isAdmin ? ' (админ: видны все пользователи)' : ''}
+        </span>
         <div className="ml-auto flex gap-1.5">
           <Button variant="outline" size="sm" onClick={exportMemory}>
             Экспорт
@@ -137,7 +168,9 @@ function MemoryPage() {
         {itemsQ.data?.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">Память пуста</p>}
         {itemsQ.data?.map((it: MemoryItem) => (
           <div key={it.id} className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm">
-            <span className="mt-0.5 rounded bg-muted px-1.5 py-0.5 text-xs">{it.kind}/{it.scope}</span>
+            <span className="mt-0.5 rounded bg-muted px-1.5 py-0.5 text-xs">
+              {it.kind}/{it.scope}
+            </span>
             {editId === it.id ? (
               <>
                 <input

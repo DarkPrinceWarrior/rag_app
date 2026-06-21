@@ -1,5 +1,5 @@
 import { createRootRoute, Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { logout } from '@/lib/auth'
+import { currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 
 function NavLink({ to, label }: { to: string; label: string }) {
@@ -18,6 +18,27 @@ function NavLink({ to, label }: { to: string; label: string }) {
   )
 }
 
+function AccountChip() {
+  const user = currentUser()
+  const path = useRouterState({ select: (s) => s.location.pathname })
+  const active = path.startsWith('/account')
+  return (
+    <Link
+      to="/account"
+      title="Личный кабинет"
+      className={
+        'flex items-center gap-2 rounded-full py-1 pl-1 pr-3 text-sm transition-colors ' +
+        (active ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')
+      }
+    >
+      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+        {user.username.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="max-w-[10rem] truncate">{user.username}</span>
+    </Link>
+  )
+}
+
 function RootLayout() {
   return (
     <div className="min-h-screen">
@@ -26,12 +47,14 @@ function RootLayout() {
         <nav className="flex items-center gap-1">
           <NavLink to="/" label="Библиотека" />
           <NavLink to="/chat" label="Чат" />
-          <NavLink to="/memory" label="Память" />
           <NavLink to="/extract" label="Таблицы" />
         </nav>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={logout}>
-          Выйти
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <AccountChip />
+          <Button variant="ghost" size="sm" onClick={logout}>
+            Выйти
+          </Button>
+        </div>
       </header>
       <main>
         <Outlet />

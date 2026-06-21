@@ -112,6 +112,39 @@ export function logout(): void {
   void login()
 }
 
+export interface CurrentUser {
+  username: string
+  roles: string[]
+  isAdmin: boolean
+}
+
+/** Текущий пользователь из access-токена (preferred_username + realm-роли).
+ * Без auth (dev) — встроенный local-dev/admin. */
+export function currentUser(): CurrentUser {
+  const t = loadTokens()
+  if (!t?.access_token) return { username: 'local-dev', roles: ['admin'], isAdmin: true }
+  try {
+    const payload = JSON.parse(
+      decodeURIComponent(
+        atob(t.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+          .split('')
+          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+          .join(''),
+      ),
+    )
+    const roles: string[] = (payload.realm_access?.roles ?? []).filter((r: string) =>
+      ['user', 'admin'].includes(r),
+    )
+    return {
+      username: payload.preferred_username ?? payload.sub ?? 'пользователь',
+      roles,
+      isAdmin: roles.includes('admin'),
+    }
+  } catch {
+    return { username: 'пользователь', roles: [], isAdmin: false }
+  }
+}
+
 /** fetch с авто-Bearer для /api; на 401 — повторный вход. */
 export async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
   if (cfg?.auth_enabled && input.startsWith('/api')) {
