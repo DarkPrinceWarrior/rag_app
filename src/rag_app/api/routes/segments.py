@@ -41,6 +41,10 @@ class SegmentOut(BaseModel):
     # адрес узла OOXML (DOCX: {"p"} абзац / {"t","r","c","p"} ячейка) —
     # для реконструкции таблиц в MD-просмотре DOCX
     location: dict | None = None
+    # положение сегмента в ЛЕВОМ (оригинал) и ПРАВОМ (перевод) рендер-PDF —
+    # {page, bbox(top-left,pt), pagesize} — для кросс-навигации по клику (pdf_text/docx)
+    loc_left: dict | None = None
+    loc_right: dict | None = None
 
     @classmethod
     def from_segment(cls, s: Segment) -> SegmentOut:
@@ -53,6 +57,8 @@ class SegmentOut(BaseModel):
         out.caption = meta.get("caption")
         out.caption_ru = meta.get("caption_ru")
         out.location = meta.get("location")
+        out.loc_left = meta.get("loc_left")
+        out.loc_right = meta.get("loc_right")
         img = meta.get("img_s3")
         if img:
             out.image_url = f"/api/documents/{s.document_id}/image/{img.rsplit('/', 1)[-1]}"

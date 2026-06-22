@@ -15,10 +15,17 @@ export interface Highlight {
   pageSize: number[] // [w,h] в пунктах
 }
 
+// Кликабельный регион сегмента на текущей странице (кросс-навигация панелей).
+export interface Region {
+  segId: string
+  bbox: number[] // [x0,y0,x1,y1] top-left, pt
+  pageSize: number[] // [w,h] pt
+}
+
 const SCALE = 1.4
 
-/** Контролируемая страница: `page` приходит сверху, стрелки зовут `onPageChange`
- *  (правая панель перевода листается синхронно). numPages сообщается наверх. */
+/** Контролируемая страница: `page` приходит сверху, стрелки зовут `onPageChange`.
+ *  regions — кликабельные сегменты текущей страницы; клик зовёт onRegionClick. */
 export function PdfPane({
   docId,
   page,
@@ -30,21 +37,24 @@ export function PdfPane({
   scale = SCALE,
   hideToolbar = false,
   fitWidth = false,
+  regions,
+  onRegionClick,
 }: {
   docId: string
   page: number
   highlight: Highlight | null
   onPageChange: (p: number) => void
   onNumPages?: (n: number) => void
-  urlKind?: string // источник PDF: original | view_orig | view_ru
+  urlKind?: string // источник PDF: original | view_orig | view_ru | pdf
   label?: string
   scale?: number
   hideToolbar?: boolean // спрятать собственный тулбар (когда счётчик уже снаружи)
   fitWidth?: boolean // вписывать страницу по ширине панели (для широких слайдов)
+  regions?: Region[] // кликабельные сегменты на текущей странице (кросс-навигация)
+  onRegionClick?: (segId: string) => void
 }) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const boxRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   // текущая операция рендера: ДВА render() на одном canvas одновременно
   // (первый рендер + перерисовка от ResizeObserver) портят кадр — pdf.js
@@ -53,6 +63,8 @@ export function PdfPane({
   const renderTaskRef = useRef<RenderTask | null>(null)
   const [numPages, setNumPages] = useState(0)
   const [boxW, setBoxW] = useState(0)
+  // CSS-размер отрисованной страницы — для позиционирования оверлеев (bbox).
+  const [vp, setVp] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const [err, setErr] = useState('')
 
   // ширина области просмотра (для fitWidth) — пересчитываем при ресайзе панели
@@ -91,7 +103,7 @@ export function PdfPane({
     }
   }, [docId, urlKind, onNumPages])
 
-  // рендер текущей страницы + bbox-оверлей
+  // рендер текущей страницы (оверлеи — отдельно в JSX по vp)
   useEffect(() => {
     const pdf = pdfRef.current
     const canvas = canvasRef.current
@@ -125,27 +137,20 @@ export function PdfPane({
         throw e
       }
       if (cancelled) return
-      const box = boxRef.current!
-      if (highlight && highlight.page === page && highlight.bbox.length === 4 && highlight.pageSize.length === 2) {
-        const [x0, y0, x1, y1] = highlight.bbox
-        const sx = vpCss.width / highlight.pageSize[0]
-        const sy = vpCss.height / highlight.pageSize[1]
-        box.style.display = 'block'
-        box.style.left = `${x0 * sx}px`
-        box.style.top = `${y0 * sy}px`
-        box.style.width = `${(x1 - x0) * sx}px`
-        box.style.height = `${(y1 - y0) * sy}px`
-      } else {
-        box.style.display = 'none'
-      }
+      setVp({ w: Math.floor(vpCss.width), h: Math.floor(vpCss.height) })
     })()
     return () => {
       cancelled = true
       renderTaskRef.current?.cancel()
     }
-  }, [page, numPages, highlight, scale, fitWidth, boxW])
+  }, [page, numPages, scale, fitWidth, boxW])
 
   if (err) return <div className="p-4 text-sm text-destructive">Не удалось открыть PDF: {err}</div>
+
+  const hi =
+    highlight && highlight.page === page && highlight.bbox.length === 4 && highlight.pageSize.length === 2
+      ? highlight
+      : null
 
   return (
     <div className="flex h-full flex-col">
@@ -169,11 +174,36 @@ export function PdfPane({
       <div ref={containerRef} className="flex-1 overflow-auto bg-muted/40 p-3">
         <div className="relative mx-auto w-fit shadow">
           <canvas ref={canvasRef} className="block" />
-          <div
-            ref={boxRef}
-            className="pointer-events-none absolute rounded-sm border-2 border-primary bg-primary/15"
-            style={{ display: 'none' }}
-          />
+          {/* кликабельные регионы сегментов — кросс-навигация на другую панель */}
+          {vp.w > 0 &&
+            regions?.map((r) =>
+              r.bbox?.length === 4 && r.pageSize?.length === 2 ? (
+                <button
+                  key={r.segId}
+                  title="Найти этот фрагмент на другой стороне"
+                  onClick={() => onRegionClick?.(r.segId)}
+                  className="absolute cursor-pointer rounded-sm transition-colors hover:bg-primary/20 hover:ring-1 hover:ring-primary"
+                  style={{
+                    left: (r.bbox[0] * vp.w) / r.pageSize[0],
+                    top: (r.bbox[1] * vp.h) / r.pageSize[1],
+                    width: ((r.bbox[2] - r.bbox[0]) * vp.w) / r.pageSize[0],
+                    height: ((r.bbox[3] - r.bbox[1]) * vp.h) / r.pageSize[1],
+                  }}
+                />
+              ) : null,
+            )}
+          {/* подсветка цели (куда перешли по клику с другой стороны) */}
+          {vp.w > 0 && hi && (
+            <div
+              className="pointer-events-none absolute rounded-sm border-2 border-primary bg-primary/25"
+              style={{
+                left: (hi.bbox[0] * vp.w) / hi.pageSize[0],
+                top: (hi.bbox[1] * vp.h) / hi.pageSize[1],
+                width: ((hi.bbox[2] - hi.bbox[0]) * vp.w) / hi.pageSize[0],
+                height: ((hi.bbox[3] - hi.bbox[1]) * vp.h) / hi.pageSize[1],
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

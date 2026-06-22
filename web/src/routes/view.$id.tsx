@@ -5,7 +5,7 @@ import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment } from '@
 import { Button } from '@/components/ui/button'
 import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
 import { Download, MoreVertical } from 'lucide-react'
-import { PdfPane, type Highlight } from '@/components/PdfPane'
+import { PdfPane, type Highlight, type Region } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
 import { XlsxView } from '@/components/XlsxView'
 import { PptxView } from '@/components/PptxView'
@@ -52,9 +52,13 @@ function Viewer() {
   // текущая страница (общая для оригинала слева и перевода справа)
   const [page, setPage] = useState(1)
   const [numPages, setNumPages] = useState(0)
-  // «документ (PDF)» — reflow из перевода, у него СВОЯ пагинация (не совпадает с
-  // оригиналом), поэтому отдельный счётчик, не синхронный с левой панелью.
-  const [docPage, setDocPage] = useState(1)
+  // «документ (PDF)» / docx «как в Microsoft» — переведённый PDF с другой
+  // пагинацией: НЕ синхронизируем с оригиналом, а ходим кросс-навигацией по клику.
+  const [docPage, setDocPage] = useState(1) // правая панель pdf_text (reflow)
+  const [ruPage, setRuPage] = useState(1) // правая панель docx (view_ru)
+  // подсветка цели при переходе по клику между панелями (кросс-навигация)
+  const [leftHi, setLeftHi] = useState<Highlight | null>(null)
+  const [rightHi, setRightHi] = useState<Highlight | null>(null)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
 
@@ -259,7 +263,32 @@ function Viewer() {
 
   const segs = segsQ.data ?? []
 
-  // PDF: слева оригинал постранично, справа перевод ТОЙ ЖЕ страницы; листаются синхронно.
+  // --- Кросс-навигация PDF↔PDF (pdf_text/docx): клик по фрагменту на одной панели
+  // подсвечивает его на другой и листает туда (страницы НЕ синхронны — после
+  // перевода объём другой). regionsFor — кликабельные сегменты текущей страницы.
+  const regionsFor = (side: 'left' | 'right', curPage: number): Region[] =>
+    segs.flatMap((s) => {
+      const loc = side === 'left' ? s.loc_left : s.loc_right
+      return loc && loc.page === curPage - 1 && loc.bbox?.length === 4
+        ? [{ segId: s.id, bbox: loc.bbox, pageSize: loc.pagesize }]
+        : []
+    })
+  const crossToRight = (segId: string, setRight: (p: number) => void) => {
+    const s = segs.find((x) => x.id === segId)
+    if (s?.loc_right && s.loc_right.bbox?.length === 4) {
+      setRight(s.loc_right.page + 1)
+      setRightHi({ page: s.loc_right.page + 1, bbox: s.loc_right.bbox, pageSize: s.loc_right.pagesize })
+    }
+  }
+  const crossToLeft = (segId: string) => {
+    const s = segs.find((x) => x.id === segId)
+    if (s?.loc_left && s.loc_left.bbox?.length === 4) {
+      setPage(s.loc_left.page + 1)
+      setLeftHi({ page: s.loc_left.page + 1, bbox: s.loc_left.bbox, pageSize: s.loc_left.pagesize })
+    }
+  }
+
+  // PDF: слева оригинал, справа перевод; кросс-навигация по клику (страницы не синхронны).
   if (isPdf) {
     const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
     const pageText = pageSegs
@@ -271,14 +300,30 @@ function Viewer() {
         {header}
         <div className="flex h-[calc(100vh-97px)]">
           <div className="w-1/2 border-r">
-            <PdfPane docId={id} page={page} highlight={active} onPageChange={setPage} onNumPages={setNumPages} />
+            <PdfPane
+              docId={id}
+              page={page}
+              highlight={leftHi || active}
+              onPageChange={setPage}
+              onNumPages={setNumPages}
+              regions={hasTransPdf && !rightText ? regionsFor('left', page) : undefined}
+              onRegionClick={(sid) => crossToRight(sid, setDocPage)}
+            />
           </div>
           <div className="flex w-1/2 flex-col">
             {hasTransPdf && !rightText ? (
-              // «документ (PDF)» — reflow-PDF перевода (build_docx → LibreOffice):
-              // таблицы/абзацы с переносом, без overflow. Своя пагинация (docPage),
-              // не синхронная с оригиналом.
-              <PdfPane docId={id} urlKind="pdf" label="перевод · документ" page={docPage} highlight={null} onPageChange={setDocPage} />
+              // «документ (PDF)» — reflow-PDF перевода. Своя пагинация (не синхронна с
+              // оригиналом); связь — кросс-навигацией по клику (regions + highlight).
+              <PdfPane
+                docId={id}
+                urlKind="pdf"
+                label="перевод · документ — кликните фрагмент, чтобы найти его в оригинале"
+                page={docPage}
+                highlight={rightHi}
+                onPageChange={setDocPage}
+                regions={regionsFor('right', docPage)}
+                onRegionClick={crossToLeft}
+              />
             ) : (
               <>
                 <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
@@ -330,18 +375,30 @@ function Viewer() {
               label="оригинал"
               scale={1.0}
               page={page}
-              highlight={null}
+              highlight={leftHi}
               onPageChange={setPage}
               onNumPages={setNumPages}
+              regions={!rightText ? regionsFor('left', page) : undefined}
+              onRegionClick={(sid) => crossToRight(sid, setRuPage)}
             />
           </div>
           <div className="flex w-1/2 flex-col">
-            {/* Тумблер «текст | как в Microsoft» теперь в шапке (как у pdf_text).
-                «Как в Microsoft» = view_ru со СВОЕЙ навигацией (без дубля стрелок);
-                «текст» — со своей тулбар-навигацией и правкой. */}
+            {/* Тумблер «текст | как в Microsoft» — в шапке. «Как в Microsoft» = view_ru
+                со СВОЕЙ пагинацией (ruPage, не синхронна с оригиналом — объём после
+                перевода другой); связь — кросс-навигацией по клику. */}
             {!rightText ? (
               hasViewRu ? (
-                <PdfPane docId={id} urlKind="view_ru" label="перевод" scale={1.0} page={page} highlight={null} onPageChange={setPage} />
+                <PdfPane
+                  docId={id}
+                  urlKind="view_ru"
+                  label="перевод — кликните фрагмент, чтобы найти его в оригинале"
+                  scale={1.0}
+                  page={ruPage}
+                  highlight={rightHi}
+                  onPageChange={setRuPage}
+                  regions={regionsFor('right', ruPage)}
+                  onRegionClick={crossToLeft}
+                />
               ) : (
                 <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
               )

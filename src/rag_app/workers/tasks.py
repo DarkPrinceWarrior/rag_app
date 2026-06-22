@@ -597,6 +597,85 @@ def _norm_match(s: str) -> str:
     return " ".join(_MATCH_NOISE.sub(" ", s or "").lower().split())
 
 
+def _locate_in_pdf(
+    pdf_bytes: bytes, items: list[tuple[uuid.UUID, str]]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """Сегмент (по его тексту) → положение в PDF: {page, bbox (top-left, pt), pagesize}.
+    Для кросс-навигации панелей: клик по абзацу слева подсвечивает его справа и наоборот.
+    Кандидат-страница — по нормализованному совпадению, bbox — поиском pypdfium2 по
+    «сырому» сниппету (первые слова, с сужением 6→2). Несовпавшие сегменты пропускаются."""
+    import pypdfium2 as pdfium
+
+    out: dict[uuid.UUID, dict[str, Any]] = {}
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            n = len(pdf)
+            pages: list[tuple[Any, Any, tuple[float, float]]] = []
+            norm_texts: list[str] = []
+            for i in range(n):
+                page = pdf[i]
+                tp = page.get_textpage()
+                pages.append((page, tp, page.get_size()))
+                norm_texts.append(_norm_match(tp.get_text_bounded()))
+            for sid, text in items:
+                raw = (text or "").strip()
+                nm = _norm_match(raw)
+                if len(nm) < 6:
+                    continue
+                snip = nm[:40]
+                cand = next((i for i in range(n) if snip in norm_texts[i]), None)
+                if cand is None:
+                    continue
+                _, tp, (w, h) = pages[cand]
+                words = raw.split()
+                bbox: list[float] | None = None
+                for k in (6, 4, 3, 2):
+                    needle = " ".join(words[:k])
+                    if len(needle) < 4:
+                        continue
+                    m = tp.search(needle, match_case=False, match_whole_word=False).get_next()
+                    if m:
+                        start, count = m
+                        rs = [tp.get_rect(r) for r in range(tp.count_rects(start, count))]
+                        if rs:
+                            left = min(r[0] for r in rs)
+                            bot = min(r[1] for r in rs)
+                            right = max(r[2] for r in rs)
+                            top = max(r[3] for r in rs)
+                            bbox = [round(left, 1), round(h - top, 1), round(right, 1), round(h - bot, 1)]
+                        break
+                if bbox:
+                    out[sid] = {"page": cand, "bbox": bbox, "pagesize": [round(w, 1), round(h, 1)]}
+        finally:
+            pdf.close()
+    return out
+
+
+async def _store_cross_locs(
+    ctx: dict, doc_id: uuid.UUID, segments: list[Segment], left_pdf: bytes, right_pdf: bytes
+) -> None:
+    """Посчитать и сохранить в meta положение каждого сегмента в ЛЕВОМ (оригинал) и
+    ПРАВОМ (перевод) PDF — для кросс-навигации по клику между панелями вьювера."""
+    items_l = [(s.id, s.source_text) for s in segments if s.source_text]
+    items_r = [(s.id, s.translated_text) for s in segments if s.translated_text]
+    left = await asyncio.to_thread(_locate_in_pdf, left_pdf, items_l)
+    right = await asyncio.to_thread(_locate_in_pdf, right_pdf, items_r)
+    if not left and not right:
+        return
+    async with ctx["sessionmaker"]() as session:
+        rows = (
+            await session.execute(select(Segment).where(Segment.document_id == doc_id))
+        ).scalars().all()
+        for s in rows:
+            meta = dict(s.meta or {})
+            meta["loc_left"] = left.get(s.id)
+            meta["loc_right"] = right.get(s.id)
+            s.meta = meta
+        await session.commit()
+    logger.info("export %s: cross-loc left=%d right=%d", doc_id, len(left), len(right))
+
+
 def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[uuid.UUID, int], int]:
     """Сегмент → его ФИЗИЧЕСКАЯ страница в отрендеренном PDF (по тексту оригинала).
 
@@ -1008,6 +1087,11 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                             settings.bucket_exports, pdf_key, pdf_bytes, "application/pdf"
                         )
                         values["s3_key_export_pdf"] = pdf_key
+                        # кросс-навигация: положение сегмента в оригинале (слева) и
+                        # reflow-PDF перевода (справа) — клик подсвечивает на др. стороне
+                        await _store_cross_locs(
+                            ctx, doc_id, segments, local_pdf.read_bytes(), pdf_bytes
+                        )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "export %s: reflow-PDF из DOCX не собрался (%s) — оставляем DOCX",
@@ -1086,6 +1170,9 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                                     )
                                     await session.commit()
                                 values["page_count"] = n_pages
+                            # кросс-навигация docx: положение сегмента в оригинале
+                            # (view_orig) и переводе (view_ru) — клик подсвечивает напротив
+                            await _store_cross_locs(ctx, doc_id, segments, orig_pdf, ru_pdf)
                     except Exception as exc:  # noqa: BLE001 — рендер необязателен
                         logger.warning("export %s: LibreOffice-рендер не удался (%s)", doc_id, exc)
 

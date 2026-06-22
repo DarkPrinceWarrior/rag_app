@@ -72,6 +72,15 @@ export interface Segment {
   caption_ru?: string | null
   image_url?: string | null
   location?: Record<string, number> | null
+  // положение в левом (оригинал) и правом (перевод) рендер-PDF — кросс-навигация
+  loc_left?: PdfLoc | null
+  loc_right?: PdfLoc | null
+}
+
+export interface PdfLoc {
+  page: number // 0-based
+  bbox: number[] // [x0,y0,x1,y1] top-left, pt
+  pagesize: number[] // [w,h] pt
 }
 
 export interface TableCell {
