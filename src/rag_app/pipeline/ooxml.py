@@ -25,6 +25,7 @@ from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.text import MSO_AUTO_SIZE
 
 from rag_app.config import settings
 from rag_app.db.models import SegmentKind
@@ -368,6 +369,49 @@ def inject_pptx(src: Path, dst: Path, translations: dict[str, str]) -> int:
         applied += 1
     prs.save(str(dst))
     return applied
+
+
+def _autofit_shapes(shapes: Any) -> None:
+    for shape in shapes:
+        try:
+            is_group = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except Exception:
+            is_group = False
+        if is_group:
+            _autofit_shapes(shape.shapes)
+            continue
+        if getattr(shape, "has_table", False):
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    try:
+                        cell.text_frame.word_wrap = True
+                    except Exception:
+                        pass
+            continue
+        if getattr(shape, "has_text_frame", False):
+            tf = shape.text_frame
+            try:
+                tf.word_wrap = True
+            except Exception:
+                pass
+            try:
+                # normAutofit: «ужать текст до фигуры» — LibreOffice уменьшит кегль,
+                # чтобы длинный (особенно переведённый) текст не вылезал за рамку.
+                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+            except Exception:
+                pass
+
+
+def pptx_autofit(src: Path, dst: Path) -> None:
+    """Копия pptx, где у фигур включены перенос слов и «ужать текст до фигуры».
+
+    Только для РЕНДЕРА-ПРОСМОТРА (office-PDF): LibreOffice иначе выпускает длинный
+    текст за границы фигур и наезжает на картинки (русский текст длиннее
+    английского). Оригинальный .pptx-экспорт не трогаем."""
+    prs = Presentation(str(src))
+    for slide in prs.slides:
+        _autofit_shapes(slide.shapes)
+    prs.save(str(dst))
 
 
 # ------------------------------------------------------------------ единый вход

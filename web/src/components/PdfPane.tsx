@@ -28,6 +28,8 @@ export function PdfPane({
   urlKind = 'original',
   label = 'оригинал',
   scale = SCALE,
+  hideToolbar = false,
+  fitWidth = false,
 }: {
   docId: string
   page: number
@@ -37,12 +39,26 @@ export function PdfPane({
   urlKind?: string // источник PDF: original | view_orig | view_ru
   label?: string
   scale?: number
+  hideToolbar?: boolean // спрятать собственный тулбар (когда счётчик уже снаружи)
+  fitWidth?: boolean // вписывать страницу по ширине панели (для широких слайдов)
 }) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [numPages, setNumPages] = useState(0)
+  const [boxW, setBoxW] = useState(0)
   const [err, setErr] = useState('')
+
+  // ширина области просмотра (для fitWidth) — пересчитываем при ресайзе панели
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => setBoxW(entries[0].contentRect.width))
+    ro.observe(el)
+    setBoxW(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -79,16 +95,25 @@ export function PdfPane({
     ;(async () => {
       const pg = await pdf.getPage(page)
       if (cancelled) return
-      const viewport = pg.getViewport({ scale })
-      canvas.width = viewport.width
-      canvas.height = viewport.height
+      // рендерим в физических пикселях (×devicePixelRatio) и ужимаем CSS-размером —
+      // иначе на retina/масштабе слайды и шрифты выглядят пиксельными/«рваными».
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      // fitWidth: вписать страницу по ширине панели (широкие слайды иначе обрезаются)
+      const natW = pg.getViewport({ scale: 1 }).width
+      const base = fitWidth && boxW > 0 ? Math.max(0.2, (boxW - 24) / natW) : scale
+      const vpCss = pg.getViewport({ scale: base })
+      const vpDev = pg.getViewport({ scale: base * dpr })
+      canvas.width = Math.floor(vpDev.width)
+      canvas.height = Math.floor(vpDev.height)
+      canvas.style.width = `${Math.floor(vpCss.width)}px`
+      canvas.style.height = `${Math.floor(vpCss.height)}px`
       const ctx = canvas.getContext('2d')!
-      await pg.render({ canvasContext: ctx, viewport, canvas }).promise
+      await pg.render({ canvasContext: ctx, viewport: vpDev, canvas }).promise
       const box = boxRef.current!
       if (highlight && highlight.page === page && highlight.bbox.length === 4 && highlight.pageSize.length === 2) {
         const [x0, y0, x1, y1] = highlight.bbox
-        const sx = viewport.width / highlight.pageSize[0]
-        const sy = viewport.height / highlight.pageSize[1]
+        const sx = vpCss.width / highlight.pageSize[0]
+        const sy = vpCss.height / highlight.pageSize[1]
         box.style.display = 'block'
         box.style.left = `${x0 * sx}px`
         box.style.top = `${y0 * sy}px`
@@ -101,25 +126,30 @@ export function PdfPane({
     return () => {
       cancelled = true
     }
-  }, [page, numPages, highlight, scale])
+  }, [page, numPages, highlight, scale, fitWidth, boxW])
 
   if (err) return <div className="p-4 text-sm text-destructive">Не удалось открыть PDF: {err}</div>
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-        <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
-          ←
-        </Button>
-        <span className="text-muted-foreground">
-          стр. {page} / {numPages || '…'}
-        </span>
-        <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => onPageChange(page + 1)}>
-          →
-        </Button>
-        <span className="ml-auto text-xs text-muted-foreground">{label}</span>
-      </div>
-      <div className="flex-1 overflow-auto bg-muted/40 p-3">
+      {!hideToolbar && (
+        <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
+          <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+            ←
+          </Button>
+          <span className="text-muted-foreground">
+            стр. {page} / {numPages || '…'}
+          </span>
+          <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => onPageChange(page + 1)}>
+            →
+          </Button>
+          <span className="ml-auto text-xs text-muted-foreground">{label}</span>
+        </div>
+      )}
+      {hideToolbar && (
+        <div className="border-b bg-muted/40 px-3 py-1 text-xs font-medium text-muted-foreground">{label}</div>
+      )}
+      <div ref={containerRef} className="flex-1 overflow-auto bg-muted/40 p-3">
         <div className="relative mx-auto w-fit shadow">
           <canvas ref={canvasRef} className="block" />
           <div

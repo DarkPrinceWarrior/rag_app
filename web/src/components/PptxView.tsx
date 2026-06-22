@@ -186,11 +186,11 @@ export function PptxView({
         ) : (
           <div className="flex min-h-0 flex-1">
             <div className="w-1/2 border-r">
-              <PdfPane docId={docId} urlKind="view_orig" label="оригинал" scale={1.0} page={idx + 1} highlight={null} onPageChange={(p) => setActive(p - 1)} />
+              <PdfPane docId={docId} urlKind="view_orig" label="оригинал" fitWidth hideToolbar page={idx + 1} highlight={null} onPageChange={(p) => setActive(p - 1)} />
             </div>
             <div className="w-1/2">
               {hasViewRu ? (
-                <PdfPane docId={docId} urlKind="view_ru" label="перевод" scale={1.0} page={idx + 1} highlight={null} onPageChange={(p) => setActive(p - 1)} />
+                <PdfPane docId={docId} urlKind="view_ru" label="перевод" fitWidth hideToolbar page={idx + 1} highlight={null} onPageChange={(p) => setActive(p - 1)} />
               ) : (
                 <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
                   Перевод «как в PowerPoint» ещё готовится…
