@@ -11,6 +11,26 @@ export const Route = createFileRoute('/account')({ component: AccountPage })
 const SCOPES = ['user', 'project', 'document', 'thread', 'org']
 const KINDS = ['preference', 'fact', 'glossary', 'rule', 'task', 'correction', 'summary']
 
+// русские подписи областей и типов памяти (значения в БД остаются английскими)
+const SCOPE_RU: Record<string, string> = {
+  user: 'Пользователь',
+  project: 'Проект',
+  document: 'Документ',
+  thread: 'Диалог',
+  org: 'Организация',
+}
+const KIND_RU: Record<string, string> = {
+  preference: 'Предпочтение',
+  fact: 'Факт',
+  glossary: 'Глоссарий',
+  rule: 'Правило',
+  task: 'Задача',
+  correction: 'Исправление',
+  summary: 'Сводка',
+}
+const scopeRu = (s: string) => SCOPE_RU[s] ?? s
+const kindRu = (k: string) => KIND_RU[k] ?? k
+
 function AccountPage() {
   const user = currentUser()
   return (
@@ -49,6 +69,8 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
   const [editId, setEditId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [open, setOpen] = useState(false) // «Память» свёрнута по умолчанию (не на весь экран)
+  const [fScope, setFScope] = useState('') // фильтр списка по области ('' = все)
+  const [fKind, setFKind] = useState('') // фильтр списка по типу ('' = все)
 
   const itemsQ = useQuery({ queryKey: ['memory', q], queryFn: () => api.listMemory({ q: q || undefined }) })
   const candQ = useQuery({ queryKey: ['memory-candidates'], queryFn: () => api.listMemoryCandidates('pending') })
@@ -90,6 +112,10 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
 
   const count = itemsQ.data?.length
   const pending = candQ.data?.length ?? 0
+  // список с учётом фильтров области/типа (поиск q идёт на сервер)
+  const items = (itemsQ.data ?? []).filter(
+    (it) => (!fScope || it.scope === fScope) && (!fKind || it.kind === fKind),
+  )
 
   return (
     <div className="rounded-xl border bg-card">
@@ -155,13 +181,13 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
         <Select
           value={scope}
           onChange={setScope}
-          options={SCOPES.map((s) => ({ value: s, label: s }))}
+          options={SCOPES.map((s) => ({ value: s, label: scopeRu(s) }))}
           className="min-w-[7rem]"
         />
         <Select
           value={kind}
           onChange={setKind}
-          options={KINDS.map((k) => ({ value: k, label: k }))}
+          options={KINDS.map((k) => ({ value: k, label: kindRu(k) }))}
           className="min-w-[8rem]"
         />
         <input
@@ -175,19 +201,37 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
         </Button>
       </div>
 
-      {/* Поиск + список */}
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Поиск по памяти…"
-        className="mb-2 h-9 w-full rounded-md border bg-card px-3 text-sm"
-      />
+      {/* Поиск + фильтры (область / тип) */}
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Поиск по памяти…"
+          className="h-9 min-w-[12rem] flex-1 rounded-md border bg-card px-3 text-sm"
+        />
+        <Select
+          value={fScope}
+          onChange={setFScope}
+          options={[{ value: '', label: 'Все области' }, ...SCOPES.map((s) => ({ value: s, label: scopeRu(s) }))]}
+          className="min-w-[9rem]"
+        />
+        <Select
+          value={fKind}
+          onChange={setFKind}
+          options={[{ value: '', label: 'Все типы' }, ...KINDS.map((k) => ({ value: k, label: kindRu(k) }))]}
+          className="min-w-[9rem]"
+        />
+      </div>
       <div className="space-y-1.5">
-        {itemsQ.data?.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">Память пуста</p>}
-        {itemsQ.data?.map((it: MemoryItem) => (
+        {items.length === 0 && (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            {itemsQ.data?.length ? 'Ничего не найдено по фильтрам' : 'Память пуста'}
+          </p>
+        )}
+        {items.map((it: MemoryItem) => (
           <div key={it.id} className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm">
-            <span className="mt-0.5 rounded bg-muted px-1.5 py-0.5 text-xs">
-              {it.kind}/{it.scope}
+            <span className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs">
+              {kindRu(it.kind)} · {scopeRu(it.scope)}
             </span>
             {editId === it.id ? (
               <>
