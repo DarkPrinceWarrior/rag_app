@@ -642,6 +642,14 @@ function escapeTablePipes(md: string): string {
     .join('\n')
 }
 
+// CommonMark схлопывает одиночный \n внутри абзаца в пробел (soft break) — из-за
+// этого многострочные сегменты слипаются: сноски (⁵ … ⁶ …) текут в одну строку, а
+// «**Метка:**\n*[плейсхолдер]*» рендерится в одну строку. Превращаем ОДИНОЧНЫЙ \n
+// в жёсткий перенос (два пробела + \n = <br>); двойной \n (разрыв абзаца) не трогаем.
+function mdHardBreaks(md: string): string {
+  return md.replace(/([^\n])\n(?!\n)/g, '$1  \n')
+}
+
 function DocRead({
   segs,
   citedId,
@@ -743,7 +751,10 @@ function DocRead({
       nodes.push(
         <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3 overflow-x-auto' + ring}>
           {clauseTable ? (
-            <table className="border-collapse text-sm">
+            // table-fixed + w-full: длинная (1500+ симв.) колонка описания иначе
+            // распирает таблицу шире страницы и текст красится за рамку. break-words
+            // ломает сверхдлинные токены. Узкая колонка-метка (ci=0) — доля ширины.
+            <table className="w-full table-fixed border-collapse text-sm">
               <tbody>
                 {trows.map((row, ri) => (
                   <tr key={ri}>
@@ -751,8 +762,14 @@ function DocRead({
                       <td
                         key={ci}
                         colSpan={c.colspan > 1 ? c.colspan : undefined}
-                        rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
-                        className="whitespace-pre-line border border-border px-2.5 py-1.5 align-top leading-relaxed"
+                        // rowspan парсера бывает больше числа строк сегмента (таблицу
+                        // разбило по границе страницы) — клампим по остатку строк,
+                        // иначе браузер перекашивает раскладку
+                        rowSpan={c.rowspan > 1 ? Math.min(c.rowspan, trows.length - ri) : undefined}
+                        className={
+                          'whitespace-pre-line break-words border border-border px-2.5 py-1.5 align-top leading-relaxed ' +
+                          (ci === 0 ? 'w-1/5 font-medium' : '')
+                        }
                       >
                         {splitClauses(cleanMath(c.text))}
                       </td>
@@ -820,7 +837,7 @@ function DocRead({
         // его же правилом first/last-child (один абзац = и первый, и последний),
         // поэтому пробел держим на обёртке — иначе абзацы слипаются в «стену».
         <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
-          <Markdown content={body} className="text-[15px] leading-relaxed" />
+          <Markdown content={mdHardBreaks(body)} className="text-[15px] leading-relaxed" />
         </div>
       ),
     )
@@ -1009,8 +1026,8 @@ function TableBlock({
                 <td
                   key={ci}
                   colSpan={c.colspan > 1 ? c.colspan : undefined}
-                  rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
-                  className="border border-border px-2.5 py-1 align-top"
+                  rowSpan={c.rowspan > 1 ? Math.min(c.rowspan, cells.length - ri) : undefined}
+                  className="border border-border px-2.5 py-1 align-top break-words"
                 >
                   {cleanMath(c.text)}
                 </td>
