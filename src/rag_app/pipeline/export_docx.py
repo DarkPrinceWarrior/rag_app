@@ -66,7 +66,7 @@ def _latex_to_text(s: str) -> str:
     s = re.sub(r"\^\s*\{?\s*([0-9])\s*\}?", lambda m: _SUP.get(m.group(1), m.group(1)), s)  # ^{3}→³
     s = re.sub(r"\^\s*\{([^}]*)\}", r"\1", s)  # прочие ^{…}
     s = re.sub(r"\\[a-zA-Z]+", "", s)  # прочие \команды (\mathbf, \boldsymbol, …)
-    s = s.replace("{", "").replace("}", "")
+    s = s.replace("{", "").replace("}", "").replace("$", "")  # остаточные/непарные $
     return re.sub(r"[ \t]{2,}", " ", s).strip()
 
 
@@ -85,49 +85,53 @@ def _strip_math_delims(s: str) -> str:
     return s
 
 
-def _render_latex_png(latex: str, fontsize: int) -> tuple[bytes, float] | None:
-    """LaTeX → (PNG, ширина в дюймах) через matplotlib mathtext. None — если формула
-    не поддержана (тогда текстовый фолбэк). Результат кэшируется."""
+_MATH_DPI = 300
+
+
+def _render_latex_png(latex: str, fontsize: int) -> tuple[bytes, float, float] | None:
+    """LaTeX → (PNG, ширина в дюймах, глубина-под-базовой-линией в пунктах) через
+    matplotlib mathtext (Computer Modern). depth нужен для выравнивания инлайн-формулы
+    по базовой линии текста. None — формула не поддержана (текстовый фолбэк). Кэш."""
     latex = (latex or "").strip()
     if not latex:
         return None
     ck = f"{fontsize}:{latex}"
     if ck in _MATH_CACHE:
         return _MATH_CACHE[ck]
-    res: tuple[bytes, float] | None = None
-    fig = None
+    res: tuple[bytes, float, float] | None = None
     try:
         import matplotlib
 
         matplotlib.use("Agg")
-        from matplotlib import pyplot as plt
+        matplotlib.rcParams["mathtext.fontset"] = "cm"
+        import numpy as np
+        from matplotlib.font_manager import FontProperties
+        from matplotlib.mathtext import MathTextParser
         from PIL import Image
 
-        plt.rcParams["mathtext.fontset"] = "cm"
-        fig = plt.figure()
-        fig.text(0, 0, f"${latex}$", fontsize=fontsize)
+        rp = MathTextParser("agg").parse(
+            f"${latex}$", dpi=_MATH_DPI, prop=FontProperties(size=fontsize)
+        )
+        arr = np.asarray(rp.image)  # (H,W) uint8, 255 = чернила
+        h, w = arr.shape
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)  # чёрный текст, alpha = чернила
+        rgba[..., 3] = arr
         buf = io.BytesIO()
-        fig.savefig(buf, dpi=300, transparent=True, bbox_inches="tight", pad_inches=0.0)
-        plt.close(fig)
-        fig = None
-        buf.seek(0)
-        w_px = Image.open(buf).width
-        res = (buf.getvalue(), max(0.05, w_px / 300.0))
+        Image.fromarray(rgba, "RGBA").save(buf, "PNG")
+        res = (buf.getvalue(), max(0.04, w / _MATH_DPI), rp.depth / _MATH_DPI * 72.0)
     except Exception:  # noqa: BLE001 — неподдержанная формула → текстовый фолбэк
-        try:
-            if fig is not None:
-                import matplotlib.pyplot as plt
-
-                plt.close(fig)
-        except Exception:
-            pass
         res = None
     _MATH_CACHE[ck] = res
     return res
 
 
-def _embed_inline(run_owner, png: bytes, w_in: float) -> None:
-    run_owner.add_run().add_picture(io.BytesIO(png), width=Inches(min(w_in, 6.3)))
+def _embed_inline(run_owner, img: tuple[bytes, float, float], baseline: bool) -> None:
+    run = run_owner.add_run()
+    run.add_picture(io.BytesIO(img[0]), width=Inches(min(img[1], 6.3)))
+    if baseline and img[2]:
+        # картинка обрезана по чернилам; её низ — на базовой линии текста, а низ
+        # формулы на depth НИЖЕ её baseline → опускаем run на depth, чтобы совпало.
+        run.font.position = Pt(-img[2])
 
 
 def _add_para_with_math(doc, text: str) -> None:
@@ -144,7 +148,7 @@ def _add_para_with_math(doc, text: str) -> None:
             img = _render_latex_png(part[1:-1], 11)
             if img:
                 try:
-                    _embed_inline(p, img[0], img[1])
+                    _embed_inline(p, img, baseline=True)
                     continue
                 except Exception:  # noqa: BLE001
                     pass
@@ -176,7 +180,7 @@ def build_docx(
                 try:
                     p = doc.add_paragraph()
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    _embed_inline(p, img[0], img[1])
+                    _embed_inline(p, img, baseline=False)
                 except Exception:  # noqa: BLE001
                     img = None
             if not img:
