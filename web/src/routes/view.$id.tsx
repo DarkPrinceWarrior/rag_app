@@ -697,7 +697,13 @@ function AuthImage({ src, alt }: { src: string; alt?: string }) {
 function escapeTablePipes(md: string): string {
   return md
     .split('\n')
-    .map((ln) => (/^\s*\|/.test(ln) ? ln.replace(/([^\s|])\|([^\s|])/g, '$1\\|$2') : ln))
+    .map((ln) => {
+      if (!/^\s*\|/.test(ln)) return ln
+      // строку-разделитель GFM (|---|:--:|…) НЕ трогаем — иначе экранированные пайпы
+      // ломают распознавание таблицы и она рендерится сырым текстом
+      if (/^\s*\|?[\s:|-]+$/.test(ln)) return ln
+      return ln.replace(/([^\s|])\|([^\s|])/g, '$1\\|$2')
+    })
     .join('\n')
 }
 
