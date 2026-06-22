@@ -1,6 +1,7 @@
 import { createRootRoute, Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
+import { Logo } from '@/components/Logo'
 
 function NavLink({ to, label }: { to: string; label: string }) {
   const path = useRouterState({ select: (s) => s.location.pathname })
@@ -43,7 +44,10 @@ function RootLayout() {
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-10 flex items-center gap-2 border-b bg-card/90 px-5 py-2.5 backdrop-blur">
-        <span className="mr-3 font-semibold">rag_app</span>
+        <Link to="/" className="mr-3 flex items-center gap-2">
+          <Logo size={26} />
+          <span className="text-[15px] font-semibold tracking-tight">Толмач</span>
+        </Link>
         <nav className="flex items-center gap-1">
           <NavLink to="/" label="Библиотека" />
           <NavLink to="/chat" label="Чат" />
