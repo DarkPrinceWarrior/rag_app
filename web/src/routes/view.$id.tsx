@@ -155,12 +155,14 @@ function Viewer() {
         <div className="flex items-center overflow-hidden rounded-md border text-xs">
           <button
             onClick={() => setRightText(false)}
+            title="Приблизительный макет оригинала (BabelDOC). На плотных таблицах возможны искажения шрифта и отдельные непереведённые фрагменты — для точного перевода выберите «текст»."
             className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
-            перевод: вёрстка
+            вёрстка (черновик)
           </button>
           <button
             onClick={() => setRightText(true)}
+            title="Чистая реконструкция перевода: заголовки, абзацы, таблицы, сноски без переполнения. Рекомендуется."
             className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             текст
