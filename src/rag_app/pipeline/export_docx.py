@@ -6,6 +6,7 @@ import io
 import re
 
 from docx import Document as DocxDocument
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 
 from rag_app.db.models import Segment, SegmentKind
@@ -69,6 +70,89 @@ def _latex_to_text(s: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", s).strip()
 
 
+# Настоящий рендер формул (как KaTeX в «тексте»): LaTeX → PNG через matplotlib
+# mathtext (шрифт Computer Modern — вид LaTeX), встраиваем картинкой. On-prem,
+# без texlive/браузера. Кэш по формуле — в deeplearningbook $m$/$n$/$x_i$ повторяются.
+_MATH_SPLIT = re.compile(r"(\$[^$]+\$)")
+_MATH_CACHE: dict[str, tuple[bytes, float] | None] = {}
+
+
+def _strip_math_delims(s: str) -> str:
+    s = (s or "").strip()
+    for a, b in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
+        if len(s) > len(a) + len(b) and s.startswith(a) and s.endswith(b):
+            return s[len(a) : -len(b)].strip()
+    return s
+
+
+def _render_latex_png(latex: str, fontsize: int) -> tuple[bytes, float] | None:
+    """LaTeX → (PNG, ширина в дюймах) через matplotlib mathtext. None — если формула
+    не поддержана (тогда текстовый фолбэк). Результат кэшируется."""
+    latex = (latex or "").strip()
+    if not latex:
+        return None
+    ck = f"{fontsize}:{latex}"
+    if ck in _MATH_CACHE:
+        return _MATH_CACHE[ck]
+    res: tuple[bytes, float] | None = None
+    fig = None
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+        from PIL import Image
+
+        plt.rcParams["mathtext.fontset"] = "cm"
+        fig = plt.figure()
+        fig.text(0, 0, f"${latex}$", fontsize=fontsize)
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=300, transparent=True, bbox_inches="tight", pad_inches=0.0)
+        plt.close(fig)
+        fig = None
+        buf.seek(0)
+        w_px = Image.open(buf).width
+        res = (buf.getvalue(), max(0.05, w_px / 300.0))
+    except Exception:  # noqa: BLE001 — неподдержанная формула → текстовый фолбэк
+        try:
+            if fig is not None:
+                import matplotlib.pyplot as plt
+
+                plt.close(fig)
+        except Exception:
+            pass
+        res = None
+    _MATH_CACHE[ck] = res
+    return res
+
+
+def _embed_inline(run_owner, png: bytes, w_in: float) -> None:
+    run_owner.add_run().add_picture(io.BytesIO(png), width=Inches(min(w_in, 6.3)))
+
+
+def _add_para_with_math(doc, text: str) -> None:
+    """Абзац: текст — run'ами (с **жирным**/*италиком*), инлайн-формулы ($…$) —
+    картинками mathtext; при сбое рендера — читаемый юникод-фолбэк."""
+    if "$" not in text:
+        _add_md_runs(doc.add_paragraph(), _latex_to_text(text))
+        return
+    p = doc.add_paragraph()
+    for part in _MATH_SPLIT.split(text):
+        if not part:
+            continue
+        if len(part) > 2 and part.startswith("$") and part.endswith("$"):
+            img = _render_latex_png(part[1:-1], 11)
+            if img:
+                try:
+                    _embed_inline(p, img[0], img[1])
+                    continue
+                except Exception:  # noqa: BLE001
+                    pass
+            _add_md_runs(p, _latex_to_text(part))
+        else:
+            _add_md_runs(p, _latex_to_text(part))
+
+
 def build_docx(
     filename: str, segments: list[Segment], images: dict[str, bytes] | None = None
 ) -> bytes:
@@ -83,13 +167,22 @@ def build_docx(
             doc.add_heading(_strip_md(_latex_to_text(_seg_text(seg))), level=level)
 
         elif seg.kind == SegmentKind.paragraph:
-            _add_md_runs(doc.add_paragraph(), _latex_to_text(_seg_text(seg)))
+            _add_para_with_math(doc, _seg_text(seg))
 
         elif seg.kind == SegmentKind.equation:
-            p = doc.add_paragraph()
-            run = p.add_run(_latex_to_text(xml_safe(seg.source_text)))
-            run.italic = True
-            run.font.size = Pt(10)
+            src = xml_safe(seg.source_text)
+            img = _render_latex_png(_strip_math_delims(src), 14)
+            if img:
+                try:
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    _embed_inline(p, img[0], img[1])
+                except Exception:  # noqa: BLE001
+                    img = None
+            if not img:
+                run = doc.add_paragraph().add_run(_latex_to_text(src))
+                run.italic = True
+                run.font.size = Pt(10)
 
         elif seg.kind == SegmentKind.image:
             caption = _strip_md(_latex_to_text(_seg_text(seg))).strip()
