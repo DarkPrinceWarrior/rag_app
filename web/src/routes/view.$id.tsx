@@ -57,8 +57,6 @@ function Viewer() {
   const [docPage, setDocPage] = useState(1)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
-  // режим «текст»: просмотр (чистый Markdown+формулы) или правка (DocFlow)
-  const [edit, setEdit] = useState(false)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -293,50 +291,17 @@ function Viewer() {
                   <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
                     →
                   </Button>
-                  {/* Скан-картинка (pdf_scan) — это просмотр VL-описания, править
-                      нечего: тумблер «просмотр/править» только у родного pdf_text. */}
-                  {docQ.data?.kind === 'pdf_text' && (
-                    <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                      <button
-                        onClick={() => setEdit(false)}
-                        className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                      >
-                        просмотр
-                      </button>
-                      <button
-                        onClick={() => setEdit(true)}
-                        className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                      >
-                        править
-                      </button>
-                    </div>
-                  )}
                 </div>
                 <div className="flex-1 overflow-auto">
                   <article className="mx-auto max-w-3xl px-6 py-5">
-                    {edit && docQ.data?.kind === 'pdf_text' ? (
-                      <DocFlow
-                        segs={pageSegs}
-                        field="translated"
-                        editable
-                        showPages={false}
-                        citedId={cited}
-                        onSaved={setMsg}
-                        onPick={(s) => {
-                          const h = highlightOf(s)
-                          if (h) setActive(h)
-                        }}
-                      />
-                    ) : (
-                      <DocRead
-                        segs={pageSegs}
-                        citedId={cited}
-                        onPick={(s) => {
-                          const h = highlightOf(s)
-                          if (h) setActive(h)
-                        }}
-                      />
-                    )}
+                    <DocRead
+                      segs={pageSegs}
+                      citedId={cited}
+                      onPick={(s) => {
+                        const h = highlightOf(s)
+                        if (h) setActive(h)
+                      }}
+                    />
                   </article>
                 </div>
               </>
@@ -392,27 +357,11 @@ function Viewer() {
                   <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
                     →
                   </Button>
-                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                    <button
-                      onClick={() => setEdit(false)}
-                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      просмотр
-                    </button>
-                    <button
-                      onClick={() => setEdit(true)}
-                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      править
-                    </button>
-                  </div>
                 </div>
                 <div className="flex-1 overflow-auto">
                   <article className="mx-auto max-w-3xl px-6 py-5">
                     {pageSegs.length === 0 ? (
                       <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
-                    ) : edit ? (
-                      <DocFlow segs={pageSegs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
                     ) : (
                       <DocRead segs={pageSegs} citedId={cited} />
                     )}
