@@ -188,6 +188,24 @@ function Viewer() {
           </button>
         </div>
       )}
+      {hasViewOrig && docQ.data?.kind === 'docx' && (
+        <div className="flex items-center overflow-hidden rounded-md border text-xs">
+          <button
+            onClick={() => setRightText(false)}
+            title="Переведённый документ с сохранённой вёрсткой Word (LibreOffice-рендер). Точная раскладка оригинала."
+            className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+          >
+            как в Microsoft
+          </button>
+          <button
+            onClick={() => setRightText(true)}
+            title="Интерактивный перевод постранично, синхронно с оригиналом: абзацы, таблицы, картинки."
+            className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+          >
+            текст
+          </button>
+        </div>
+      )}
       {(isPdfDoc || docQ.data?.kind === 'docx') && (
         <select
           value={docQ.data?.parser_backend || 'mineru'}
@@ -353,63 +371,54 @@ function Viewer() {
             />
           </div>
           <div className="flex w-1/2 flex-col">
-            <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                ←
-              </Button>
-              <span className="text-muted-foreground">
-                стр. {page} / {numPages || '…'}
-              </span>
-              <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
-                →
-              </Button>
-              <div className="ml-2 flex items-center overflow-hidden rounded-md border text-xs">
-                <button
-                  onClick={() => setRightText(true)}
-                  className={'px-2 py-0.5 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                >
-                  текст
-                </button>
-                <button
-                  onClick={() => setRightText(false)}
-                  className={'px-2 py-0.5 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                >
-                  как в Microsoft
-                </button>
-              </div>
-              {rightText && (
-                <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                  <button
-                    onClick={() => setEdit(false)}
-                    className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                  >
-                    просмотр
-                  </button>
-                  <button
-                    onClick={() => setEdit(true)}
-                    className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                  >
-                    править
-                  </button>
-                </div>
-              )}
-            </div>
-            {rightText ? (
-              <div className="flex-1 overflow-auto">
-                <article className="mx-auto max-w-3xl px-6 py-5">
-                  {pageSegs.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
-                  ) : edit ? (
-                    <DocFlow segs={pageSegs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
-                  ) : (
-                    <DocRead segs={pageSegs} citedId={cited} />
-                  )}
-                </article>
-              </div>
-            ) : hasViewRu ? (
-              <PdfPane docId={id} urlKind="view_ru" label="перевод" scale={1.0} page={page} highlight={null} onPageChange={setPage} />
+            {/* Тумблер «текст | как в Microsoft» теперь в шапке (как у pdf_text).
+                «Как в Microsoft» = view_ru со СВОЕЙ навигацией (без дубля стрелок);
+                «текст» — со своей тулбар-навигацией и правкой. */}
+            {!rightText ? (
+              hasViewRu ? (
+                <PdfPane docId={id} urlKind="view_ru" label="перевод" scale={1.0} page={page} highlight={null} onPageChange={setPage} />
+              ) : (
+                <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
+              )
             ) : (
-              <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
+              <>
+                <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
+                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                    ←
+                  </Button>
+                  <span className="text-muted-foreground">
+                    стр. {page} / {numPages || '…'}
+                  </span>
+                  <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
+                    →
+                  </Button>
+                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
+                    <button
+                      onClick={() => setEdit(false)}
+                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                    >
+                      просмотр
+                    </button>
+                    <button
+                      onClick={() => setEdit(true)}
+                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                    >
+                      править
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-auto">
+                  <article className="mx-auto max-w-3xl px-6 py-5">
+                    {pageSegs.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
+                    ) : edit ? (
+                      <DocFlow segs={pageSegs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
+                    ) : (
+                      <DocRead segs={pageSegs} citedId={cited} />
+                    )}
+                  </article>
+                </div>
+              </>
             )}
           </div>
         </div>
