@@ -151,19 +151,28 @@ _WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{2,}")
 
 
 def _is_translatable_xlsx(v: str) -> bool:
-    """Ячейка переводима только если в ней есть осмысленная проза.
+    """Ячейка переводима, если в ней есть осмысленный текст (слово/фраза), а не
+    голый код/число/идентификатор.
 
-    Эвристика (см. roadmap-журнал «xlsx-дамп»): должна быть хотя бы одна
-    «буквенная» группа ≥2 символов И при этом либо пробел (фраза из нескольких
-    токенов), либо длина ≥12 символов. Одиночные короткие токены-коды
-    («DMFA», «BTC», «pH») — НЕ проза, оставляем как есть, чтобы не плодить
-    бессмысленные сегменты на химическом data-дампе."""
+    Условие: есть «буквенная» группа ≥2 символов И выполнено одно из:
+      - в строке есть пробел (фраза из нескольких токенов: «Lift method»), либо
+      - длина ≥12 («North Kudrinskoye»), либо
+      - буквы составляют ≥50% непробельных символов (одиночное слово-подпись:
+        «Operating», «Status», «Field:», «Normal», «Inflow», «Shutdown»).
+    Последнее правило ловит короткие однословные заголовки/статусы, которые
+    раньше терялись. Смешанные коды («42/713», «ES-0517», «01.05.2026») при этом
+    отсекаются — в них мало букв либо их нет вовсе. Объём по-прежнему ограничен
+    `xlsx_max_segments` + дедуп, поэтому крупные data-дампы не раздуваются."""
     s = v.strip()
     if not s or s.startswith("="):
         return False
     if not _WORD_RE.search(s):
         return False
-    return " " in s or len(s) >= 12
+    if " " in s or len(s) >= 12:
+        return True
+    letters = sum(c.isalpha() for c in s)
+    nonspace = sum(not c.isspace() for c in s) or 1
+    return letters / nonspace >= 0.5
 
 
 def extract_xlsx(path: Path) -> list[SegmentDraft]:
@@ -173,6 +182,19 @@ def extract_xlsx(path: Path) -> list[SegmentDraft]:
     capped = False
     skipped_dup = 0
     for s_i, ws in enumerate(wb.worksheets):
+        # название листа — тоже переводим (вкладки листов показываем и на русском)
+        title = (ws.title or "").strip()
+        if title and title not in seen:
+            seen.add(title)
+            drafts.append(
+                SegmentDraft(
+                    idx=len(drafts),
+                    kind=SegmentKind.paragraph,
+                    source_text=title,
+                    page_idx=s_i,
+                    meta={"location": {"sheet": ws.title, "cell": "__sheet_title__"}, "sheet_title": True},
+                )
+            )
         for row in ws.iter_rows():
             for cell in row:
                 v = cell.value

@@ -84,11 +84,13 @@ export interface TableCell {
 // строковых значений ячеек, оригинал + перевод.
 export interface SheetData {
   name: string
+  name_ru?: string // перевод названия листа (для вкладок справа)
   orig: string[][]
   ru: string[][]
   total_rows: number
   total_cols: number
   truncated: boolean
+  charts?: string[] // заголовки встроенных диаграмм (в гриде не рисуются)
 }
 export interface SheetsResponse {
   sheets: SheetData[]
