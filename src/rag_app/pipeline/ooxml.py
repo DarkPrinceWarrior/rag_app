@@ -24,6 +24,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from rag_app.config import settings
 from rag_app.db.models import SegmentKind
@@ -253,29 +254,96 @@ def inject_xlsx(src: Path, dst: Path, translations: dict[str, str]) -> int:
 
 # ------------------------------------------------------------------ PPTX
 
-def _pptx_paragraphs(prs: Any):
-    """(paragraph, location) для всех текстовых фреймов и заметок."""
-    for s_i, slide in enumerate(prs.slides):
-        for shape in slide.shapes:
-            if not getattr(shape, "has_text_frame", False):
-                continue
-            for p_i, p in enumerate(shape.text_frame.paragraphs):
-                yield p, {"slide": s_i, "shape": shape.shape_id, "para": p_i}
-        if slide.has_notes_slide:
-            for p_i, p in enumerate(slide.notes_slide.notes_text_frame.paragraphs):
-                yield p, {"slide": s_i, "notes": True, "para": p_i}
+_CITATION_RE = re.compile(r"^\s*\[\d+\]")  # элемент списка литературы: «[1] Stevenson…»
 
 
-def _pptx_paragraph_text(p: Any) -> str:
+def is_pptx_citation(text: str) -> bool:
+    """Запись библиографии вида «[1] …» — список литературы не переводим."""
+    return bool(_CITATION_RE.match(text or ""))
+
+
+def _para_text(p: Any) -> str:
     return "".join(run.text for run in p.runs)
+
+
+def _set_para(p: Any, text: str) -> None:
+    """Записать перевод в абзац, сохранив форматирование первого run'а."""
+    if p.runs:
+        p.runs[0].text = text
+        for run in p.runs[1:]:
+            run.text = ""
+    elif text:
+        p.text = text
+
+
+def _iter_shape_units(shapes: Any, s_i: int):
+    """Рекурсивный обход фигур слайда (С ЗАХОДОМ В ГРУППЫ) → текстовые единицы.
+
+    Yields (location, get_text, set_text) для:
+    - абзацев текстовых фреймов  → {"slide", "shape", "para"}
+    - ячеек таблиц               → {"slide", "shape", "row", "col"}
+    Группы (MSO GROUP) рекурсивно разворачиваются — иначе текст в сгруппированных
+    фигурах теряется (слайды-«только заголовок»). Таблицы (GraphicFrame.has_table)
+    раньше вообще не извлекались."""
+    for shape in shapes:
+        try:
+            is_group = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except Exception:
+            is_group = False
+        if is_group:
+            yield from _iter_shape_units(shape.shapes, s_i)
+            continue
+        if getattr(shape, "has_table", False):
+            tbl = shape.table
+            for r, row in enumerate(tbl.rows):
+                for c, cell in enumerate(row.cells):
+                    loc = {"slide": s_i, "shape": shape.shape_id, "row": r, "col": c}
+
+                    def _get(cell=cell) -> str:
+                        return cell.text
+
+                    def _set(text: str, cell=cell) -> None:
+                        cell.text = text
+
+                    yield loc, _get, _set
+            continue
+        if getattr(shape, "has_text_frame", False):
+            for p_i, p in enumerate(shape.text_frame.paragraphs):
+                loc = {"slide": s_i, "shape": shape.shape_id, "para": p_i}
+
+                def _get(p=p) -> str:
+                    return _para_text(p)
+
+                def _set(text: str, p=p) -> None:
+                    _set_para(p, text)
+
+                yield loc, _get, _set
+
+
+def _pptx_units(prs: Any):
+    """Все переводимые единицы презентации (фигуры+группы+таблицы и заметки)."""
+    for s_i, slide in enumerate(prs.slides):
+        yield from _iter_shape_units(slide.shapes, s_i)
+        if slide.has_notes_slide:
+            tf = slide.notes_slide.notes_text_frame
+            for p_i, p in enumerate(tf.paragraphs):
+                loc = {"slide": s_i, "notes": True, "para": p_i}
+
+                def _get(p=p) -> str:
+                    return _para_text(p)
+
+                def _set(text: str, p=p) -> None:
+                    _set_para(p, text)
+
+                yield loc, _get, _set
 
 
 def extract_pptx(path: Path) -> list[SegmentDraft]:
     prs = Presentation(str(path))
     drafts: list[SegmentDraft] = []
-    for p, location in _pptx_paragraphs(prs):
-        text = _pptx_paragraph_text(p).strip()
-        if not text:
+    for location, get_text, _ in _pptx_units(prs):
+        text = (get_text() or "").strip()
+        if not text or is_pptx_citation(text):  # список литературы не переводим
             continue
         drafts.append(
             SegmentDraft(
@@ -292,14 +360,11 @@ def extract_pptx(path: Path) -> list[SegmentDraft]:
 def inject_pptx(src: Path, dst: Path, translations: dict[str, str]) -> int:
     prs = Presentation(str(src))
     applied = 0
-    for p, location in _pptx_paragraphs(prs):
+    for location, _, set_text in _pptx_units(prs):
         text = translations.get(location_key(location))
         if text is None:
             continue
-        if p.runs:
-            p.runs[0].text = text
-            for run in p.runs[1:]:
-                run.text = ""
+        set_text(text)
         applied += 1
     prs.save(str(dst))
     return applied

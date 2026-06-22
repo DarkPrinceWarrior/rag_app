@@ -18,6 +18,7 @@ from rag_app.api.auth import User, require_user
 from rag_app.api.schemas import DocumentOut
 from rag_app.config import settings
 from rag_app.db.models import Document, DocumentStatus, Segment
+from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
 
 router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
@@ -413,6 +414,146 @@ async def document_sheets(request: Request, doc_id: uuid.UUID) -> dict:
     orig_bytes = await storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
     sheets = await asyncio.to_thread(_read_xlsx_grids, orig_bytes, trans)
     return {"sheets": sheets, "translated_ready": bool(trans)}
+
+
+# --- интерактивный pptx-просмотр (структура слайдов, а не office-PDF «принт») ---
+def _slide_blocks(shapes: object, s_i: int, trans: dict[str, str]) -> list[dict]:
+    """Фигуры слайда (с заходом в группы) → упорядоченные блоки для рендера:
+    text (абзацы), table (ячейки), image (рисунок). Перевод накладывается по
+    location-ключу из сегментов (как inject_pptx)."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    blocks: list[dict] = []
+    for shape in shapes:  # type: ignore[attr-defined]
+        try:
+            stype = shape.shape_type
+        except Exception:
+            stype = None
+        if stype == MSO_SHAPE_TYPE.GROUP:
+            blocks.extend(_slide_blocks(shape.shapes, s_i, trans))
+            continue
+        if getattr(shape, "has_table", False):
+            rows: list[list[dict]] = []
+            for r, row in enumerate(shape.table.rows):
+                cells: list[dict] = []
+                for c, cell in enumerate(row.cells):
+                    o = (cell.text or "").strip()
+                    key = ooxml.location_key({"slide": s_i, "shape": shape.shape_id, "row": r, "col": c})
+                    cells.append({"orig": o, "ru": trans.get(key) or o})
+                rows.append(cells)
+            blocks.append({"type": "table", "rows": rows})
+            continue
+        if stype == MSO_SHAPE_TYPE.PICTURE:
+            blocks.append({"type": "image", "shape": shape.shape_id})
+            continue
+        if getattr(shape, "has_text_frame", False):
+            lines: list[dict] = []
+            for p_i, p in enumerate(shape.text_frame.paragraphs):
+                o = (p.text or "").strip()
+                if not o:
+                    continue
+                key = ooxml.location_key({"slide": s_i, "shape": shape.shape_id, "para": p_i})
+                lines.append({"orig": o, "ru": trans.get(key) or o, "level": getattr(p, "level", 0) or 0})
+            if lines:
+                blocks.append({"type": "text", "lines": lines})
+    return blocks
+
+
+def _build_slides(orig: bytes, trans: dict[str, str]) -> list[dict]:
+    from pptx import Presentation
+
+    prs = Presentation(io.BytesIO(orig))
+    out: list[dict] = []
+    for s_i, slide in enumerate(prs.slides):
+        title_o = ""
+        title_r = ""
+        try:
+            ts = slide.shapes.title
+        except Exception:
+            ts = None
+        if ts is not None and getattr(ts, "has_text_frame", False):
+            title_o = (ts.text or "").strip()
+            key = ooxml.location_key({"slide": s_i, "shape": ts.shape_id, "para": 0})
+            title_r = trans.get(key) or title_o
+        out.append(
+            {
+                "index": s_i,
+                "title": title_o,
+                "title_ru": title_r or title_o,
+                "blocks": _slide_blocks(slide.shapes, s_i, trans),
+            }
+        )
+    return out
+
+
+@router.get("/{doc_id}/slides")
+async def document_slides(request: Request, doc_id: uuid.UUID) -> dict:
+    """Данные pptx для ИНТЕРАКТИВНОГО просмотра: слайды → блоки (текст/таблица/
+    рисунок), оригинал + перевод. Перевод накладывается по location из сегментов.
+    Настоящая презентация (листать слайды, выделять текст), а не PDF-принт."""
+    doc = await _get_or_404(request, doc_id)
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    if kind != "pptx":
+        raise HTTPException(400, "структура слайдов только для pptx")
+    async with request.app.state.sessionmaker() as session:
+        segs = (
+            await session.execute(
+                select(Segment).where(
+                    Segment.document_id == doc_id, Segment.translated_text.is_not(None)
+                )
+            )
+        ).scalars().all()
+    trans = {
+        ooxml.location_key(s.meta["location"]): s.translated_text
+        for s in segs
+        if s.translated_text and s.meta.get("location")
+    }
+    storage = request.app.state.storage
+    orig_bytes = await storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
+    slides = await asyncio.to_thread(_build_slides, orig_bytes, trans)
+    return {"slides": slides, "translated_ready": bool(trans)}
+
+
+def _extract_slide_image(orig: bytes, slide_idx: int, shape_id: int) -> tuple[bytes, str] | None:
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    prs = Presentation(io.BytesIO(orig))
+    slides = list(prs.slides)
+    if slide_idx < 0 or slide_idx >= len(slides):
+        return None
+
+    def find(shapes: object):
+        for shape in shapes:  # type: ignore[attr-defined]
+            try:
+                stype = shape.shape_type
+            except Exception:
+                stype = None
+            if stype == MSO_SHAPE_TYPE.GROUP:
+                hit = find(shape.shapes)
+                if hit:
+                    return hit
+            elif shape.shape_id == shape_id and stype == MSO_SHAPE_TYPE.PICTURE:
+                return shape
+        return None
+
+    shape = find(slides[slide_idx].shapes)
+    if shape is None:
+        return None
+    img = shape.image
+    return img.blob, (img.content_type or "image/png")
+
+
+@router.get("/{doc_id}/slide-image/{slide_idx}/{shape_id}")
+async def slide_image(request: Request, doc_id: uuid.UUID, slide_idx: int, shape_id: int) -> Response:
+    """Рисунок со слайда pptx (по slide+shape_id) — для интерактивного просмотра."""
+    doc = await _get_or_404(request, doc_id)
+    orig_bytes = await request.app.state.storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
+    res = await asyncio.to_thread(_extract_slide_image, orig_bytes, slide_idx, shape_id)
+    if res is None:
+        raise HTTPException(404, "рисунок не найден")
+    blob, media = res
+    return Response(content=blob, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.delete("/{doc_id}", status_code=204)

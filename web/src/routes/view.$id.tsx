@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
 import { XlsxView } from '@/components/XlsxView'
+import { PptxView } from '@/components/PptxView'
 import { Markdown } from '@/components/Markdown'
 import { authFetch } from '@/lib/auth'
 import { cleanMath } from '@/lib/cleanMath'
@@ -387,8 +388,21 @@ function Viewer() {
     )
   }
 
-  // PPTX с PDF-рендером: «как в Microsoft» — оригинал и перевод двумя
-  // pdf.js-панелями, листаются синхронно (текстовый MD-просмотр им не идёт).
+  // PPTX → ИНТЕРАКТИВНЫЙ просмотр слайдов (а не office-PDF «принт»): рейка
+  // слайдов + оригинал|перевод блоками (текст/таблица/рисунок), выделяемый текст.
+  // Тумблер «как в PowerPoint» оставляет office-PDF для точной вёрстки.
+  if (docQ.data?.kind === 'pptx') {
+    return (
+      <div>
+        {header}
+        <PptxView docId={id} hasViewOrig={hasViewOrig} hasViewRu={hasViewRu} />
+        <DocAssistant docId={id} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // Прочие office-форматы с PDF-рендером (фолбэк): оригинал и перевод двумя
+  // pdf.js-панелями.
   if (hasViewOrig) {
     return (
       <div>

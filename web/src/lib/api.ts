@@ -97,6 +97,29 @@ export interface SheetsResponse {
   translated_ready: boolean
 }
 
+// pptx → интерактивный просмотр слайдов (а не office-PDF «принт»).
+export interface SlideLine {
+  orig: string
+  ru: string
+  level: number
+}
+export interface SlideBlock {
+  type: 'text' | 'table' | 'image'
+  lines?: SlideLine[]
+  rows?: { orig: string; ru: string }[][]
+  shape?: number
+}
+export interface Slide {
+  index: number
+  title: string
+  title_ru: string
+  blocks: SlideBlock[]
+}
+export interface SlidesResponse {
+  slides: Slide[]
+  translated_ready: boolean
+}
+
 export interface Citation {
   n: number
   chunk_id: string
@@ -188,6 +211,7 @@ export const api = {
   deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
   getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments?limit=${SEGMENTS_LIMIT}`),
   getSheets: (id: string) => jget<SheetsResponse>(`/api/documents/${id}/sheets`),
+  getSlides: (id: string) => jget<SlidesResponse>(`/api/documents/${id}/slides`),
   reexport: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/reexport`, 'POST'),
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
   reparseOcr: (id: string, lang = 'east_slavic') =>
@@ -250,3 +274,5 @@ export const api = {
 }
 
 export const downloadUrl = (docId: string, key: string) => `/api/documents/${docId}/download/${key}`
+export const slideImageUrl = (docId: string, slide: number, shape: number) =>
+  `/api/documents/${docId}/slide-image/${slide}/${shape}`
