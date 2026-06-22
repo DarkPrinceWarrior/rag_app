@@ -371,46 +371,103 @@ def inject_pptx(src: Path, dst: Path, translations: dict[str, str]) -> int:
     return applied
 
 
-def _autofit_shapes(shapes: Any) -> None:
+_CM = 360000  # EMU в сантиметре
+
+
+def _iter_geom_shapes(shapes: Any):
+    """Плоский обход фигур (с заходом в группы) — для геометрии/автоподгонки."""
     for shape in shapes:
         try:
             is_group = shape.shape_type == MSO_SHAPE_TYPE.GROUP
         except Exception:
             is_group = False
         if is_group:
-            _autofit_shapes(shape.shapes)
-            continue
-        if getattr(shape, "has_table", False):
-            for row in shape.table.rows:
-                for cell in row.cells:
-                    try:
-                        cell.text_frame.word_wrap = True
-                    except Exception:
-                        pass
-            continue
-        if getattr(shape, "has_text_frame", False):
-            tf = shape.text_frame
+            yield from _iter_geom_shapes(shape.shapes)
+        else:
+            yield shape
+
+
+def _shrink_table(shape: Any) -> None:
+    """Ужать таблицу: меньше кегль + минимальные поля ячеек, чтобы переведённый
+    (более длинный) текст переносился на меньшее число строк и таблица не уезжала
+    за нижний край слайда."""
+    from pptx.util import Pt
+
+    for row in shape.table.rows:
+        for cell in row.cells:
+            tf = cell.text_frame
             try:
                 tf.word_wrap = True
+                cell.margin_top = Pt(1)
+                cell.margin_bottom = Pt(1)
+                cell.margin_left = Pt(2)
+                cell.margin_right = Pt(2)
             except Exception:
                 pass
-            try:
-                # normAutofit: «ужать текст до фигуры» — LibreOffice уменьшит кегль,
-                # чтобы длинный (особенно переведённый) текст не вылезал за рамку.
-                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-            except Exception:
-                pass
+            for p in tf.paragraphs:
+                for run in p.runs:
+                    try:
+                        sz = run.font.size
+                        run.font.size = max(Pt(7), int(sz * 0.62)) if sz is not None else Pt(8)
+                    except Exception:
+                        pass
+
+
+def _autofit_slide(slide: Any) -> None:
+    # препятствия (картинки/таблицы) — их верхняя кромка; текстовый блок, который
+    # их перекрывает, обрежем по высоте до них, чтобы текст не наезжал на картинку.
+    obstacles: list[tuple[int, int]] = []  # (top, shape_id)
+    for sh in _iter_geom_shapes(slide.shapes):
+        try:
+            is_pic = sh.shape_type == MSO_SHAPE_TYPE.PICTURE
+        except Exception:
+            is_pic = False
+        if (getattr(sh, "has_table", False) or is_pic) and sh.top is not None and sh.height is not None:
+            obstacles.append((int(sh.top), sh.shape_id))
+
+    for sh in _iter_geom_shapes(slide.shapes):
+        if getattr(sh, "has_table", False):
+            _shrink_table(sh)
+            continue
+        try:
+            is_pic = sh.shape_type == MSO_SHAPE_TYPE.PICTURE
+        except Exception:
+            is_pic = False
+        if is_pic or not getattr(sh, "has_text_frame", False):
+            continue
+        tf = sh.text_frame
+        # обрезать высоту блока до ближайшего препятствия ниже его верхней кромки
+        if sh.top is not None and sh.height is not None:
+            top = int(sh.top)
+            below = [
+                ot
+                for (ot, oid) in obstacles
+                if oid != sh.shape_id and top + _CM // 3 < ot < top + int(sh.height)
+            ]
+            if below:
+                new_h = min(below) - top - _CM // 7  # небольшой зазор
+                if new_h > _CM // 2:
+                    try:
+                        sh.height = int(new_h)
+                    except Exception:
+                        pass
+        try:
+            tf.word_wrap = True
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        except Exception:
+            pass
 
 
 def pptx_autofit(src: Path, dst: Path) -> None:
-    """Копия pptx, где у фигур включены перенос слов и «ужать текст до фигуры».
-
-    Только для РЕНДЕРА-ПРОСМОТРА (office-PDF): LibreOffice иначе выпускает длинный
-    текст за границы фигур и наезжает на картинки (русский текст длиннее
-    английского). Оригинальный .pptx-экспорт не трогаем."""
+    """Копия pptx для РЕНДЕРА-ПРОСМОТРА (office-PDF), подогнанная под фиксированный
+    размер слайда: перенос слов + «ужать текст до фигуры», обрезка текстовых
+    блоков, перекрывающих картинки, и уменьшение кегля таблиц. Нужна потому, что
+    переведённый (русский) текст длиннее английского и в исходной раскладке
+    наезжает на картинки / выходит за нижний край. Оригинальный .pptx-экспорт
+    не трогаем."""
     prs = Presentation(str(src))
     for slide in prs.slides:
-        _autofit_shapes(slide.shapes)
+        _autofit_slide(slide)
     prs.save(str(dst))
 
 
