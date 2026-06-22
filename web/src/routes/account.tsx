@@ -48,6 +48,7 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
   const [content, setContent] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [open, setOpen] = useState(false) // «Память» свёрнута по умолчанию (не на весь экран)
 
   const itemsQ = useQuery({ queryKey: ['memory', q], queryFn: () => api.listMemory({ q: q || undefined }) })
   const candQ = useQuery({ queryKey: ['memory-candidates'], queryFn: () => api.listMemoryCandidates('pending') })
@@ -87,30 +88,47 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
     URL.revokeObjectURL(a.href)
   }
 
+  const count = itemsQ.data?.length
+  const pending = candQ.data?.length ?? 0
+
   return (
-    <div>
-      <div className="mb-3 flex items-center gap-2">
-        <h1 className="text-lg font-semibold">Память</h1>
-        <span className="text-xs text-muted-foreground">
-          что приложение помнит о вас и проектах{isAdmin ? ' (админ: видны все пользователи)' : ''}
-        </span>
-        <div className="ml-auto flex gap-1.5">
-          <Button variant="outline" size="sm" onClick={exportMemory}>
-            Экспорт
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              if (confirm('Удалить всю вашу память без возможности восстановления (152-ФЗ)?')) purgeM.mutate()
-            }}
-          >
-            Очистить всё
-          </Button>
-        </div>
+    <div className="rounded-xl border bg-card">
+      {/* Заголовок-переключатель: «Память» свёрнута, разворачивается по клику */}
+      <div className="flex items-center gap-2 px-4 py-3">
+        <button onClick={() => setOpen((v) => !v)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
+          <h1 className="text-base font-semibold">Память</h1>
+          {pending > 0 && (
+            <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+              {pending} на подтверждение
+            </span>
+          )}
+          <span className="truncate text-xs text-muted-foreground">
+            {count != null ? `${count} запис${count % 10 === 1 && count % 100 !== 11 ? 'ь' : 'ей'} · ` : ''}
+            что приложение помнит о вас и проектах{isAdmin ? ' (админ: видны все)' : ''}
+          </span>
+        </button>
+        {open && (
+          <div className="flex shrink-0 gap-1.5">
+            <Button variant="outline" size="sm" onClick={exportMemory}>
+              Экспорт
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (confirm('Удалить всю вашу память без возможности восстановления (152-ФЗ)?')) purgeM.mutate()
+              }}
+            >
+              Очистить всё
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* Кандидаты на подтверждение */}
+      {!open ? null : (
+        <div className="border-t px-4 py-4">
+          {/* Кандидаты на подтверждение */}
       {(candQ.data?.length ?? 0) > 0 && (
         <div className="mb-4 rounded-lg border border-amber-300/50 bg-amber-50/40 p-3">
           <div className="mb-1.5 text-sm font-medium">На подтверждение ({candQ.data!.length})</div>
@@ -204,7 +222,9 @@ function MemorySection({ isAdmin }: { isAdmin: boolean }) {
             )}
           </div>
         ))}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
