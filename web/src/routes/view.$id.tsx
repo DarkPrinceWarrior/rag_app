@@ -1,8 +1,10 @@
 import { useRef, useState, useEffect, createElement, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, downloadUrl, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
+import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
+import { Download, MoreVertical } from 'lucide-react'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
 import { XlsxView } from '@/components/XlsxView'
@@ -203,25 +205,26 @@ function Viewer() {
           OCR-распознавание
         </Button>
       )}
-      {hasTransPdf && (
-        <Button
-          variant="outline"
-          size="sm"
-          title="Скачать переведённый документ как PDF (с переносом, без переполнения)"
-          onClick={() => downloadExport(downloadUrl(id, 'pdf'), `${dlStem}.ru.pdf`)}
-        >
-          Скачать PDF
-        </Button>
-      )}
-      {hasDocxExport && (
-        <Button
-          variant="outline"
-          size="sm"
-          title="Скачать переведённый документ как редактируемый DOCX"
-          onClick={() => downloadExport(downloadUrl(id, 'docx'), `${dlStem}.ru.docx`)}
-        >
-          DOCX
-        </Button>
+      {(hasTransPdf || hasDocxExport) && (
+        <Menu trigger={<MoreVertical className="h-4 w-4" />} title="Скачать перевод">
+          {(close) => (
+            <>
+              <MenuLabel>Скачать перевод</MenuLabel>
+              {(docQ.data?.exports ?? []).map((k) => (
+                <MenuItem
+                  key={k}
+                  icon={<Download className="h-4 w-4" />}
+                  onClick={() => {
+                    void downloadExport(downloadUrl(id, k), `${dlStem}.ru.${k}`)
+                    close()
+                  }}
+                >
+                  {EXPORT_LABELS[k] ?? k}
+                </MenuItem>
+              ))}
+            </>
+          )}
+        </Menu>
       )}
       <Button size="sm" onClick={reexport}>
         Пересобрать экспорт

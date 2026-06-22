@@ -956,8 +956,16 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
         stem = Path(doc.filename).stem
 
         if doc.kind in (DocumentKind.pdf_text, DocumentKind.pdf_scan):
-            # 1) редактируемый DOCX из сегментов
-            data = await asyncio.to_thread(build_docx, doc.filename, segments)
+            # 1) редактируемый DOCX из сегментов (+ встроенные рисунки)
+            images: dict[str, bytes] = {}
+            for s in segments:
+                key = (s.meta or {}).get("img_s3") if s.kind == SegmentKind.image else None
+                if key and key not in images:
+                    try:
+                        images[key] = await storage.get_bytes(settings.bucket_artifacts, key)
+                    except Exception:  # noqa: BLE001 — рисунок необязателен, заглушка в DOCX
+                        pass
+            data = await asyncio.to_thread(build_docx, doc.filename, segments, images)
             docx_key = f"{doc_id}/{stem}.ru.docx"
             await storage.put_bytes(settings.bucket_exports, docx_key, data, _DOCX_MIME)
             values["s3_key_export_docx"] = docx_key
