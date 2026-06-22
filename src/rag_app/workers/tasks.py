@@ -982,11 +982,34 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                     )
                     values["s3_key_export_pdf"] = mono_key
                     values["s3_key_export_pdf_dual"] = dual_key
+                elif settings.translated_pdf_from_docx:
+                    # «вёрстка» перевода = чистый reflow-PDF из НАШЕГО DOCX
+                    # (build_docx → LibreOffice). Таблицы/абзацы переносятся, поэтому
+                    # overflow / «скачущий шрифт» / утечки тегов и английских связок
+                    # невозможны by construction (в отличие от пиксель-подгонки
+                    # BabelDOC). Плюс быстрее (LibreOffice ~секунды против минут
+                    # LLM-вызовов BabelDOC) и без нагрузки на GPU.
+                    try:
+                        docx_path = tmp_path / f"{stem}.ru.docx"
+                        docx_path.write_bytes(data)
+                        pdf_bytes = await render_to_pdf(
+                            docx_path, tmp_path, settings.office_render_timeout_s
+                        )
+                        pdf_key = f"{doc_id}/{stem}.ru.pdf"
+                        await storage.put_bytes(
+                            settings.bucket_exports, pdf_key, pdf_bytes, "application/pdf"
+                        )
+                        values["s3_key_export_pdf"] = pdf_key
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "export %s: reflow-PDF из DOCX не собрался (%s) — оставляем DOCX",
+                            doc_id,
+                            exc,
+                        )
                 else:
-                    # BabelDOC (PDF с вёрсткой) сам убивает подпроцесс по таймауту
-                    # (babeldoc_timeout_s) — на тяжёлых PDF он очень медленный.
-                    # При сбое/таймауте оставляем уже собранный DOCX и идём в индекс,
-                    # документ не блокируется (вьювер рендерит оригинал через pdf.js).
+                    # BabelDOC (пиксель-вёрстка) — за флагом (translated_pdf_from_docx=False).
+                    # Сам убивает подпроцесс по таймауту (babeldoc_timeout_s) — на тяжёлых
+                    # PDF очень медленный. При сбое оставляем DOCX, документ не блокируется.
                     try:
                         values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
                     except Exception as exc:  # noqa: BLE001

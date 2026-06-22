@@ -24,6 +24,29 @@ def _seg_text(seg: Segment) -> str:
     return xml_safe(seg.translated_text if seg.translated_text is not None else seg.source_text)
 
 
+# Инлайн-разметка из сегментов (MinerU/paddle дают **жирный** / *италик*). В DOCX
+# превращаем в настоящие run'ы, иначе LibreOffice показывает буквальные «звёздочки».
+_MD_SPLIT = re.compile(r"(\*\*[^*]+\*\*|\*[^*]+\*)")
+
+
+def _strip_md(s: str) -> str:
+    """Убрать парные ** / * (оставить содержимое) — для заголовков и ячеек таблиц."""
+    return re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", s)
+
+
+def _add_md_runs(paragraph, text: str) -> None:
+    """Добавить текст в абзац, разворачивая **жирный** / *италик* в run'ы."""
+    for part in _MD_SPLIT.split(text):
+        if not part:
+            continue
+        if len(part) > 4 and part.startswith("**") and part.endswith("**"):
+            paragraph.add_run(part[2:-2]).bold = True
+        elif len(part) > 2 and part.startswith("*") and part.endswith("*"):
+            paragraph.add_run(part[1:-1]).italic = True
+        else:
+            paragraph.add_run(part)
+
+
 def build_docx(filename: str, segments: list[Segment]) -> bytes:
     doc = DocxDocument()
     doc.core_properties.title = filename
@@ -31,10 +54,10 @@ def build_docx(filename: str, segments: list[Segment]) -> bytes:
     for seg in segments:
         if seg.kind == SegmentKind.heading:
             level = min(max(seg.heading_level or 1, 1), 6)
-            doc.add_heading(_seg_text(seg), level=level)
+            doc.add_heading(_strip_md(_seg_text(seg)), level=level)
 
         elif seg.kind == SegmentKind.paragraph:
-            doc.add_paragraph(_seg_text(seg))
+            _add_md_runs(doc.add_paragraph(), _seg_text(seg))
 
         elif seg.kind == SegmentKind.equation:
             p = doc.add_paragraph()
@@ -43,7 +66,7 @@ def build_docx(filename: str, segments: list[Segment]) -> bytes:
             run.font.size = Pt(10)
 
         elif seg.kind == SegmentKind.image:
-            caption = _seg_text(seg).strip()
+            caption = _strip_md(_seg_text(seg)).strip()
             p = doc.add_paragraph()
             run = p.add_run(f"[Рисунок]{' ' + caption if caption else ''}")
             run.italic = True
@@ -60,7 +83,7 @@ def build_docx(filename: str, segments: list[Segment]) -> bytes:
                 table.style = "Table Grid"
                 for i, row in enumerate(rows):
                     for j, cell in enumerate(row):
-                        table.cell(i, j).text = xml_safe(cell)
+                        table.cell(i, j).text = _strip_md(xml_safe(cell))
             doc.add_paragraph()
 
     buf = io.BytesIO()

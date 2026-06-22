@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, createElement, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
+import { api, downloadUrl, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
@@ -21,6 +21,18 @@ export const Route = createFileRoute('/view/$id')({
 
 const PDF_KINDS = ['pdf_text', 'pdf_scan']
 
+// Скачивание экспорта: <a download> не шлёт Bearer → тянем через authFetch в blob.
+async function downloadExport(url: string, filename: string): Promise<void> {
+  const r = await authFetch(url)
+  if (!r.ok) return
+  const obj = URL.createObjectURL(await r.blob())
+  const a = document.createElement('a')
+  a.href = obj
+  a.download = filename
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(obj), 1000)
+}
+
 function highlightOf(s: Segment): Highlight | null {
   if (s.page_idx == null) return null
   if (s.bbox && s.bbox.length === 4 && s.page_size?.length === 2)
@@ -38,6 +50,9 @@ function Viewer() {
   // текущая страница (общая для оригинала слева и перевода справа)
   const [page, setPage] = useState(1)
   const [numPages, setNumPages] = useState(0)
+  // «документ (PDF)» — reflow из перевода, у него СВОЯ пагинация (не совпадает с
+  // оригиналом), поэтому отдельный счётчик, не синхронный с левой панелью.
+  const [docPage, setDocPage] = useState(1)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
   // режим «текст»: просмотр (чистый Markdown+формулы) или правка (DocFlow)
@@ -138,6 +153,8 @@ function Viewer() {
 
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   const hasTransPdf = !!docQ.data?.exports.includes('pdf')
+  const hasDocxExport = !!docQ.data?.exports.includes('docx')
+  const dlStem = (docQ.data?.filename ?? 'документ').replace(/\.[^.]+$/, '')
   const header = (
     <>
     {segsTruncated && (
@@ -155,14 +172,14 @@ function Viewer() {
         <div className="flex items-center overflow-hidden rounded-md border text-xs">
           <button
             onClick={() => setRightText(false)}
-            title="Приблизительный макет оригинала (BabelDOC). На плотных таблицах возможны искажения шрифта и отдельные непереведённые фрагменты — для точного перевода выберите «текст»."
+            title="Переведённый документ как PDF: заголовки, абзацы и таблицы с переносом (собран из перевода). Своя пагинация — для постраничного сравнения с оригиналом удобнее «текст»."
             className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
-            вёрстка (черновик)
+            документ (PDF)
           </button>
           <button
             onClick={() => setRightText(true)}
-            title="Чистая реконструкция перевода: заголовки, абзацы, таблицы, сноски без переполнения. Рекомендуется."
+            title="Интерактивный перевод постранично, синхронно с оригиналом: заголовки, абзацы, таблицы, сноски без переполнения. Рекомендуется."
             className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             текст
@@ -184,6 +201,26 @@ function Viewer() {
       {isPdfDoc && (
         <Button variant="outline" size="sm" onClick={reparseOcr} title="Если текст в PDF распознан как латиница-каша">
           OCR-распознавание
+        </Button>
+      )}
+      {hasTransPdf && (
+        <Button
+          variant="outline"
+          size="sm"
+          title="Скачать переведённый документ как PDF (с переносом, без переполнения)"
+          onClick={() => downloadExport(downloadUrl(id, 'pdf'), `${dlStem}.ru.pdf`)}
+        >
+          Скачать PDF
+        </Button>
+      )}
+      {hasDocxExport && (
+        <Button
+          variant="outline"
+          size="sm"
+          title="Скачать переведённый документ как редактируемый DOCX"
+          onClick={() => downloadExport(downloadUrl(id, 'docx'), `${dlStem}.ru.docx`)}
+        >
+          DOCX
         </Button>
       )}
       <Button size="sm" onClick={reexport}>
@@ -219,8 +256,10 @@ function Viewer() {
           </div>
           <div className="flex w-1/2 flex-col">
             {hasTransPdf && !rightText ? (
-              // перевод с сохранённой вёрсткой (BabelDOC) — отдельной pdf.js-панелью
-              <PdfPane docId={id} urlKind="pdf" label="перевод · вёрстка" page={page} highlight={null} onPageChange={setPage} />
+              // «документ (PDF)» — reflow-PDF перевода (build_docx → LibreOffice):
+              // таблицы/абзацы с переносом, без overflow. Своя пагинация (docPage),
+              // не синхронная с оригиналом.
+              <PdfPane docId={id} urlKind="pdf" label="перевод · документ" page={docPage} highlight={null} onPageChange={setDocPage} />
             ) : (
               <>
                 <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
