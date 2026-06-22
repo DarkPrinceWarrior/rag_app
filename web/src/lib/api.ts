@@ -80,6 +80,21 @@ export interface TableCell {
   rowspan: number
 }
 
+// xlsx → интерактивный грид-просмотр (а не office-PDF «принт»): лист = сетка
+// строковых значений ячеек, оригинал + перевод.
+export interface SheetData {
+  name: string
+  orig: string[][]
+  ru: string[][]
+  total_rows: number
+  total_cols: number
+  truncated: boolean
+}
+export interface SheetsResponse {
+  sheets: SheetData[]
+  translated_ready: boolean
+}
+
 export interface Citation {
   n: number
   chunk_id: string
@@ -170,6 +185,7 @@ export const api = {
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
   deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
   getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments?limit=${SEGMENTS_LIMIT}`),
+  getSheets: (id: string) => jget<SheetsResponse>(`/api/documents/${id}/sheets`),
   reexport: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/reexport`, 'POST'),
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
   reparseOcr: (id: string, lang = 'east_slavic') =>

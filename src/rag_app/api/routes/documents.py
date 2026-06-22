@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import mimetypes
 import uuid
@@ -291,6 +292,75 @@ async def document_image(request: Request, doc_id: uuid.UUID, name: str) -> Resp
         raise HTTPException(404, "картинка не найдена") from exc
     media = mimetypes.guess_type(name)[0] or "image/jpeg"
     return Response(content=data, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
+
+
+# --- интерактивный xlsx-просмотр (сетка листов, а не office-PDF «принт») ---
+_SHEET_MAX_ROWS = 1000  # потолок строк на лист для грид-просмотра (латентность/payload)
+_SHEET_MAX_COLS = 60
+
+
+def _ws_grid(ws: object) -> tuple[list[list[str]], int, int]:
+    """Лист openpyxl → 2D-массив строковых значений ячеек (с капом) + полные размеры."""
+    tot_r = getattr(ws, "max_row", 0) or 0
+    tot_c = getattr(ws, "max_column", 0) or 0
+    n_r = min(tot_r, _SHEET_MAX_ROWS)
+    n_c = min(tot_c, _SHEET_MAX_COLS)
+    grid: list[list[str]] = []
+    if n_r and n_c:
+        for row in ws.iter_rows(min_row=1, max_row=n_r, max_col=n_c, values_only=True):  # type: ignore[attr-defined]
+            grid.append(["" if v is None else str(v) for v in row])
+    return grid, tot_r, tot_c
+
+
+def _read_xlsx_grids(orig: bytes, ru: bytes | None) -> list[dict]:
+    """Оригинал + (если есть) переведённый xlsx → листы с сетками orig/ru для грида."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(orig), data_only=True, read_only=True)
+    ru_by_title: dict[str, object] = {}
+    if ru:
+        try:
+            ru_wb = load_workbook(io.BytesIO(ru), data_only=True, read_only=True)
+            ru_by_title = {ws.title: ws for ws in ru_wb.worksheets}
+        except Exception:
+            ru_by_title = {}
+    out: list[dict] = []
+    for ws in wb.worksheets:
+        og, tot_r, tot_c = _ws_grid(ws)
+        ru_ws = ru_by_title.get(ws.title)
+        rg = _ws_grid(ru_ws)[0] if ru_ws is not None else og
+        out.append(
+            {
+                "name": ws.title,
+                "orig": og,
+                "ru": rg,
+                "total_rows": tot_r,
+                "total_cols": tot_c,
+                "truncated": tot_r > _SHEET_MAX_ROWS or tot_c > _SHEET_MAX_COLS,
+            }
+        )
+    return out
+
+
+@router.get("/{doc_id}/sheets")
+async def document_sheets(request: Request, doc_id: uuid.UUID) -> dict:
+    """Данные xlsx для ИНТЕРАКТИВНОГО просмотра: листы → сетка ячеек (оригинал +
+    перевод). Это настоящая таблица (листать/переключать листы/выделять ячейки),
+    а не office-PDF «принт-версия»."""
+    doc = await _get_or_404(request, doc_id)
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    if kind != "xlsx":
+        raise HTTPException(400, "интерактивная сетка только для xlsx")
+    storage = request.app.state.storage
+    orig_bytes = await storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
+    ru_bytes: bytes | None = None
+    if doc.s3_key_export_source:
+        try:
+            ru_bytes = await storage.get_bytes(settings.bucket_exports, doc.s3_key_export_source)
+        except Exception:
+            ru_bytes = None
+    sheets = await asyncio.to_thread(_read_xlsx_grids, orig_bytes, ru_bytes)
+    return {"sheets": sheets, "translated_ready": ru_bytes is not None}
 
 
 @router.delete("/{doc_id}", status_code=204)

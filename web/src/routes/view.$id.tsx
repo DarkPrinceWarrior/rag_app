@@ -5,6 +5,7 @@ import { api, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PdfPane, type Highlight } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
+import { XlsxView } from '@/components/XlsxView'
 import { Markdown } from '@/components/Markdown'
 import { authFetch } from '@/lib/auth'
 import { cleanMath } from '@/lib/cleanMath'
@@ -48,7 +49,10 @@ function Viewer() {
   // показан срез, предупреждаем баннером.
   const loadedSegs = segsQ.data?.length ?? 0
   const totalSegs = docQ.data?.segment_count ?? 0
-  const segsTruncated = loadedSegs >= SEGMENTS_LIMIT && totalSegs > loadedSegs
+  // xlsx показывается интерактивным гридом со своим капом — баннер сегментов
+  // там не нужен (и сбивает с толку).
+  const segsTruncated =
+    loadedSegs >= SEGMENTS_LIMIT && totalSegs > loadedSegs && docQ.data?.kind !== 'xlsx'
   const isPdf = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   // OOXML с PDF-рендером (LibreOffice) — «как в Microsoft». Оригинал рендерится
   // рано (после парсинга) → показываем его, не дожидаясь перевода; перевод
@@ -370,7 +374,20 @@ function Viewer() {
     )
   }
 
-  // XLSX/PPTX с PDF-рендером: «как в Microsoft» — оригинал и перевод двумя
+  // XLSX → ИНТЕРАКТИВНЫЙ грид (а не office-PDF «принт»): настоящая таблица с
+  // вкладками листов, линейкой строк/столбцов, выделением ячеек и синхронной
+  // прокруткой панелей оригинал|перевод. Данные тянутся из самих xlsx-файлов.
+  if (docQ.data?.kind === 'xlsx') {
+    return (
+      <div>
+        {header}
+        <XlsxView docId={id} />
+        <DocAssistant docId={id} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // PPTX с PDF-рендером: «как в Microsoft» — оригинал и перевод двумя
   // pdf.js-панелями, листаются синхронно (текстовый MD-просмотр им не идёт).
   if (hasViewOrig) {
     return (
