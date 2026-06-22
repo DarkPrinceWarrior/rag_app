@@ -256,6 +256,14 @@ class Settings(BaseSettings):
     # отказа «Scanned PDF detected». Image-only сканы (pdf_scan) это не лечит
     # («no paragraphs», проверено) — для них наш оверлей pipeline/scan_pdf.py.
     babeldoc_auto_ocr_workaround: bool = True
+    # --enhance-compatibility (= --skip-clean --dual-translate-first
+    # --disable-rich-text-translate). Гасит по-символьную rich-text стилизацию,
+    # которая на леттерспейс-капсе шапок («S T A N D A R D …») ломала перевод:
+    # русский шёл белым за пределы цветной плашки и обрезался (white-on-white).
+    # С флагом текст плашки рендерится нормальным цветом/кеглем одной строкой и
+    # читается. Жертвуем тонкой стилизацией (цвет/жирность рунов) ради читаемости
+    # — для технических PDF это выигрыш. Проверено на EPC-контракте.
+    babeldoc_enhance_compatibility: bool = True
 
     # --- CORS (этап 5, прод): без wildcard ---
     # Веб-приложение отдаётся тем же origin (:8100) — ему CORS не нужен; список

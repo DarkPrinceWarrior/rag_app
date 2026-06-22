@@ -231,24 +231,28 @@ function Viewer() {
                   <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
                     →
                   </Button>
-                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                    <button
-                      onClick={() => setEdit(false)}
-                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      просмотр
-                    </button>
-                    <button
-                      onClick={() => setEdit(true)}
-                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      править
-                    </button>
-                  </div>
+                  {/* Скан-картинка (pdf_scan) — это просмотр VL-описания, править
+                      нечего: тумблер «просмотр/править» только у родного pdf_text. */}
+                  {docQ.data?.kind === 'pdf_text' && (
+                    <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
+                      <button
+                        onClick={() => setEdit(false)}
+                        className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                      >
+                        просмотр
+                      </button>
+                      <button
+                        onClick={() => setEdit(true)}
+                        className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+                      >
+                        править
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="flex-1 overflow-auto">
                   <article className="mx-auto max-w-3xl px-6 py-5">
-                    {edit ? (
+                    {edit && docQ.data?.kind === 'pdf_text' ? (
                       <DocFlow
                         segs={pageSegs}
                         field="translated"
@@ -626,6 +630,18 @@ function AuthImage({ src, alt }: { src: string; alt?: string }) {
   return <img src={url} alt={alt || ''} className="mx-auto max-h-[460px] rounded border bg-white" />
 }
 
+// VL иногда пишет внутри ячейки markdown-таблицы литеральный `|` (например
+// «Y|BTC» — металл|лиганд). GFM принимает его за разделитель столбцов → строка
+// разъезжается и последний столбец отваливается. Экранируем `|`, окружённый
+// непробельными символами, ТОЛЬКО в строках-рядах таблицы (начинаются с `|`),
+// не трогая структурные ` | ` и инлайн-код в обычных абзацах.
+function escapeTablePipes(md: string): string {
+  return md
+    .split('\n')
+    .map((ln) => (/^\s*\|/.test(ln) ? ln.replace(/([^\s|])\|([^\s|])/g, '$1\\|$2') : ln))
+    .join('\n')
+}
+
 function DocRead({
   segs,
   citedId,
@@ -756,13 +772,23 @@ function DocRead({
 
     if (s.kind === 'image') {
       const cap = textOf(s, 'translated') || textOf(s, 'source')
+      // Описание скана/картинки от VL (Qwen-VL) приходит готовым Markdown —
+      // заголовки, таблица, списки. Рендерим его как Markdown (таблица = таблица),
+      // а не сплошной плоской подписью по центру. Короткие реальные подписи
+      // («Рис. 1. …») остаются мелким figcaption по центру.
+      const richCap = cap.length > 200 || /(^|\n)\s*#{1,6}\s|\n\s*\||\n-{3,}/.test(cap)
       if (s.image_url || cap.trim())
         nodes.push(
           <figure key={s.id} data-seg={s.id} onClick={pick} className={'my-4' + ring}>
-            {s.image_url && <AuthImage src={s.image_url} alt={cap} />}
-            {cap.trim() && (
-              <figcaption className="mt-1.5 text-center text-sm text-muted-foreground">{cleanMath(cap)}</figcaption>
-            )}
+            {s.image_url && <AuthImage src={s.image_url} alt="" />}
+            {cap.trim() &&
+              (richCap ? (
+                <div className="mt-2">
+                  <Markdown content={escapeTablePipes(cap)} className="text-[15px] leading-relaxed" />
+                </div>
+              ) : (
+                <figcaption className="mt-1.5 text-center text-sm text-muted-foreground">{cleanMath(cap)}</figcaption>
+              ))}
           </figure>,
         )
       i++

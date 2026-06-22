@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as pdfjs from 'pdfjs-dist'
-import type { PDFDocumentProxy } from 'pdfjs-dist'
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 // worker бандлится локально (?worker) — без CDN (roadmap § 9)
 import PdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
 import { bearer } from '@/lib/auth'
@@ -46,6 +46,11 @@ export function PdfPane({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  // текущая операция рендера: ДВА render() на одном canvas одновременно
+  // (первый рендер + перерисовка от ResizeObserver) портят кадр — pdf.js
+  // выдаёт перевёрнутую/битую страницу. Держим задачу, чтобы отменить
+  // предыдущую перед новой и при размонтировании эффекта.
+  const renderTaskRef = useRef<RenderTask | null>(null)
   const [numPages, setNumPages] = useState(0)
   const [boxW, setBoxW] = useState(0)
   const [err, setErr] = useState('')
@@ -108,7 +113,18 @@ export function PdfPane({
       canvas.style.width = `${Math.floor(vpCss.width)}px`
       canvas.style.height = `${Math.floor(vpCss.height)}px`
       const ctx = canvas.getContext('2d')!
-      await pg.render({ canvasContext: ctx, viewport: vpDev, canvas }).promise
+      // отменяем предыдущий незавершённый рендер на этом canvas (иначе гонка)
+      renderTaskRef.current?.cancel()
+      const task = pg.render({ canvasContext: ctx, viewport: vpDev, canvas })
+      renderTaskRef.current = task
+      try {
+        await task.promise
+      } catch (e) {
+        // RenderingCancelledException при отмене — это норма, молча выходим
+        if ((e as { name?: string })?.name === 'RenderingCancelledException') return
+        throw e
+      }
+      if (cancelled) return
       const box = boxRef.current!
       if (highlight && highlight.page === page && highlight.bbox.length === 4 && highlight.pageSize.length === 2) {
         const [x0, y0, x1, y1] = highlight.bbox
@@ -125,6 +141,7 @@ export function PdfPane({
     })()
     return () => {
       cancelled = true
+      renderTaskRef.current?.cancel()
     }
   }, [page, numPages, highlight, scale, fitWidth, boxW])
 
