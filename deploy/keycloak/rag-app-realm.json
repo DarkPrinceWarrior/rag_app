@@ -1,7 +1,7 @@
 {
   "realm": "rag-app",
   "enabled": true,
-  "displayName": "rag_app — перевод документации",
+  "displayName": "Толмач — перевод документации",
   "registrationAllowed": false,
   "ssoSessionIdleTimeout": 28800,
   "accessTokenLifespan": 1800,
