@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -209,6 +210,10 @@ class MemoryService:
             item.importance = importance
         if sensitivity is not None:
             item.sensitivity = sensitivity
+        # expire_on_commit=False → onupdate-значение из БД в объект не подтягивается;
+        # у легаси-строк updated_at был NULL → ответ падал на None.isoformat(). Ставим
+        # явно: и свежо в ответе, и не None.
+        item.updated_at = datetime.now(UTC)
         await write_audit(
             session,
             tenant_id=item.tenant_id,

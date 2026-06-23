@@ -58,8 +58,8 @@ def _item_out(it: MemoryItem) -> dict:
         "document_id": str(it.document_id) if it.document_id else None,
         "thread_id": str(it.thread_id) if it.thread_id else None,
         "memory_provider": it.memory_provider,
-        "created_at": it.created_at.isoformat(),
-        "updated_at": it.updated_at.isoformat(),
+        "created_at": it.created_at.isoformat() if it.created_at else None,
+        "updated_at": it.updated_at.isoformat() if it.updated_at else None,
     }
 
 
