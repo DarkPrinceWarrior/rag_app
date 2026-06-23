@@ -35,12 +35,18 @@ smoke-checks of any web UI.
 
 ## Memory (Honcho)
 
-Use Honcho as the memory layer for this repository. Before answering questions
-about project preferences, working rules, prior decisions, or remembered
-context, consult Honcho in addition to this file and local repository docs.
+Use Honcho through the installed host plugin as the memory layer for this
+repository: `codex-honcho` in Codex and `honcho@honcho` from
+`plastic-labs/claude-honcho` in Claude Code. Context is loaded at session start
+by the plugin hooks; trust it, but consult Honcho again before answering
+questions about project preferences, working rules, prior decisions, or
+remembered context.
 
-Current Honcho MCP tools: `get_peer_card`, `set_peer_card`, `list_conclusions`,
-`create_conclusions`, `chat`, `schedule_dream`.
+Use the bundled Honcho memory guidance when active recall or durable writeback
+is needed. Under the plugin-managed Honcho server, prefer `search` and `chat`
+for recall, and `create_conclusion` to save durable preferences, decisions,
+patterns, and gotchas. Use host-specific config tools such as `get_config` and
+`set_config` when available.
 
 Separate confirmed facts from inference. Treat files and command outputs as
 confirmed; treat Honcho memory and architectural guesses as inference unless
