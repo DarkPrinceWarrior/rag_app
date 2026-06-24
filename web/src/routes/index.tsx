@@ -27,8 +27,10 @@ function Library() {
   })
   const foldersQ = useQuery({ queryKey: ['folders'], queryFn: api.listFolders })
 
+  const [direction, setDirection] = useState('en2ru')
   const upload = useMutation({
-    mutationFn: api.uploadDocument,
+    mutationFn: (vars: { file: File; direction: string }) =>
+      api.uploadDocument(vars.file, vars.direction),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
   })
 
@@ -36,9 +38,23 @@ function Library() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-5">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">Направление перевода:</span>
+        <select
+          value={direction}
+          onChange={(e) => setDirection(e.target.value)}
+          className="rounded-md border bg-card px-2 py-1 text-sm"
+          title="Язык документа → язык перевода (ТЗ §4.3)"
+        >
+          <option value="en2ru">Английский → Русский</option>
+          <option value="ru2en">Русский → Английский</option>
+          <option value="ru2zh">Русский → Китайский (упрощённый)</option>
+          <option value="zh2ru">Китайский (упрощённый) → Русский</option>
+        </select>
+      </div>
       <UploadZone
         busy={upload.isPending}
-        onFile={(f) => upload.mutate(f)}
+        onFile={(f) => upload.mutate({ file: f, direction })}
         fileInput={fileInput}
       />
       {upload.isError && <p className="mt-2 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}

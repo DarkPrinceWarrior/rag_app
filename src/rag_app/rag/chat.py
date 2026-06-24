@@ -59,7 +59,11 @@ MEMORY_ONLY_SYSTEM_PROMPT = """\
 
 
 def build_context_block(chunks: list[RetrievedChunk]) -> str:
+    # Бюджет контекста: multi-hop собирает много фрагментов — без лимита промпт
+    # перерастает окно модели. Клеим по убыванию ранга, пока влезает; хвост
+    # (низкоранговые) отбрасываем. Нумерация [n] остаётся префиксом chunks.
     parts = []
+    total = 0
     for n, c in enumerate(chunks, 1):
         header = f"[{n}] {c.filename}"
         if c.heading_path:
@@ -70,7 +74,11 @@ def build_context_block(chunks: list[RetrievedChunk]) -> str:
             )
             header += f" · {pages}"
         body = c.text_ru or c.text_en
-        parts.append(f"{header}\n{body[:3000]}")
+        seg = f"{header}\n{body[:3000]}"
+        if parts and total + len(seg) > settings.rag_context_max_chars:
+            break
+        parts.append(seg)
+        total += len(seg)
     return "\n\n---\n\n".join(parts)
 
 

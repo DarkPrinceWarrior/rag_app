@@ -96,6 +96,11 @@ class Document(Base):
     # mineru | dots_mocr | paddle_vl. Переживает retry/reexport.
     parser_backend: Mapped[str | None] = mapped_column(String(16), default=None)
 
+    # Направление перевода (ТЗ §4.3): по умолчанию EN→RU. Доп. направления —
+    # RU→EN, RU→ZH (упрощённый), ZH→RU. Коды: en | ru | zh.
+    source_lang: Mapped[str] = mapped_column(String(8), default="en", server_default="en")
+    target_lang: Mapped[str] = mapped_column(String(8), default="ru", server_default="ru")
+
     s3_key_original: Mapped[str] = mapped_column(String(1024))
     s3_key_content_list: Mapped[str | None] = mapped_column(String(1024), default=None)
     s3_key_export_docx: Mapped[str | None] = mapped_column(String(1024), default=None)

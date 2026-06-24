@@ -30,6 +30,7 @@ _VISUAL_PAGES_SQL = """
 SELECT p.document_id, p.page_idx, 1 - (p.emb <=> CAST(:qe AS vector)) AS vscore
 FROM page_embeddings p JOIN documents d ON d.id = p.document_id
 WHERE (CAST(:doc_id AS uuid) IS NULL OR p.document_id = :doc_id)
+  AND (CAST(:doc_ids AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:doc_ids AS uuid[])))
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
 ORDER BY p.emb <=> CAST(:qe AS vector)
 LIMIT :k
@@ -56,12 +57,19 @@ _BASE_FIELDS = """
     c.page_start, c.page_end, c.text_en, c.text_ru, c.meta
 """
 
+# Фильтр области: одиночный документ ИЛИ набор документов (мульти-док выбор
+# в чате) ИЛИ папка. Каждый клауз — no-op, если параметр NULL (как :doc_id).
+_SCOPE = """
+  AND (CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id)
+  AND (CAST(:doc_ids AS uuid[]) IS NULL OR c.document_id = ANY(CAST(:doc_ids AS uuid[])))
+  AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
+"""
+
 _DENSE_SQL = f"""
 SELECT {_BASE_FIELDS},
        LEAST(c.emb_en <=> CAST(:qe AS vector), c.emb_ru <=> CAST(:qe AS vector)) AS dist
 FROM chunks c JOIN documents d ON d.id = c.document_id
-WHERE (CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id)
-  AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
+WHERE TRUE{_SCOPE}
 ORDER BY dist
 LIMIT :k
 """
@@ -72,9 +80,7 @@ SELECT {_BASE_FIELDS},
 FROM chunks c JOIN documents d ON d.id = c.document_id,
      LATERAL (SELECT websearch_to_tsquery('russian', :q)
                   || websearch_to_tsquery('english', :q) AS q) tsq
-WHERE c.tsv @@ q
-  AND (CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id)
-  AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
+WHERE c.tsv @@ q{_SCOPE}
 ORDER BY rank DESC
 LIMIT :k
 """
@@ -124,9 +130,12 @@ class Retriever:
         document_id: uuid.UUID | None = None,
         folder_id: uuid.UUID | None = None,
         top_k: int | None = None,
+        document_ids: list[uuid.UUID] | None = None,
     ) -> list[RetrievedChunk]:
         top_k = top_k or settings.rag_context_top_k
-        params = {"doc_id": document_id, "folder_id": folder_id}
+        # пустой список = нет фильтра (трактуем как None)
+        document_ids = document_ids or None
+        params = {"doc_id": document_id, "doc_ids": document_ids, "folder_id": folder_id}
 
         q_emb = await self.embedder.embed_query(query)
         dense_rows = (
@@ -168,7 +177,9 @@ class Retriever:
         # page_embeddings → их image-чанки → визуальный реранк кропов. Добавляем к
         # тексту — vision-on-demand подаст кропы в Qwen3.5 (chat.stream_answer).
         if settings.visual_enabled and self.visual_embedder is not None:
-            result = await self._visual_augment(session, query, result, document_id, folder_id)
+            result = await self._visual_augment(
+                session, query, result, document_id, folder_id, document_ids
+            )
         return result
 
     async def _visual_augment(
@@ -178,6 +189,7 @@ class Retriever:
         result: list[RetrievedChunk],
         document_id: uuid.UUID | None,
         folder_id: uuid.UUID | None,
+        document_ids: list[uuid.UUID] | None = None,
     ) -> list[RetrievedChunk]:
         """Визуальный recall (Qwen3-VL-Embedding) + реранк (Qwen3-VL-Reranker) →
         добавить релевантные image-чанки страниц, которых текстовый поиск не поднял."""
@@ -189,6 +201,7 @@ class Retriever:
                     {
                         "qe": str(q_emb),
                         "doc_id": document_id,
+                        "doc_ids": document_ids or None,
                         "folder_id": folder_id,
                         "k": settings.rag_visual_pages_k,
                     },

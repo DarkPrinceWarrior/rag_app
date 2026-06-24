@@ -27,6 +27,7 @@ class ExtractIn(BaseModel):
     query: str
     document_id: uuid.UUID | None = None
     folder_id: uuid.UUID | None = None
+    document_ids: list[uuid.UUID] | None = None
 
 
 @router.post("/table")
@@ -41,6 +42,7 @@ async def extract_table_route(request: Request, body: ExtractIn) -> dict:
             body.query,
             document_id=body.document_id,
             folder_id=body.folder_id,
+            document_ids=body.document_ids or None,
         )
 
 

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { MessageCircle, X, Loader2 } from 'lucide-react'
+import { MessageCircle, X, Loader2, Plus } from 'lucide-react'
 import { streamChat } from '@/lib/sse'
 import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/Markdown'
@@ -17,6 +17,13 @@ interface AMsg {
   content: string
   citations: Citation[]
   error?: string
+}
+
+/** Технические ошибки модели → человекочитаемое русское сообщение. */
+function cleanError(detail: string): string {
+  if (/context length|maximum context|8192|tokens/i.test(detail))
+    return 'Слишком длинный диалог для модели — нажмите «Новый», чтобы начать заново.'
+  return detail
 }
 
 export function DocAssistant({
@@ -69,7 +76,7 @@ export function DocAssistant({
         `[Контекст для ответа: пользователь открыл страницу ${p} документа. ` +
         `Отвечай в первую очередь по её содержимому (таблицы — строками через « | »), ` +
         `при необходимости дополняй из остального документа.\n` +
-        `Содержимое открытой страницы:\n"""\n${pt.slice(0, 6000)}\n"""]`
+        `Содержимое открытой страницы:\n"""\n${pt.slice(0, 2500)}\n"""]`
     } else if (p) {
       augmented = `${text}\n\n[Контекст: открыта страница ${p} документа.]`
     }
@@ -78,13 +85,19 @@ export function DocAssistant({
         if (ev.type === 'session') sid.current = ev.session_id
         else if (ev.type === 'delta') patchLast((m) => ({ ...m, content: m.content + ev.text }))
         else if (ev.type === 'done') patchLast((m) => ({ ...m, citations: ev.citations ?? [] }))
-        else if (ev.type === 'error') patchLast((m) => ({ ...m, error: ev.detail }))
+        else if (ev.type === 'error') patchLast((m) => ({ ...m, error: cleanError(ev.detail) }))
       })
     } catch (e) {
-      patchLast((m) => ({ ...m, error: String(e) }))
+      patchLast((m) => ({ ...m, error: cleanError(String(e)) }))
     }
     setBusy(false)
     setTimeout(() => bottomRef.current?.scrollIntoView({ block: 'end' }), 0)
+  }
+
+  function reset() {
+    if (busy) return
+    setMessages([])
+    sid.current = null
   }
 
   if (!open)
@@ -110,6 +123,17 @@ export function DocAssistant({
             {filename ? ` · ${filename}` : ''}
           </div>
         </div>
+        {messages.length > 0 && (
+          <button
+            onClick={reset}
+            disabled={busy}
+            title="Новый диалог (очистить историю)"
+            className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Новый
+          </button>
+        )}
         <button onClick={() => setOpen(false)} title="Свернуть" className="rounded p-1 hover:bg-accent">
           <X className="h-4 w-4" />
         </button>

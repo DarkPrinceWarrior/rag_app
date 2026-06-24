@@ -33,12 +33,19 @@ SYSTEM_PROMPT = """\
 5. Если текст уже на русском или переводить нечего (число, код, обозначение) —
    верни его без изменений."""
 
-# Есть ли в тексте латинские буквы — иначе переводить нечего (числа, кириллица).
+# Буквы соответствующего скрипта — иначе переводить нечего (числа, символы).
+# Скрипт зависит от ЯЗЫКА-ИСТОЧНИКА: en→латиница, ru→кириллица, zh→CJK.
 _HAS_LATIN = re.compile(r"[A-Za-z]")
+_HAS_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+_HAS_CJK = re.compile(r"[㐀-鿿]")
+_SOURCE_SCRIPT = {"en": _HAS_LATIN, "ru": _HAS_CYRILLIC, "zh": _HAS_CJK}
 
 
-def needs_translation(text: str) -> bool:
-    return bool(text.strip()) and bool(_HAS_LATIN.search(text))
+def needs_translation(text: str, source_lang: str = "en") -> bool:
+    """Нужен ли перевод: есть ли в тексте буквы скрипта языка-ИСТОЧНИКА.
+    Голые числа/коды/символы и текст не на языке-источнике — пропускаем."""
+    pat = _SOURCE_SCRIPT.get(source_lang, _HAS_LATIN)
+    return bool(text.strip()) and bool(pat.search(text))
 
 
 @dataclass
@@ -47,6 +54,9 @@ class SegmentContext:
     prev_text: str | None = None  # предыдущий абзац (оригинал)
     # утверждённые термины (EN, RU), найденные в этом сегменте — roadmap § 3.4 п.1
     glossary: list[tuple[str, str]] = field(default_factory=list)
+    # направление перевода документа (по умолчанию EN→RU — текущий MVP)
+    source_lang: str = "en"
+    target_lang: str = "ru"
 
 
 def pick_glossary_terms(
@@ -92,7 +102,7 @@ class Translator:
         context: SegmentContext | None = None,
         feedback: str | None = None,
     ) -> str:
-        if not needs_translation(text):
+        if not needs_translation(text, context.source_lang if context else "en"):
             return text
 
         parts: list[str] = []

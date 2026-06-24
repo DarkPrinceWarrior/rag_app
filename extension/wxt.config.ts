@@ -12,7 +12,7 @@ const EXT_KEY = process.env.RAG_EXT_KEY; // base64 публичного ключ
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
-    name: 'Толмач — переводчик EN→RU',
+    name: 'DocRAGenslate — переводчик',
     description: 'Перевод выделенного текста и страниц через корпоративный on-prem контур',
     permissions: ['storage', 'activeTab', 'tabs', 'identity'],
     ...(EXT_KEY ? { key: EXT_KEY } : {}),

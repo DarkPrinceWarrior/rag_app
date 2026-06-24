@@ -308,7 +308,7 @@ async def _translate_validated(
     translator: Translator, text: str, context: SegmentContext
 ) -> tuple[str, ValidationResult]:
     """Перевод + числовая валидация; один ре-перевод с фидбеком (roadmap § 3.4 п.3)."""
-    if not needs_translation(text):
+    if not needs_translation(text, context.source_lang):
         return text, ValidationResult(ok=True)
     translated = await translator.translate(text, context)
     result = validate_numbers(text, translated)
@@ -388,6 +388,11 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
     t_task = time.monotonic()
     await _set_status(ctx, doc_id, DocumentStatus.translating)
 
+    # Направление перевода документа (по умолчанию EN→RU — текущий MVP).
+    doc0 = await _get_doc(ctx, doc_id)
+    src_lang = getattr(doc0, "source_lang", None) or "en"
+    tgt_lang = getattr(doc0, "target_lang", None) or "ru"
+
     async with ctx["sessionmaker"]() as session:
         segments = list(
             (
@@ -399,24 +404,30 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
             .all()
         )
 
-    # Глоссарий (roadmap § 3.4 п.1): длинные термины первыми — приоритет точных фраз.
-    async with ctx["sessionmaker"]() as session:
-        rows = (await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))).all()
-    all_terms = sorted(((en, ru) for en, ru in rows), key=lambda t: -len(t[0]))
+    # Глоссарий (roadmap § 3.4 п.1) — только для EN→RU (термины хранятся как
+    # en_term/ru_term); для других направлений глоссарий не применяется.
+    all_terms: list[tuple[str, str]] = []
+    if (src_lang, tgt_lang) == ("en", "ru"):
+        async with ctx["sessionmaker"]() as session:
+            rows = (await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))).all()
+        all_terms = sorted(((en, ru) for en, ru in rows), key=lambda t: -len(t[0]))
 
-    # Контекст (roadmap § 3.4): заголовок раздела + предыдущий абзац + термины.
+    # Контекст (roadmap § 3.4): заголовок раздела + предыдущий абзац + термины + направление.
     contexts: dict[uuid.UUID, SegmentContext] = {}
     cur_heading: str | None = None
     prev_text: str | None = None
     for seg in segments:
-        terms = pick_glossary_terms(seg.source_text, all_terms)
+        terms = pick_glossary_terms(seg.source_text, all_terms) if all_terms else []
         if seg.kind == SegmentKind.heading:
             # заголовки — без текстового контекста: модель может «утащить» его в ответ
-            contexts[seg.id] = SegmentContext(glossary=terms)
+            contexts[seg.id] = SegmentContext(glossary=terms, source_lang=src_lang, target_lang=tgt_lang)
             cur_heading = seg.source_text
             prev_text = None
             continue
-        contexts[seg.id] = SegmentContext(heading=cur_heading, prev_text=prev_text, glossary=terms)
+        contexts[seg.id] = SegmentContext(
+            heading=cur_heading, prev_text=prev_text, glossary=terms,
+            source_lang=src_lang, target_lang=tgt_lang,
+        )
         if seg.kind == SegmentKind.paragraph:
             prev_text = seg.source_text
 

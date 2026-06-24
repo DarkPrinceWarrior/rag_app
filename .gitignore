@@ -60,3 +60,4 @@ deploy/keycloak/certs/
 # Внутренние документы заказчика (публичный репозиторий — не коммитим)
 docs/ТЗ_*.docx
 docs/*.docx
+.serena/memories/

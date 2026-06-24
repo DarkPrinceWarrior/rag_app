@@ -50,10 +50,11 @@ async def extract_table(
     query: str,
     document_id: uuid.UUID | None = None,
     folder_id: uuid.UUID | None = None,
+    document_ids: list[uuid.UUID] | None = None,
 ) -> dict[str, Any]:
     chunks = await retriever.retrieve(
         session, query, document_id=document_id, folder_id=folder_id,
-        top_k=settings.extract_context_top_k,
+        document_ids=document_ids or None, top_k=settings.extract_context_top_k,
     )
     sources = [
         {

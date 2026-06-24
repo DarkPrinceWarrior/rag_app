@@ -50,10 +50,12 @@ class AgentTools:
         folder_id: uuid.UUID | None,
         session_id: uuid.UUID,
         owner_sub: str | None = None,
+        document_ids: list[uuid.UUID] | None = None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.retriever = retriever
         self.document_id = document_id
+        self.document_ids = document_ids or None
         self.folder_id = folder_id
         self.session_id = session_id
         self.owner_sub = owner_sub
@@ -80,7 +82,7 @@ class AgentTools:
         async with self.sessionmaker() as db:
             chunks = await self.retriever.retrieve(
                 db, query, document_id=self.document_id, folder_id=self.folder_id,
-                top_k=settings.agent_search_top_k,
+                document_ids=self.document_ids, top_k=settings.agent_search_top_k,
             )
         if not chunks:
             return f"search_chunks('{query[:80]}'): ничего не найдено."
@@ -195,7 +197,15 @@ class AgentTools:
         Для вопросов «какие документы есть», «назови документ из библиотеки»."""
         async with self.sessionmaker() as db:
             stmt = select(Document).where(Document.status == DocumentStatus.done)
-            if self.owner_sub is not None:  # RBAC: свои + dev-документы (owner NULL)
+            # Область чата (набор документов / папка) — каталог должен ей
+            # соответствовать, иначе при folder-scope агент перечислит всю библиотеку.
+            if self.document_ids:
+                stmt = stmt.where(Document.id.in_(self.document_ids))
+            elif self.document_id is not None:
+                stmt = stmt.where(Document.id == self.document_id)
+            elif self.folder_id is not None:
+                stmt = stmt.where(Document.folder_id == self.folder_id)
+            if self.owner_sub is not None:  # RBAC поверх области: свои + dev (owner NULL)
                 stmt = stmt.where(
                     (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
                 )

@@ -123,6 +123,12 @@ if (WEB_DIST / "index.html").exists():
         candidate = WEB_DIST / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(WEB_DIST / "index.html")
+        # index.html НЕ кэшировать: он ссылается на хэшированные /assets/* (те
+        # иммутабельны и кэшируются вечно), поэтому новый деплой виден сразу,
+        # без cache-buster/жёсткой перезагрузки.
+        return FileResponse(
+            WEB_DIST / "index.html",
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 else:
     logging.getLogger(__name__).warning("web/dist не найден — соберите SPA: deploy/build_web.sh")

@@ -36,6 +36,9 @@ class ChatIn(BaseModel):
     session_id: uuid.UUID | None = None
     document_id: uuid.UUID | None = None
     folder_id: uuid.UUID | None = None
+    # произвольный набор документов (мульти-выбор в чате); область запроса —
+    # шлётся каждым ходом, в сессии не персистится (активный чат держит фронт)
+    document_ids: list[uuid.UUID] | None = None
 
 
 def _sse(payload: dict) -> str:
@@ -89,6 +92,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             session_id = chat_session.id
             doc_filter = chat_session.document_id or body.document_id
             project_id = chat_session.folder_id or body.folder_id
+            doc_ids = body.document_ids or None  # набор документов (мульти-выбор)
             # scope памяти треда: user=owner, project=папка, document=документ, thread=сессия
             mem_scope = app.state.memory.scope_for(
                 user.sub, project_id=project_id, document_id=doc_filter, thread_id=session_id
@@ -128,7 +132,14 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                 if mem_on:
                     await app.state.memory.write_summary(db, mem_scope, summary)
                 await db.commit()
-        history = [{"role": m.role, "content": m.content} for m in recent]
+        # Обрезаем аномально длинные реплики в истории (ассистент вьювера вшивает
+        # текст открытой страницы в сообщение — без обрезки история раздувает
+        # контекст и переполняет окно модели на 2-м ходу). Обычные вопросы короче
+        # лимита и не страдают; актуальный контекст страницы шлётся текущим ходом.
+        history = [
+            {"role": m.role, "content": (m.content or "")[: settings.rag_history_msg_chars]}
+            for m in recent
+        ]
         yield _sse({"type": "session", "session_id": str(session_id)})
 
         # 2) роутинг по сложности (§ 5 п.7): single-hop hybrid+rerank или
@@ -164,7 +175,8 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                     sessionmaker,
                     app.state.retriever,
                     document_id=doc_filter,
-                    folder_id=body.folder_id,
+                    folder_id=project_id,
+                    document_ids=doc_ids,
                     session_id=session_id,
                     # как _owner_filter в documents.py: admin видит все документы
                     owner_sub=None if user.is_admin else user.sub,
@@ -176,7 +188,8 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             else:
                 async with sessionmaker() as db:
                     chunks = await app.state.retriever.retrieve(
-                        db, body.message, document_id=doc_filter, folder_id=body.folder_id
+                        db, body.message, document_id=doc_filter,
+                        folder_id=project_id, document_ids=doc_ids,
                     )
         except Exception as exc:
             logger.exception("retrieve/agent failed")

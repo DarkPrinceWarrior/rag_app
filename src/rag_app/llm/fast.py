@@ -18,18 +18,32 @@ from rag_app.llm.client import SegmentContext, needs_translation
 
 logger = logging.getLogger(__name__)
 
-# Официальный промпт-формат HY-MT / Hunyuan-MT (XX→XX, кроме китайских пар) — общий
+# Официальные промпт-форматы Hunyuan-MT: для пар БЕЗ китайского — английская
+# инструкция; для пар С китайским (zh↔ru/en) — китайская инструкция (модель
+# обучена именно так, иначе китайский контур деградирует — см. model card).
 _HY_PROMPT = "Translate the following segment into {lang}, without additional explanation.\n\n{text}"
+_HY_PROMPT_ZH = "把下面的文本翻译成{lang}，不要额外解释。\n\n{text}"
 # Терминологическая интервенция HY-MT (term-anchored префикс): принудительный
 # перевод терминов глоссария. Формат проверен на :8005 (sour service →
 # «сероводородная среда»; без префикса HY-MT даёт «агрессивная среда»).
 _HY_TERM_PREFIX = "Refer to the following terminology:\n{terms}\n"
-_LANG_NAMES = {"ru": "Russian", "en": "English"}
+_LANG_NAMES = {"ru": "Russian", "en": "English", "zh": "Chinese"}
+# Названия языков для китайского шаблона (целевой язык — по-китайски).
+_LANG_NAMES_ZH = {"ru": "俄语", "en": "英语", "zh": "中文"}
 
 
-def build_fast_prompt(text: str, lang: str, glossary: list[tuple[str, str]] | None) -> str:
-    """Промпт HY-MT с опциональной терминологической интервенцией."""
-    prompt = _HY_PROMPT.format(lang=lang, text=text)
+def build_fast_prompt(
+    text: str,
+    target_lang: str,
+    glossary: list[tuple[str, str]] | None,
+    source_lang: str = "en",
+) -> str:
+    """Промпт Hunyuan-MT по направлению source→target (+ опц. глоссарий).
+    target_lang/source_lang — коды (en|ru|zh)."""
+    if source_lang == "zh" or target_lang == "zh":
+        prompt = _HY_PROMPT_ZH.format(lang=_LANG_NAMES_ZH.get(target_lang, "中文"), text=text)
+    else:
+        prompt = _HY_PROMPT.format(lang=_LANG_NAMES.get(target_lang, "Russian"), text=text)
     if glossary:
         terms = "\n".join(f"{en} translates to {ru}" for en, ru in glossary)
         prompt = _HY_TERM_PREFIX.format(terms=terms) + prompt
@@ -51,12 +65,13 @@ class FastTranslator:
         text: str,
         target_lang: str = "ru",
         glossary: list[tuple[str, str]] | None = None,
+        source_lang: str = "en",
     ) -> tuple[str, str]:
-        """→ (перевод, движок). Пустые/нелатинские тексты возвращаются как есть.
-        glossary — термины для терминологической интервенции Hy-MT (опц.)."""
-        if target_lang == "ru" and not needs_translation(text):
+        """→ (перевод, движок). Если в тексте нет букв скрипта источника —
+        возвращаем как есть. glossary — терминологическая интервенция Hy-MT (опц.)."""
+        if not needs_translation(text, source_lang):
             return text, "none"
-        prompt = build_fast_prompt(text, _LANG_NAMES.get(target_lang, "Russian"), glossary)
+        prompt = build_fast_prompt(text, target_lang, glossary, source_lang)
         last_err: Exception | None = None
         for attempt in range(settings.translate_max_retries):
             try:
@@ -100,10 +115,12 @@ class HyMTDocTranslator:
         context: SegmentContext | None = None,
         feedback: str | None = None,
     ) -> str:
-        if not needs_translation(text):
+        src = context.source_lang if context else "en"
+        tgt = context.target_lang if context else "ru"
+        if not needs_translation(text, src):
             return text
         glossary = context.glossary if context else None
-        prompt = build_fast_prompt(text, "Russian", glossary)
+        prompt = build_fast_prompt(text, tgt, glossary, src)
         if feedback:
             # числовая валидация отклонила перевод → просим сохранить числа
             # (нативной инструкцией Hy-MT, без scaffolding'а воркхорса)

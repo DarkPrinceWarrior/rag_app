@@ -141,6 +141,12 @@ class Settings(BaseSettings):
     rag_visual_pages_k: int = 10
     rag_visual_top_k: int = 3
     rag_history_messages: int = 8
+    # обрезка одной реплики истории (ассистент вьювера вшивает текст страницы в
+    # сообщение — без лимита история переполняет окно модели на 2-м ходу)
+    rag_history_msg_chars: int = 1200
+    # бюджет блока фрагментов в финальном промпте (символы) — backstop против
+    # переполнения окна модели при multi-hop сборе (Qwen3.5 max-model-len 16384)
+    rag_context_max_chars: int = 28000
     chunk_max_chars: int = 4000  # ~1K токенов
     chunk_min_chars: int = 200  # секции короче — клеим к соседней
 

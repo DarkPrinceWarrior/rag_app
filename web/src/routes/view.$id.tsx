@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
+import { ConfirmDialog } from '@/components/ui/modal'
 import { Download, MoreVertical } from 'lucide-react'
 import { PdfPane, type Highlight, type Region } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
@@ -122,37 +123,109 @@ function Viewer() {
     }
   }, [segsQ.data, seg, pageParam, isPdf])
 
-  async function reexport() {
-    setMsg('Экспорт в очереди…')
-    await api.reexport(id)
-    setMsg('Экспорт пересобирается')
-    setTimeout(() => setMsg(''), 4000)
+  // Подтверждение деструктивных/долгих действий вьювера — строгая модалка
+  // (вместо нативного confirm): иконка, заголовок, описание «что произойдёт».
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string
+    description: ReactNode
+    confirmLabel: string
+    tone: 'default' | 'danger'
+    run: () => Promise<void>
+  } | null>(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
+
+  async function runConfirm() {
+    if (!confirmAction) return
+    setConfirmBusy(true)
+    try {
+      await confirmAction.run()
+    } finally {
+      setConfirmBusy(false)
+      setConfirmAction(null)
+    }
   }
 
-  async function reparseOcr() {
-    if (!confirm('Переразобрать через OCR? Для PDF с нечитаемым текстовым слоем (битый cmap). Текущие сегменты и перевод заменятся.'))
-      return
-    setMsg('OCR-переразбор в очереди…')
-    await api.reparseOcr(id, 'east_slavic')
-    setMsg('Переразбор запущен — обновите страницу через ~минуту')
-    setTimeout(() => setMsg(''), 8000)
+  const PARSER_NAMES: Record<string, string> = {
+    mineru: 'MinerU2.5-Pro + добор',
+    dots_mocr: 'dots.mocr',
+    paddle_vl: 'PaddleOCR-VL 1.6',
+  }
+
+  function askReexport() {
+    setConfirmAction({
+      title: 'Пересобрать перевод и экспорт?',
+      tone: 'default',
+      confirmLabel: 'Пересобрать',
+      description: (
+        <>
+          Документ будет заново переведён из текущих сегментов, а файлы экспорта
+          (PDF и DOCX, side-by-side) пересобраны. Парсинг и распознавание НЕ
+          затрагиваются — сегменты остаются прежними.
+          <span className="mt-2 block text-xs">
+            Займёт ~1–2 минуты; обновите страницу после завершения.
+          </span>
+        </>
+      ),
+      run: async () => {
+        setMsg('Экспорт в очереди…')
+        await api.reexport(id)
+        setMsg('Экспорт пересобирается')
+        setTimeout(() => setMsg(''), 4000)
+      },
+    })
+  }
+
+  function askReparseOcr() {
+    setConfirmAction({
+      title: 'Переразобрать через OCR-распознавание?',
+      tone: 'danger',
+      confirmLabel: 'Переразобрать (OCR)',
+      description: (
+        <>
+          Для PDF с нечитаемым текстовым слоем (битый cmap — текст выглядит как
+          латиница-каша). Документ будет распознан заново постранично.
+          <span className="mt-2 block font-medium text-destructive">
+            Текущие сегменты, перевод и экспорт будут заменены.
+          </span>
+        </>
+      ),
+      run: async () => {
+        setMsg('OCR-переразбор в очереди…')
+        await api.reparseOcr(id, 'east_slavic')
+        setMsg('Переразбор запущен — обновите страницу через ~минуту')
+        setTimeout(() => setMsg(''), 8000)
+      },
+    })
   }
 
   // Выбор движка парсинга pdf_text/docx (mineru / dots.mocr / PaddleOCR-VL 1.6).
-  // Меняет parser_backend на документе и переразбирает: сегменты и перевод заменятся.
-  async function reparseBackend(backend: string) {
+  function askReparseBackend(backend: string) {
     const cur = docQ.data?.parser_backend || 'mineru'
     if (backend === cur) return
-    const names: Record<string, string> = {
-      mineru: 'MinerU2.5-Pro + добор',
-      dots_mocr: 'dots.mocr',
-      paddle_vl: 'PaddleOCR-VL 1.6',
-    }
-    if (!confirm(`Переразобрать через «${names[backend]}»? Текущие сегменты и перевод заменятся.`)) return
-    setMsg(`Переразбор через ${names[backend]} в очереди…`)
-    await api.reparse(id, backend)
-    setMsg('Переразбор запущен — обновите страницу через ~минуту')
-    setTimeout(() => setMsg(''), 8000)
+    setConfirmAction({
+      title: `Сменить парсер на «${PARSER_NAMES[backend]}»?`,
+      tone: 'danger',
+      confirmLabel: 'Переразобрать',
+      description: (
+        <>
+          Документ будет полностью переразобран движком{' '}
+          <span className="font-medium text-foreground">{PARSER_NAMES[backend]}</span> (сейчас:{' '}
+          {PARSER_NAMES[cur]}), затем заново переведён и экспортирован.
+          <span className="mt-2 block font-medium text-destructive">
+            Текущие сегменты, перевод и экспорт будут заменены.
+          </span>
+          <span className="mt-2 block text-xs">
+            Займёт несколько минут; обновите страницу после завершения.
+          </span>
+        </>
+      ),
+      run: async () => {
+        setMsg(`Переразбор через ${PARSER_NAMES[backend]} в очереди…`)
+        await api.reparse(id, backend)
+        setMsg('Переразбор запущен — обновите страницу через ~минуту')
+        setTimeout(() => setMsg(''), 8000)
+      },
+    })
   }
 
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
@@ -175,7 +248,13 @@ function Viewer() {
       {isPdfDoc && hasTransPdf && (
         <div className="flex items-center overflow-hidden rounded-md border text-xs">
           <button
-            onClick={() => setRightText(false)}
+            onClick={() => {
+              // вход в layout-режим: встать на переведённую страницу с тем же
+              // контентом (RU объёмнее — номер не совпадает), а не сбрасывать на 1
+              const rp = rightPageForLeft(page)
+              if (rp != null) setDocPage(rp)
+              setRightText(false)
+            }}
             title="Переведённый документ как PDF: заголовки, абзацы и таблицы с переносом (собран из перевода). Своя пагинация — для постраничного сравнения с оригиналом удобнее «текст»."
             className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
@@ -193,7 +272,11 @@ function Viewer() {
       {hasViewOrig && docQ.data?.kind === 'docx' && (
         <div className="flex items-center overflow-hidden rounded-md border text-xs">
           <button
-            onClick={() => setRightText(false)}
+            onClick={() => {
+              const rp = rightPageForLeft(page)
+              if (rp != null) setRuPage(rp)
+              setRightText(false)
+            }}
             title="Переведённый документ с сохранённой вёрсткой Word (LibreOffice-рендер). Точная раскладка оригинала."
             className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
@@ -211,7 +294,7 @@ function Viewer() {
       {(isPdfDoc || docQ.data?.kind === 'docx') && (
         <select
           value={docQ.data?.parser_backend || 'mineru'}
-          onChange={(e) => reparseBackend(e.target.value)}
+          onChange={(e) => askReparseBackend(e.target.value)}
           title="Движок парсинга: переразобрать документ выбранным парсером"
           className="rounded-md border bg-background px-2 py-1 text-xs"
         >
@@ -221,7 +304,7 @@ function Viewer() {
         </select>
       )}
       {isPdfDoc && (
-        <Button variant="outline" size="sm" onClick={reparseOcr} title="Если текст в PDF распознан как латиница-каша">
+        <Button variant="outline" size="sm" onClick={askReparseOcr} title="Если текст в PDF распознан как латиница-каша">
           OCR-распознавание
         </Button>
       )}
@@ -246,10 +329,20 @@ function Viewer() {
           )}
         </Menu>
       )}
-      <Button size="sm" onClick={reexport}>
+      <Button size="sm" onClick={askReexport}>
         Пересобрать экспорт
       </Button>
     </div>
+    <ConfirmDialog
+      open={!!confirmAction}
+      onClose={() => setConfirmAction(null)}
+      onConfirm={runConfirm}
+      title={confirmAction?.title ?? ''}
+      description={confirmAction?.description}
+      confirmLabel={confirmAction?.confirmLabel}
+      tone={confirmAction?.tone}
+      busy={confirmBusy}
+    />
     </>
   )
 
@@ -287,6 +380,32 @@ function Viewer() {
       setLeftHi({ page: s.loc_left.page + 1, bbox: s.loc_left.bbox, pageSize: s.loc_left.pagesize })
     }
   }
+  // переведённая страница, на которой лежит КОНТЕНТ страницы оригинала leftPage
+  // (страницы не синхронны — RU объёмнее EN). Берём МЕДИАНУ правых страниц
+  // среди сегментов левой страницы — устойчиво к единичным мисматчам cross-loc
+  // (одиночный короткий сегмент, ошибочно найденный на чужой странице, не
+  // утягивает результат, как это делал min). null → маппинга нет.
+  const rightPageForLeft = (leftPage: number): number | null => {
+    const rs = segs
+      .flatMap((s) => (s.loc_left?.page === leftPage - 1 && s.loc_right ? [s.loc_right.page] : []))
+      .sort((a, b) => a - b)
+    if (rs.length) return rs[Math.floor(rs.length / 2)] + 1
+    // на этой странице нет смапленных сегментов (cross-loc покрывает не каждую
+    // страницу больших docx) — берём ближайший по loc_left сегмент с маппингом,
+    // чтобы не сваливаться на стр. 1
+    let best: number | null = null
+    let bestDist = Infinity
+    for (const s of segs) {
+      if (s.loc_left && s.loc_right) {
+        const d = Math.abs(s.loc_left.page - (leftPage - 1))
+        if (d < bestDist) {
+          bestDist = d
+          best = s.loc_right.page
+        }
+      }
+    }
+    return best != null ? best + 1 : null
+  }
 
   // PDF: слева оригинал, справа перевод; кросс-навигация по клику (страницы не синхронны).
   if (isPdf) {
@@ -303,6 +422,7 @@ function Viewer() {
             <PdfPane
               docId={id}
               page={page}
+              fitWidth
               highlight={leftHi || active}
               onPageChange={setPage}
               onNumPages={setNumPages}
@@ -318,6 +438,7 @@ function Viewer() {
                 docId={id}
                 urlKind="pdf"
                 label="перевод · документ — кликните фрагмент, чтобы найти его в оригинале"
+                fitWidth
                 page={docPage}
                 highlight={rightHi}
                 onPageChange={setDocPage}
@@ -373,7 +494,7 @@ function Viewer() {
               docId={id}
               urlKind="view_orig"
               label="оригинал"
-              scale={1.0}
+              fitWidth
               page={page}
               highlight={leftHi}
               onPageChange={setPage}
@@ -392,7 +513,7 @@ function Viewer() {
                   docId={id}
                   urlKind="view_ru"
                   label="перевод — кликните фрагмент, чтобы найти его в оригинале"
-                  scale={1.0}
+                  fitWidth
                   page={ruPage}
                   highlight={rightHi}
                   onPageChange={setRuPage}
@@ -476,7 +597,7 @@ function Viewer() {
               docId={id}
               urlKind="view_orig"
               label="оригинал"
-              scale={1.0}
+              fitWidth
               page={page}
               highlight={null}
               onPageChange={setPage}
@@ -489,7 +610,7 @@ function Viewer() {
                 docId={id}
                 urlKind="view_ru"
                 label="перевод"
-                scale={1.0}
+                fitWidth
                 page={page}
                 highlight={null}
                 onPageChange={setPage}

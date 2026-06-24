@@ -270,12 +270,15 @@ export const api = {
     jsend<MemoryCandidate>(`/api/memory/candidates/${id}/reject`, 'POST'),
   purgeMemory: () => jsend<{ purged: string; items: number; events: number }>('/api/memory/purge', 'POST', {}),
 
-  extractTable: (query: string, document_id: string | null) =>
-    jsend<ExtractTable>('/api/extract/table', 'POST', { query, document_id }),
+  extractTable: (
+    query: string,
+    scope: { document_id?: string | null; folder_id?: string; document_ids?: string[] } = {},
+  ) => jsend<ExtractTable>('/api/extract/table', 'POST', { query, ...scope }),
 
-  async uploadDocument(file: File): Promise<Document> {
+  async uploadDocument(file: File, direction = 'en2ru'): Promise<Document> {
     const fd = new FormData()
     fd.append('file', file)
+    fd.append('direction', direction)
     const r = await authFetch('/api/documents', { method: 'POST', body: fd })
     if (!r.ok) throw new Error(`${r.status}: ${(await r.json().catch(() => ({}))).detail ?? r.statusText}`)
     return r.json()
