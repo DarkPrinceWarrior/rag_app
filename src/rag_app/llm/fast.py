@@ -14,7 +14,7 @@ import logging
 from openai import AsyncOpenAI
 
 from rag_app.config import settings
-from rag_app.llm.client import SegmentContext, needs_translation
+from rag_app.llm.client import SegmentContext, has_cjk, needs_translation
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,11 @@ def build_fast_prompt(
     source_lang: str = "en",
 ) -> str:
     """Промпт Hunyuan-MT по направлению source→target (+ опц. глоссарий).
-    target_lang/source_lang — коды (en|ru|zh)."""
-    if source_lang == "zh" or target_lang == "zh":
+    target_lang/source_lang — коды (en|ru|zh). Шаблон выбираем по фактическому
+    скрипту СЕГМЕНТА: текст с иероглифами → китайская инструкция Hunyuan; чисто
+    латинская/английская вставка (даже внутри zh-документа) → обычная инструкция
+    — иначе китайский шаблон поверх английского текста даёт деградацию."""
+    if has_cjk(text) or target_lang == "zh":
         prompt = _HY_PROMPT_ZH.format(lang=_LANG_NAMES_ZH.get(target_lang, "中文"), text=text)
     else:
         prompt = _HY_PROMPT.format(lang=_LANG_NAMES.get(target_lang, "Russian"), text=text)
@@ -67,9 +70,9 @@ class FastTranslator:
         glossary: list[tuple[str, str]] | None = None,
         source_lang: str = "en",
     ) -> tuple[str, str]:
-        """→ (перевод, движок). Если в тексте нет букв скрипта источника —
+        """→ (перевод, движок). Если в тексте нет букв НЕцелевого скрипта —
         возвращаем как есть. glossary — терминологическая интервенция Hy-MT (опц.)."""
-        if not needs_translation(text, source_lang):
+        if not needs_translation(text, source_lang, target_lang):
             return text, "none"
         prompt = build_fast_prompt(text, target_lang, glossary, source_lang)
         last_err: Exception | None = None
@@ -117,7 +120,7 @@ class HyMTDocTranslator:
     ) -> str:
         src = context.source_lang if context else "en"
         tgt = context.target_lang if context else "ru"
-        if not needs_translation(text, src):
+        if not needs_translation(text, src, tgt):
             return text
         glossary = context.glossary if context else None
         prompt = build_fast_prompt(text, tgt, glossary, src)

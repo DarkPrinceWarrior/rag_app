@@ -15,6 +15,14 @@ export const Route = createFileRoute('/')({ component: Library })
 
 const inProgress = (d: Document) => !['done', 'error'].includes(d.status)
 
+// Бейдж направления перевода: источник определён автоматически, цель всегда RU.
+// Русский документ не переводится; "auto" — язык ещё не определён (до перевода).
+const DIRECTION: Record<string, { label: string; cls: string }> = {
+  en: { label: 'EN → RU', cls: 'bg-blue-50 text-blue-700' },
+  zh: { label: 'ZH → RU', cls: 'bg-rose-50 text-rose-700' },
+  ru: { label: 'RU · без перевода', cls: 'bg-muted text-muted-foreground' },
+}
+
 function Library() {
   const qc = useQueryClient()
   const [folder, setFolder] = useState<string>('') // '' = все
@@ -27,10 +35,8 @@ function Library() {
   })
   const foldersQ = useQuery({ queryKey: ['folders'], queryFn: api.listFolders })
 
-  const [direction, setDirection] = useState('en2ru')
   const upload = useMutation({
-    mutationFn: (vars: { file: File; direction: string }) =>
-      api.uploadDocument(vars.file, vars.direction),
+    mutationFn: (file: File) => api.uploadDocument(file),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
   })
 
@@ -38,25 +44,11 @@ function Library() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-5">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-sm text-muted-foreground">Направление перевода:</span>
-        <select
-          value={direction}
-          onChange={(e) => setDirection(e.target.value)}
-          className="rounded-md border bg-card px-2 py-1 text-sm"
-          title="Язык документа → язык перевода (ТЗ §4.3)"
-        >
-          <option value="en2ru">Английский → Русский</option>
-          <option value="ru2en">Русский → Английский</option>
-          <option value="ru2zh">Русский → Китайский (упрощённый)</option>
-          <option value="zh2ru">Китайский (упрощённый) → Русский</option>
-        </select>
-      </div>
-      <UploadZone
-        busy={upload.isPending}
-        onFile={(f) => upload.mutate({ file: f, direction })}
-        fileInput={fileInput}
-      />
+      <UploadZone busy={upload.isPending} onFile={(f) => upload.mutate(f)} fileInput={fileInput} />
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        Язык документа определяется автоматически — перевод всегда на русский. Русский документ не
+        переводится (доступны просмотр, поиск и чат).
+      </p>
       {upload.isError && <p className="mt-2 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
       <SearchPanel folder={folder} />
@@ -261,6 +253,11 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
         <div className="truncate font-medium">{d.filename}</div>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <StatusBadge status={d.status} />
+          {d.source_lang && DIRECTION[d.source_lang] && (
+            <span className={cn('rounded px-1.5 py-0.5 font-medium', DIRECTION[d.source_lang].cls)}>
+              {DIRECTION[d.source_lang].label}
+            </span>
+          )}
           {progress && <span>{progress}</span>}
           {d.page_count != null && <span>{d.page_count} стр.</span>}
           {d.review_count > 0 && <span className="text-amber-600">⚠ проверить числа: {d.review_count}</span>}

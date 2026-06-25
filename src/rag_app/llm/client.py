@@ -41,11 +41,39 @@ _HAS_CJK = re.compile(r"[㐀-鿿]")
 _SOURCE_SCRIPT = {"en": _HAS_LATIN, "ru": _HAS_CYRILLIC, "zh": _HAS_CJK}
 
 
-def needs_translation(text: str, source_lang: str = "en") -> bool:
-    """Нужен ли перевод: есть ли в тексте буквы скрипта языка-ИСТОЧНИКА.
-    Голые числа/коды/символы и текст не на языке-источнике — пропускаем."""
-    pat = _SOURCE_SCRIPT.get(source_lang, _HAS_LATIN)
-    return bool(text.strip()) and bool(pat.search(text))
+def needs_translation(text: str, source_lang: str = "en", target_lang: str = "ru") -> bool:
+    """Нужен ли перевод сегмента в целевой язык. Цель задаёт «свой» скрипт:
+    переводим, если в тексте есть буквы ЛЮБОГО иного скрипта (для ru — латиница
+    ИЛИ CJK). Так в смешанном китайско-английском документе переводятся и
+    иероглифы, и английские вставки. Чистый целевой текст и сегменты без букв
+    (числа/коды/символы) — пропускаем. `source_lang` оставлен для совместимости
+    сигнатуры; идентичность source==target отсекается выше по стеку."""
+    if not text.strip():
+        return False
+    others = [pat for lang, pat in _SOURCE_SCRIPT.items() if lang != target_lang]
+    return any(pat.search(text) for pat in others)
+
+
+def has_cjk(text: str) -> bool:
+    """Есть ли в тексте иероглифы CJK — для выбора китайского шаблона Hunyuan-MT
+    по фактическому скрипту сегмента (а не по направлению документа)."""
+    return bool(_HAS_CJK.search(text))
+
+
+def detect_lang(text: str) -> str:
+    """Определить язык-источник по преобладающему скрипту: ``ru`` | ``en`` | ``zh``.
+    Домен фиксирован тремя языками (ТЗ §4.3), поэтому хватает счёта букв:
+    русский/английский документы CJK не содержат вовсе → любая заметная доля
+    иероглифов однозначно означает китайский; иначе кириллица vs латиница."""
+    cjk = len(_HAS_CJK.findall(text))
+    cyr = len(_HAS_CYRILLIC.findall(text))
+    lat = len(_HAS_LATIN.findall(text))
+    total = cjk + cyr + lat
+    if total == 0:
+        return "en"
+    if cjk >= 0.10 * total:  # для ru/en это 0; китайский техтекст — много CJK + латинские термины
+        return "zh"
+    return "ru" if cyr >= lat else "en"
 
 
 @dataclass
@@ -102,7 +130,9 @@ class Translator:
         context: SegmentContext | None = None,
         feedback: str | None = None,
     ) -> str:
-        if not needs_translation(text, context.source_lang if context else "en"):
+        src = context.source_lang if context else "en"
+        tgt = context.target_lang if context else "ru"
+        if not needs_translation(text, src, tgt):
             return text
 
         parts: list[str] = []

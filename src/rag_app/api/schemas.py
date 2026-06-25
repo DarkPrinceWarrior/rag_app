@@ -31,6 +31,9 @@ class DocumentOut(BaseModel):
     has_view_ru: bool = False
     # движок парсинга pdf_text: null → дефолт (mineru). mineru | dots_mocr | paddle_vl
     parser_backend: str | None = None
+    # язык-источник, определённый автоматически (ru|en|zh; "auto" — ещё не определён).
+    # Цель перевода всегда русский. Для бейджа направления в библиотеке.
+    source_lang: str | None = None
     created_at: datetime
 
     @classmethod

@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { X, AlertTriangle, Info } from 'lucide-react'
+import { X, AlertTriangle, Info, CheckCircle2, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 /** Базовая модалка: затемнённый бэкдроп, центр, закрытие по Esc и клику вне. */
@@ -52,13 +52,23 @@ export function Modal({
   )
 }
 
-/** Строгая модалка-подтверждение: иконка + заголовок + «что произойдёт» + действия. */
+/**
+ * Строгая модалка-подтверждение. Тело структурировано, а не сплошным абзацем:
+ *  - `description` — короткий вводный абзац (что это и зачем);
+ *  - `points` — карточка «что произойдёт» построчно (галочки/шаги);
+ *  - `warning` — выделенный destructive-callout (необратимые последствия);
+ *  - `note` — мелкая сноска со временем/подсказкой.
+ * Любое поле опционально — рисуется только заполненное.
+ */
 export function ConfirmDialog({
   open,
   onClose,
   onConfirm,
   title,
   description,
+  points,
+  warning,
+  note,
   confirmLabel = 'Подтвердить',
   cancelLabel = 'Отмена',
   tone = 'default',
@@ -68,7 +78,10 @@ export function ConfirmDialog({
   onClose: () => void
   onConfirm: () => void
   title: string
-  description: ReactNode
+  description?: ReactNode
+  points?: ReactNode[]
+  warning?: ReactNode
+  note?: ReactNode
   confirmLabel?: string
   cancelLabel?: string
   tone?: 'default' | 'danger'
@@ -100,7 +113,37 @@ export function ConfirmDialog({
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{description}</div>
+
+            <div className="mt-2 space-y-3 text-sm">
+              {description && (
+                <p className="leading-relaxed text-muted-foreground">{description}</p>
+              )}
+
+              {points && points.length > 0 && (
+                <ul className="space-y-2 rounded-lg border bg-muted/40 p-3">
+                  {points.map((p, i) => (
+                    <li key={i} className="flex items-start gap-2.5 text-foreground/90">
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+                      <span className="leading-snug">{p}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {warning && (
+                <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-destructive">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span className="font-medium leading-snug">{warning}</span>
+                </div>
+              )}
+
+              {note && (
+                <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5 shrink-0" />
+                  <span>{note}</span>
+                </p>
+              )}
+            </div>
           </div>
         </div>
         <div className="mt-5 flex justify-end gap-2">

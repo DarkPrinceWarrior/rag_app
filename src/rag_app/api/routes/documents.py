@@ -6,7 +6,7 @@ import mimetypes
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
@@ -45,22 +45,13 @@ _SIGNATURES = {
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 
-# Направление перевода (ТЗ §4.3). Ключ → (source_lang, target_lang).
-_DIRECTIONS = {
-    "en2ru": ("en", "ru"),
-    "ru2en": ("ru", "en"),
-    "ru2zh": ("ru", "zh"),  # zh — упрощённый китайский
-    "zh2ru": ("zh", "ru"),
-}
-
-
 @router.post("", response_model=DocumentOut, status_code=201)
-async def upload_document(
-    request: Request, file: UploadFile, direction: str = Form("en2ru")
-) -> DocumentOut:
-    if direction not in _DIRECTIONS:
-        raise HTTPException(422, f"direction ∈ {sorted(_DIRECTIONS)}")
-    source_lang, target_lang = _DIRECTIONS[direction]
+async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
+    # Направление перевода НЕ выбирается вручную (ТЗ §4.3, домен ru/en/zh):
+    # язык-источник определяется автоматически по тексту на этапе перевода,
+    # цель — всегда русский (русский документ не переводится). "auto" —
+    # маркер «ещё не определён», воркер заменит его на ru/en/zh.
+    source_lang, target_lang = "auto", "ru"
     filename = file.filename or "document.pdf"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:

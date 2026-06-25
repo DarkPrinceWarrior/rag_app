@@ -61,3 +61,4 @@ deploy/keycloak/certs/
 docs/ТЗ_*.docx
 docs/*.docx
 .serena/memories/
+samples/

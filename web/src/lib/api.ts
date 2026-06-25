@@ -33,6 +33,7 @@ export interface Document {
   has_view_orig?: boolean // рендер оригинала готов (рано, после парсинга)
   has_view_ru?: boolean // рендер перевода готов (на экспорте)
   parser_backend?: string | null // движок парсинга pdf_text: mineru | dots_mocr | paddle_vl
+  source_lang?: string | null // язык-источник, определён автоматически (ru|en|zh|auto); цель всегда ru
   created_at: string
 }
 
@@ -275,10 +276,11 @@ export const api = {
     scope: { document_id?: string | null; folder_id?: string; document_ids?: string[] } = {},
   ) => jsend<ExtractTable>('/api/extract/table', 'POST', { query, ...scope }),
 
-  async uploadDocument(file: File, direction = 'en2ru'): Promise<Document> {
+  async uploadDocument(file: File): Promise<Document> {
+    // Направление перевода не выбирается: язык-источник определяется
+    // автоматически, цель всегда русский (ТЗ §4.3).
     const fd = new FormData()
     fd.append('file', file)
-    fd.append('direction', direction)
     const r = await authFetch('/api/documents', { method: 'POST', body: fd })
     if (!r.ok) throw new Error(`${r.status}: ${(await r.json().catch(() => ({}))).detail ?? r.statusText}`)
     return r.json()

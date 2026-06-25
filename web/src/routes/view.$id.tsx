@@ -127,7 +127,10 @@ function Viewer() {
   // (вместо нативного confirm): иконка, заголовок, описание «что произойдёт».
   const [confirmAction, setConfirmAction] = useState<{
     title: string
-    description: ReactNode
+    description?: ReactNode
+    points?: ReactNode[]
+    warning?: ReactNode
+    note?: ReactNode
     confirmLabel: string
     tone: 'default' | 'danger'
     run: () => Promise<void>
@@ -156,16 +159,13 @@ function Viewer() {
       title: 'Пересобрать перевод и экспорт?',
       tone: 'default',
       confirmLabel: 'Пересобрать',
-      description: (
-        <>
-          Документ будет заново переведён из текущих сегментов, а файлы экспорта
-          (PDF и DOCX, side-by-side) пересобраны. Парсинг и распознавание НЕ
-          затрагиваются — сегменты остаются прежними.
-          <span className="mt-2 block text-xs">
-            Займёт ~1–2 минуты; обновите страницу после завершения.
-          </span>
-        </>
-      ),
+      description: 'Перевод соберётся заново из текущих сегментов. Сам разбор документа не трогаем.',
+      points: [
+        'Сегменты и распознавание остаются как есть',
+        'Все сегменты переводятся заново',
+        <>Пересобираются файлы экспорта: <b className="font-medium text-foreground">PDF</b> и <b className="font-medium text-foreground">DOCX</b> (side-by-side)</>,
+      ],
+      note: '≈ 1–2 минуты. Обновите страницу после завершения.',
       run: async () => {
         setMsg('Экспорт в очереди…')
         await api.reexport(id)
@@ -180,15 +180,13 @@ function Viewer() {
       title: 'Переразобрать через OCR-распознавание?',
       tone: 'danger',
       confirmLabel: 'Переразобрать (OCR)',
-      description: (
-        <>
-          Для PDF с нечитаемым текстовым слоем (битый cmap — текст выглядит как
-          латиница-каша). Документ будет распознан заново постранично.
-          <span className="mt-2 block font-medium text-destructive">
-            Текущие сегменты, перевод и экспорт будут заменены.
-          </span>
-        </>
-      ),
+      description: 'Для PDF с нечитаемым текстовым слоем — битый cmap, когда текст выглядит как латиница-каша.',
+      points: [
+        'Документ распознаётся заново постранично (OCR)',
+        'Затем — повторный перевод и пересборка экспорта',
+      ],
+      warning: 'Текущие сегменты, перевод и экспорт будут заменены.',
+      note: 'Займёт от минуты. Обновите страницу после завершения.',
       run: async () => {
         setMsg('OCR-переразбор в очереди…')
         await api.reparseOcr(id, 'east_slavic')
@@ -208,17 +206,18 @@ function Viewer() {
       confirmLabel: 'Переразобрать',
       description: (
         <>
-          Документ будет полностью переразобран движком{' '}
-          <span className="font-medium text-foreground">{PARSER_NAMES[backend]}</span> (сейчас:{' '}
-          {PARSER_NAMES[cur]}), затем заново переведён и экспортирован.
-          <span className="mt-2 block font-medium text-destructive">
-            Текущие сегменты, перевод и экспорт будут заменены.
-          </span>
-          <span className="mt-2 block text-xs">
-            Займёт несколько минут; обновите страницу после завершения.
-          </span>
+          Сейчас документ разобран движком{' '}
+          <span className="font-medium text-foreground">{PARSER_NAMES[cur]}</span>. Он будет
+          полностью переразобран другим парсером.
         </>
       ),
+      points: [
+        <>Полный переразбор движком <span className="font-medium text-foreground">{PARSER_NAMES[backend]}</span></>,
+        'Повторный перевод всех сегментов',
+        'Пересборка экспорта (PDF/DOCX)',
+      ],
+      warning: 'Текущие сегменты, перевод и экспорт будут заменены.',
+      note: 'Несколько минут. Обновите страницу после завершения.',
       run: async () => {
         setMsg(`Переразбор через ${PARSER_NAMES[backend]} в очереди…`)
         await api.reparse(id, backend)
@@ -339,6 +338,9 @@ function Viewer() {
       onConfirm={runConfirm}
       title={confirmAction?.title ?? ''}
       description={confirmAction?.description}
+      points={confirmAction?.points}
+      warning={confirmAction?.warning}
+      note={confirmAction?.note}
       confirmLabel={confirmAction?.confirmLabel}
       tone={confirmAction?.tone}
       busy={confirmBusy}

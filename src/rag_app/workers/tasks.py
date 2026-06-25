@@ -30,7 +30,13 @@ from rag_app.db.models import (
     Segment,
     SegmentKind,
 )
-from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
+from rag_app.llm.client import (
+    SegmentContext,
+    Translator,
+    detect_lang,
+    needs_translation,
+    pick_glossary_terms,
+)
 from rag_app.llm.embeddings import Embedder
 from rag_app.llm.vision import VisionClient
 from rag_app.llm.visual import VisualEmbedder
@@ -308,7 +314,12 @@ async def _translate_validated(
     translator: Translator, text: str, context: SegmentContext
 ) -> tuple[str, ValidationResult]:
     """Перевод + числовая валидация; один ре-перевод с фидбеком (roadmap § 3.4 п.3)."""
-    if not needs_translation(text, context.source_lang):
+    # Документ уже на целевом языке (русский → русский) — переводить нечего,
+    # сегмент остаётся как есть. Иначе — гейт по целевому скрипту: переводим
+    # любой не-русский текст, включая английские вставки в китайском документе.
+    if context.source_lang == context.target_lang or not needs_translation(
+        text, context.source_lang, context.target_lang
+    ):
         return text, ValidationResult(ok=True)
     translated = await translator.translate(text, context)
     result = validate_numbers(text, translated)
@@ -388,10 +399,7 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
     t_task = time.monotonic()
     await _set_status(ctx, doc_id, DocumentStatus.translating)
 
-    # Направление перевода документа (по умолчанию EN→RU — текущий MVP).
     doc0 = await _get_doc(ctx, doc_id)
-    src_lang = getattr(doc0, "source_lang", None) or "en"
-    tgt_lang = getattr(doc0, "target_lang", None) or "ru"
 
     async with ctx["sessionmaker"]() as session:
         segments = list(
@@ -403,6 +411,24 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
             .scalars()
             .all()
         )
+
+    # Язык-источник определяем АВТОМАТИЧЕСКИ по тексту документа (домен: ru/en/zh,
+    # ТЗ §4.3). Перевод ВСЕГДА на русский; русский документ не переводится
+    # (identity-замыкание в _translate_validated). Если язык уже зафиксирован
+    # (реразбор) — берём сохранённый, заново не определяем.
+    src_lang = (getattr(doc0, "source_lang", None) or "").strip()
+    if src_lang not in ("en", "ru", "zh"):
+        sample = " ".join((s.source_text or "") for s in segments[:120])[:20000]
+        src_lang = detect_lang(sample)
+    tgt_lang = "ru"
+    if doc0.source_lang != src_lang or doc0.target_lang != tgt_lang:
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id)
+                .values(source_lang=src_lang, target_lang=tgt_lang)
+            )
+            await session.commit()
 
     # Глоссарий (roadmap § 3.4 п.1) — только для EN→RU (термины хранятся как
     # en_term/ru_term); для других направлений глоссарий не применяется.
