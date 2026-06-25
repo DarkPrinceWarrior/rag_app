@@ -121,8 +121,8 @@ export default function App() {
   return (
     <>
       <header>
-        <b>rag_app</b>
-        <span>перевод EN→RU · on-prem</span>
+        <b>DocRAGenslate</b>
+        <span>перевод на русский · on-prem</span>
       </header>
       <main>
         {auth.enabled && (
