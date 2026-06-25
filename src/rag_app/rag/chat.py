@@ -58,13 +58,28 @@ MEMORY_ONLY_SYSTEM_PROMPT = """\
 располагаешь им. Не выдумывай. Ссылки [n] не нужны (фрагментов документов нет)."""
 
 
+def source_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Цитируемые источники: всё, КРОМЕ синтетического чанка-каталога
+    (list_documents, kind='catalog'). Только они получают номер [n] и
+    становятся кликабельными цитатами — иначе каталог занимал бы номер, на
+    который модель ссылается, но клик-цитаты для него нет («висячая» ссылка).
+    Нумерация [n] обязана совпадать здесь, в build_context_block,
+    extract_citations и при вложении картинок — поэтому единый источник истины."""
+    return [c for c in chunks if c.kind != "catalog"]
+
+
+def _catalog_text(chunks: list[RetrievedChunk]) -> str | None:
+    cat = next((c for c in chunks if c.kind == "catalog"), None)
+    return (cat.text_ru or cat.text_en or "").strip() if cat else None
+
+
 def build_context_block(chunks: list[RetrievedChunk]) -> str:
     # Бюджет контекста: multi-hop собирает много фрагментов — без лимита промпт
     # перерастает окно модели. Клеим по убыванию ранга, пока влезает; хвост
-    # (низкоранговые) отбрасываем. Нумерация [n] остаётся префиксом chunks.
+    # (низкоранговые) отбрасываем. Нумеруем ТОЛЬКО источники (без каталога).
     parts = []
     total = 0
-    for n, c in enumerate(chunks, 1):
+    for n, c in enumerate(source_chunks(chunks), 1):
         header = f"[{n}] {c.filename}"
         if c.heading_path:
             header += f" · {c.heading_path}"
@@ -79,24 +94,32 @@ def build_context_block(chunks: list[RetrievedChunk]) -> str:
             break
         parts.append(seg)
         total += len(seg)
-    return "\n\n---\n\n".join(parts)
+    block = "\n\n---\n\n".join(parts)
+    # Каталог библиотеки — справочно, БЕЗ номера [n]: модель использует его для
+    # ответов «какие документы есть», но не должна ставить на него ссылку.
+    catalog = _catalog_text(chunks)
+    if catalog:
+        head = f"Каталог библиотеки (справочно, НЕ источник для ссылок [n]):\n{catalog}"
+        block = f"{head}\n\n===\n\n{block}" if block else head
+    return block
 
 
 _CITATION = re.compile(r"\[(\d{1,2})\]")
 
 
 def extract_citations(answer: str, chunks: list[RetrievedChunk]) -> list[dict[str, Any]]:
-    """Цитаты из ответа → метаданные чанков (страница, bbox для подсветки)."""
+    """Цитаты из ответа → метаданные чанков (страница, bbox для подсветки).
+    Нумерация [n] — по source_chunks (без каталога), идентично build_context_block,
+    поэтому каждый номер [n] из ответа имеет кликабельную цитату (нет «висячих»)."""
+    sources = source_chunks(chunks)
     seen: list[dict[str, Any]] = []
     used: set[int] = set()
     for m in _CITATION.finditer(answer):
         n = int(m.group(1))
-        if n in used or not (1 <= n <= len(chunks)):
+        if n in used or not (1 <= n <= len(sources)):
             continue
         used.add(n)
-        c = chunks[n - 1]
-        if c.kind == "catalog":
-            continue  # синтетический чанк-каталог (list_documents) — не цитируемый источник
+        c = sources[n - 1]
         seen.append(
             {
                 "n": n,
@@ -167,7 +190,8 @@ class ChatEngine:
             # Qwen3.5 мультимодален, рассмотрит схему/формулы/обозначения на картинке
             content: list[dict[str, Any]] = [{"type": "text", "text": text_block}]
             attached = 0
-            for n, c in enumerate(chunks, 1):
+            # та же нумерация, что в build_context_block/extract_citations (без каталога)
+            for n, c in enumerate(source_chunks(chunks), 1):
                 img_key = (c.meta or {}).get("img_s3")
                 if not img_key or attached >= settings.rag_vision_max_images:
                     continue
