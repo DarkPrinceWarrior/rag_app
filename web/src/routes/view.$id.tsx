@@ -5,7 +5,7 @@ import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment, type Seg
 import { Button } from '@/components/ui/button'
 import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
 import { ConfirmDialog } from '@/components/ui/modal'
-import { Download, MoreVertical } from 'lucide-react'
+import { Download, MoreVertical, Maximize2 } from 'lucide-react'
 import { PdfPane, type Highlight, type Region } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
 import { XlsxView } from '@/components/XlsxView'
@@ -1167,6 +1167,7 @@ function Editable({
   const ref = useRef<HTMLDivElement>(null)
   const orig = useRef(value)
   const [history, setHistory] = useState<SegmentVersion[] | null>(null)
+  const [focused, setFocused] = useState(false)
 
   async function save() {
     const text = ref.current?.textContent ?? ''
@@ -1200,15 +1201,23 @@ function Editable({
 
   if (!editable) return <div className={'whitespace-pre-wrap ' + className}>{value}</div>
 
+  // Значок «развернуть историю» — в правом нижнем углу рамки выделенного сегмента.
+  // Скрыт по умолчанию (чисто), проявляется при выделении (фокусе), наведении или
+  // когда история открыта.
+  const vis = focused || history ? 'opacity-100' : 'opacity-0 group-hover:opacity-70'
   return (
     <div className="group relative">
       <div
         ref={ref}
         contentEditable
         suppressContentEditableWarning
-        onBlur={save}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false)
+          void save()
+        }}
         className={
-          'whitespace-pre-wrap rounded-sm outline-none focus:bg-accent/40 focus:ring-1 focus:ring-primary ' +
+          'whitespace-pre-wrap rounded px-1.5 py-0.5 -mx-1.5 outline-none focus:bg-accent/20 focus:ring-1 focus:ring-primary/50 ' +
           className
         }
       >
@@ -1219,12 +1228,16 @@ function Editable({
         title="История правок перевода"
         onMouseDown={(e) => e.preventDefault()}
         onClick={openHistory}
-        className="absolute -top-2 right-0 z-10 rounded border bg-muted px-1 text-[10px] leading-tight text-muted-foreground opacity-60 hover:bg-accent hover:opacity-100"
+        className={
+          'absolute -bottom-2.5 right-0 z-10 flex items-center gap-0.5 rounded border bg-card px-1 py-0.5 text-[10px] leading-none text-muted-foreground shadow-sm transition-opacity hover:bg-accent hover:text-foreground ' +
+          vis
+        }
       >
-        ⏱ история
+        <Maximize2 className="h-2.5 w-2.5" />
+        история
       </button>
       {history && (
-        <div className="absolute right-0 top-4 z-30 max-h-72 w-80 overflow-auto rounded-md border bg-card p-2 text-xs shadow-lg">
+        <div className="absolute bottom-5 right-0 z-30 max-h-72 w-80 overflow-auto rounded-md border bg-card p-2 text-xs shadow-lg">
           <div className="mb-1 flex items-center justify-between">
             <span className="font-medium">История правок ({history.length})</span>
             <button onClick={() => setHistory(null)} className="text-muted-foreground hover:text-foreground">
