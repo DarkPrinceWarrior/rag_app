@@ -78,8 +78,12 @@ async def list_segments(
     # Бэкстоп против патологических документов (xlsx-дата-дампы на сотни тысяч
     # ячеек вешали вьювер): отдаём первые `limit` сегментов по idx. Дефолт
     # большой, но конечный — обычные документы (тысячи сегментов) не обрезаются.
+    user: User = request.state.user
     async with request.app.state.sessionmaker() as session:
-        if await session.get(Document, doc_id) is None:
+        doc = await session.get(Document, doc_id)
+        if doc is None or (  # RBAC §4.7.1: app-level паритет с RLS-контуром
+            not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub
+        ):
             raise HTTPException(404, "документ не найден")
         segments = (
             (

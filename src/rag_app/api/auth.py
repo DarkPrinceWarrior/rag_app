@@ -16,6 +16,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 
 from rag_app.config import settings
+from rag_app.db.rls import set_principal
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ async def get_current_user(request: Request) -> User:
     """FastAPI-зависимость: пользователь запроса (или 401)."""
     if not settings.auth_enabled:
         request.state.user = _DEV_USER
+        set_principal(_DEV_USER.sub, _DEV_USER.is_admin)  # RLS-контекст (§4.7.1)
         return _DEV_USER
 
     auth_header = request.headers.get("Authorization", "")
@@ -99,6 +101,7 @@ async def get_current_user(request: Request) -> User:
     if not user.roles:
         raise HTTPException(403, "нет ролей rag-app (user/admin)")
     request.state.user = user
+    set_principal(user.sub, user.is_admin)  # RLS-контекст (§4.7.1)
     return user
 
 

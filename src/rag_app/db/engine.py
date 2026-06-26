@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from rag_app.config import settings
+from rag_app.db import rls as _rls  # noqa: F401 — регистрирует after_begin RLS-GUC хук
 
 
 def create_engine() -> AsyncEngine:
