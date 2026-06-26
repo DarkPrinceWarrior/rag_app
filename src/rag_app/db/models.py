@@ -161,12 +161,16 @@ class Segment(Base):
 
 
 class Folder(Base):
-    """Папки библиотеки (минимум этапа 3; шаринг/права — этап 5)."""
+    """Папки библиотеки. Изоляция по владельцу (ТЗ §4.7.1): у каждой папки —
+    owner_sub; имя уникально в пределах владельца (составной ключ)."""
 
     __tablename__ = "folders"
+    __table_args__ = (UniqueConstraint("owner_sub", "name", name="uq_folders_owner_name"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(256), unique=True)
+    name: Mapped[str] = mapped_column(String(256))
+    # NULL — папки dev-периода (видны всем не-админам, как dev-документы)
+    owner_sub: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

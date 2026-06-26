@@ -190,6 +190,8 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                     chunks = await app.state.retriever.retrieve(
                         db, body.message, document_id=doc_filter,
                         folder_id=project_id, document_ids=doc_ids,
+                        # RBAC §4.7.1: single-hop поиск — только свои документы
+                        owner_sub=None if user.is_admin else user.sub,
                     )
         except Exception as exc:
             logger.exception("retrieve/agent failed")

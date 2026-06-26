@@ -83,6 +83,7 @@ class AgentTools:
             chunks = await self.retriever.retrieve(
                 db, query, document_id=self.document_id, folder_id=self.folder_id,
                 document_ids=self.document_ids, top_k=settings.agent_search_top_k,
+                owner_sub=self.owner_sub,  # RBAC §4.7.1: поиск агента — только свои документы
             )
         if not chunks:
             return f"search_chunks('{query[:80]}'): ничего не найдено."
@@ -106,14 +107,16 @@ class AgentTools:
         if doc is None:
             return "get_tables: нужен document_id (или открой конкретный документ в чате)."
         async with self.sessionmaker() as db:
-            rows = (
-                await db.execute(
-                    select(Chunk, Document.filename)
-                    .join(Document, Document.id == Chunk.document_id)
-                    .where(Chunk.document_id == doc, Chunk.kind == "table")
-                    .order_by(Chunk.idx)
+            stmt = (
+                select(Chunk, Document.filename)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(Chunk.document_id == doc, Chunk.kind == "table")
+            )
+            if self.owner_sub is not None:  # RBAC §4.7.1: таблицы только своих документов
+                stmt = stmt.where(
+                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
                 )
-            ).all()
+            rows = (await db.execute(stmt.order_by(Chunk.idx))).all()
         if not rows:
             return "get_tables: таблиц в документе не найдено."
         chunks = [

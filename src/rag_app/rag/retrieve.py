@@ -32,6 +32,7 @@ FROM page_embeddings p JOIN documents d ON d.id = p.document_id
 WHERE (CAST(:doc_id AS uuid) IS NULL OR p.document_id = :doc_id)
   AND (CAST(:doc_ids AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:doc_ids AS uuid[])))
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
+  AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner OR d.owner_sub IS NULL)
 ORDER BY p.emb <=> CAST(:qe AS vector)
 LIMIT :k
 """
@@ -63,6 +64,7 @@ _SCOPE = """
   AND (CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id)
   AND (CAST(:doc_ids AS uuid[]) IS NULL OR c.document_id = ANY(CAST(:doc_ids AS uuid[])))
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
+  AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner OR d.owner_sub IS NULL)
 """
 
 _DENSE_SQL = f"""
@@ -131,11 +133,20 @@ class Retriever:
         folder_id: uuid.UUID | None = None,
         top_k: int | None = None,
         document_ids: list[uuid.UUID] | None = None,
+        owner_sub: str | None = None,
     ) -> list[RetrievedChunk]:
         top_k = top_k or settings.rag_context_top_k
         # пустой список = нет фильтра (трактуем как None)
         document_ids = document_ids or None
-        params = {"doc_id": document_id, "doc_ids": document_ids, "folder_id": folder_id}
+        # RBAC (ТЗ §4.7.1): owner_sub=None — admin/dev (без фильтра по владельцу);
+        # иначе только свои документы + dev-документы (owner NULL). Закрывает утечку
+        # чужого контента через поиск/чат — фильтр в том же SQL, что и область.
+        params = {
+            "doc_id": document_id,
+            "doc_ids": document_ids,
+            "folder_id": folder_id,
+            "owner": owner_sub,
+        }
 
         q_emb = await self.embedder.embed_query(query)
         dense_rows = (
@@ -178,7 +189,7 @@ class Retriever:
         # тексту — vision-on-demand подаст кропы в Qwen3.5 (chat.stream_answer).
         if settings.visual_enabled and self.visual_embedder is not None:
             result = await self._visual_augment(
-                session, query, result, document_id, folder_id, document_ids
+                session, query, result, document_id, folder_id, document_ids, owner_sub
             )
         return result
 
@@ -190,6 +201,7 @@ class Retriever:
         document_id: uuid.UUID | None,
         folder_id: uuid.UUID | None,
         document_ids: list[uuid.UUID] | None = None,
+        owner_sub: str | None = None,
     ) -> list[RetrievedChunk]:
         """Визуальный recall (Qwen3-VL-Embedding) + реранк (Qwen3-VL-Reranker) →
         добавить релевантные image-чанки страниц, которых текстовый поиск не поднял."""
@@ -203,6 +215,7 @@ class Retriever:
                         "doc_id": document_id,
                         "doc_ids": document_ids or None,
                         "folder_id": folder_id,
+                        "owner": owner_sub,
                         "k": settings.rag_visual_pages_k,
                     },
                 )
