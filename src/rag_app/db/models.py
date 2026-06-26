@@ -101,6 +101,11 @@ class Document(Base):
     source_lang: Mapped[str] = mapped_column(String(8), default="en", server_default="en")
     target_lang: Mapped[str] = mapped_column(String(8), default="ru", server_default="ru")
 
+    # Метаданные источника (ТЗ §4.7.2/§4.7.3): тип источника (file|web) и объект
+    # строительства — для поиска по библиотеке наряду с именем/датой/типом.
+    source_type: Mapped[str] = mapped_column(String(8), default="file", server_default="file")
+    project_object: Mapped[str | None] = mapped_column(String(256), default=None)
+
     s3_key_original: Mapped[str] = mapped_column(String(1024))
     s3_key_content_list: Mapped[str | None] = mapped_column(String(1024), default=None)
     s3_key_export_docx: Mapped[str | None] = mapped_column(String(1024), default=None)
@@ -158,6 +163,26 @@ class Segment(Base):
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
     document: Mapped[Document] = relationship(back_populates="segments")
+
+
+class SegmentVersion(Base):
+    """История правок перевода сегмента (ТЗ §4.7.2): append-only снимок было→стало
+    при каждом ручном изменении translated_text — для просмотра и отката."""
+
+    __tablename__ = "segment_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    segment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("segments.id", ondelete="CASCADE"), index=True
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    old_text: Mapped[str | None] = mapped_column(Text, default=None)
+    new_text: Mapped[str | None] = mapped_column(Text, default=None)
+    editor_sub: Mapped[str | None] = mapped_column(String(64), default=None)
+    editor_name: Mapped[str | None] = mapped_column(String(128), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class DocumentTranslation(Base):

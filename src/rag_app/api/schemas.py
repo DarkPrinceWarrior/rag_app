@@ -34,6 +34,9 @@ class DocumentOut(BaseModel):
     # язык-источник, определённый автоматически (ru|en|zh; "auto" — ещё не определён).
     # Цель перевода всегда русский. Для бейджа направления в библиотеке.
     source_lang: str | None = None
+    # метаданные (ТЗ §4.7.2/§4.7.3): тип источника + объект строительства
+    source_type: str = "file"
+    project_object: str | None = None
     created_at: datetime
 
     @classmethod

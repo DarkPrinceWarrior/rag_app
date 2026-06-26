@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { MoreVertical, Download, Trash2, FolderInput, Check, X, Languages } from 'lucide-react'
+import { MoreVertical, Download, Trash2, FolderInput, Check, X, Languages, Building2 } from 'lucide-react'
 import {
   api,
   EXPORT_LABELS,
@@ -10,6 +10,7 @@ import {
   translationDownloadUrl,
   type Document,
   type Folder,
+  type DocFilters,
 } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
@@ -33,11 +34,12 @@ const DIRECTION: Record<string, { label: string; cls: string }> = {
 function Library() {
   const qc = useQueryClient()
   const [folder, setFolder] = useState<string>('') // '' = все
+  const [filters, setFilters] = useState<DocFilters>({}) // поиск по метаданным (§4.7.3)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const docsQ = useQuery({
-    queryKey: ['documents'],
-    queryFn: api.listDocuments,
+    queryKey: ['documents', filters],
+    queryFn: () => api.listDocuments(filters),
     refetchInterval: (q) => (q.state.data?.some(inProgress) ? 2500 : false),
   })
   const foldersQ = useQuery({ queryKey: ['folders'], queryFn: api.listFolders })
@@ -59,6 +61,7 @@ function Library() {
       {upload.isError && <p className="mt-2 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
       <SearchPanel folder={folder} />
+      <FilterBar filters={filters} onChange={setFilters} />
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <FolderChip active={folder === ''} onClick={() => setFolder('')} label="Все" count={docsQ.data?.length} />
@@ -89,6 +92,56 @@ function Library() {
         <p className="mt-6 text-sm text-muted-foreground">Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX выше.</p>
       ) : (
         <DocList docs={docs} folders={foldersQ.data ?? []} />
+      )}
+    </div>
+  )
+}
+
+function FilterBar({ filters, onChange }: { filters: DocFilters; onChange: (f: DocFilters) => void }) {
+  const set = (k: keyof DocFilters, v: string) => onChange({ ...filters, [k]: v || undefined })
+  const active = Object.values(filters).some(Boolean)
+  const inp = 'h-8 rounded-md border bg-card px-2 text-sm'
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <Input
+        className="h-8 w-44"
+        placeholder="Поиск по имени файла"
+        value={filters.name ?? ''}
+        onChange={(e) => set('name', e.target.value)}
+      />
+      <select className={inp} value={filters.kind ?? ''} onChange={(e) => set('kind', e.target.value)}>
+        <option value="">Тип: любой</option>
+        <option value="pdf_text">PDF (текст)</option>
+        <option value="pdf_scan">PDF (скан)</option>
+        <option value="docx">DOCX</option>
+        <option value="xlsx">XLSX</option>
+        <option value="pptx">PPTX</option>
+        <option value="text">TXT</option>
+      </select>
+      <Input
+        className="h-8 w-44"
+        placeholder="Объект строительства"
+        value={filters.project ?? ''}
+        onChange={(e) => set('project', e.target.value)}
+      />
+      <input
+        type="date"
+        title="Дата загрузки от"
+        className={inp}
+        value={filters.date_from ?? ''}
+        onChange={(e) => set('date_from', e.target.value)}
+      />
+      <input
+        type="date"
+        title="Дата загрузки до"
+        className={inp}
+        value={filters.date_to ?? ''}
+        onChange={(e) => set('date_to', e.target.value)}
+      />
+      {active && (
+        <Button variant="ghost" size="sm" onClick={() => onChange({})}>
+          Сбросить
+        </Button>
       )}
     </div>
   )
@@ -403,6 +456,21 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
                     ))}
                 </>
               )}
+
+              <MenuSeparator />
+              <MenuItem
+                icon={<Building2 className="h-4 w-4" />}
+                onClick={() => {
+                  const val = prompt(
+                    'Объект строительства (для поиска по библиотеке):',
+                    d.project_object ?? '',
+                  )
+                  if (val !== null) void api.patchDocumentMeta(d.id, val.trim() || null).then(refresh)
+                  close()
+                }}
+              >
+                Объект строительства{d.project_object ? ` — ${d.project_object}` : '…'}
+              </MenuItem>
 
               <MenuSeparator />
               <MenuLabel>Переместить в папку</MenuLabel>

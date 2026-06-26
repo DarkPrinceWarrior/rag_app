@@ -34,7 +34,27 @@ export interface Document {
   has_view_ru?: boolean // рендер перевода готов (на экспорте)
   parser_backend?: string | null // движок парсинга pdf_text: mineru | dots_mocr | paddle_vl
   source_lang?: string | null // язык-источник, определён автоматически (ru|en|zh|auto); цель всегда ru
+  source_type?: string // file | web (ТЗ §4.7.2)
+  project_object?: string | null // объект строительства (ТЗ §4.7.2/§4.7.3)
   created_at: string
+}
+
+// история правок перевода сегмента (ТЗ §4.7.2)
+export interface SegmentVersion {
+  id: string
+  old_text: string | null
+  new_text: string | null
+  editor: string
+  created_at: string
+}
+
+// фильтры поиска по библиотеке (ТЗ §4.7.3)
+export interface DocFilters {
+  name?: string
+  kind?: string
+  project?: string
+  date_from?: string
+  date_to?: string
 }
 
 export interface Folder {
@@ -227,8 +247,17 @@ async function jdel(path: string): Promise<void> {
 }
 
 export const api = {
-  listDocuments: () => jget<Document[]>('/api/documents'),
+  listDocuments: (filters: DocFilters = {}) => {
+    const p = new URLSearchParams()
+    for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v)
+    const qs = p.toString()
+    return jget<Document[]>(`/api/documents${qs ? '?' + qs : ''}`)
+  },
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
+  patchDocumentMeta: (id: string, project_object: string | null) =>
+    jsend<Document>(`/api/documents/${id}/meta`, 'PATCH', { project_object }),
+  listSegmentVersions: (segId: string) =>
+    jget<SegmentVersion[]>(`/api/segments/${segId}/versions`),
   deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
   getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments?limit=${SEGMENTS_LIMIT}`),
   getSheets: (id: string) => jget<SheetsResponse>(`/api/documents/${id}/sheets`),

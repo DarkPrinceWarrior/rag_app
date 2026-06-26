@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, update
 
 from rag_app.api.audit import audit
-from rag_app.api.auth import require_user
-from rag_app.db.models import Document, DocumentStatus, Segment
+from rag_app.api.auth import User, require_user
+from rag_app.db.models import Document, DocumentStatus, Segment, SegmentVersion
 
 router = APIRouter(prefix="/api", tags=["segments"], dependencies=[require_user])
 
@@ -96,18 +96,69 @@ async def list_segments(
     return [SegmentOut.from_segment(s) for s in segments]
 
 
+async def _segment_or_404(session, segment_id: uuid.UUID, user: User) -> Segment:
+    seg = await session.get(Segment, segment_id)
+    if seg is None:
+        raise HTTPException(404, "сегмент не найден")
+    doc = await session.get(Document, seg.document_id)  # RBAC §4.7.1
+    if doc is not None and not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub:
+        raise HTTPException(404, "сегмент не найден")
+    return seg
+
+
 @router.patch("/segments/{segment_id}", response_model=SegmentOut)
 async def patch_segment(request: Request, segment_id: uuid.UUID, body: SegmentPatch) -> SegmentOut:
+    user: User = request.state.user
     async with request.app.state.sessionmaker() as session:
-        seg = await session.get(Segment, segment_id)
-        if seg is None:
-            raise HTTPException(404, "сегмент не найден")
+        seg = await _segment_or_404(session, segment_id, user)
+        old = seg.translated_text
+        changed = old != body.translated_text
+        if changed:  # история правок (ТЗ §4.7.2): версионируем только реальное изменение
+            session.add(
+                SegmentVersion(
+                    segment_id=seg.id, document_id=seg.document_id,
+                    old_text=old, new_text=body.translated_text,
+                    editor_sub=user.sub, editor_name=user.username,
+                )
+            )
         seg.translated_text = body.translated_text
         seg.needs_review = False  # ручная правка снимает флаг валидации
         await session.commit()
         await session.refresh(seg)
-    await audit(request, "segment_edit", "segment", str(segment_id), {"document_id": str(seg.document_id)})
+    await audit(
+        request, "segment_edit", "segment", str(segment_id),
+        {"document_id": str(seg.document_id), "changed": changed},
+    )
     return SegmentOut.model_validate(seg)
+
+
+@router.get("/segments/{segment_id}/versions")
+async def segment_versions(request: Request, segment_id: uuid.UUID) -> list[dict]:
+    """История правок перевода сегмента (ТЗ §4.7.2): было→стало, кто, когда."""
+    user: User = request.state.user
+    async with request.app.state.sessionmaker() as session:
+        await _segment_or_404(session, segment_id, user)
+        rows = (
+            (
+                await session.execute(
+                    select(SegmentVersion)
+                    .where(SegmentVersion.segment_id == segment_id)
+                    .order_by(SegmentVersion.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        {
+            "id": str(v.id),
+            "old_text": v.old_text,
+            "new_text": v.new_text,
+            "editor": v.editor_name or v.editor_sub or "—",
+            "created_at": v.created_at.isoformat(),
+        }
+        for v in rows
+    ]
 
 
 @router.post("/documents/{doc_id}/reexport")

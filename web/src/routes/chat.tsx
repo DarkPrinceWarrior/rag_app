@@ -66,7 +66,7 @@ function Chat() {
   const foldersQ = useQuery({ queryKey: ['folders'], queryFn: api.listFolders })
   const docsQ = useQuery({
     queryKey: ['documents'],
-    queryFn: api.listDocuments,
+    queryFn: () => api.listDocuments(),
     select: (ds) => ds.filter((d) => d.status === 'done'),
   })
 

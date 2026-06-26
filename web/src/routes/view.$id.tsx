@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, createElement, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
+import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment, type SegmentVersion } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
 import { ConfirmDialog } from '@/components/ui/modal'
@@ -1149,6 +1149,7 @@ function Editable({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const orig = useRef(value)
+  const [history, setHistory] = useState<SegmentVersion[] | null>(null)
 
   async function save() {
     const text = ref.current?.textContent ?? ''
@@ -1164,19 +1165,73 @@ function Editable({
     setTimeout(() => onSaved?.(''), 2000)
   }
 
+  async function openHistory() {
+    try {
+      setHistory(await api.listSegmentVersions(segId)) // ТЗ §4.7.2
+    } catch {
+      onSaved?.('Не удалось загрузить историю')
+    }
+  }
+
+  function restore(text: string | null) {
+    if (ref.current && text != null) {
+      ref.current.textContent = text
+      void save()
+    }
+    setHistory(null)
+  }
+
   if (!editable) return <div className={'whitespace-pre-wrap ' + className}>{value}</div>
 
   return (
-    <div
-      ref={ref}
-      contentEditable
-      suppressContentEditableWarning
-      onBlur={save}
-      className={
-        'whitespace-pre-wrap rounded-sm outline-none focus:bg-accent/40 focus:ring-1 focus:ring-primary ' + className
-      }
-    >
-      {value}
+    <div className="group relative">
+      <div
+        ref={ref}
+        contentEditable
+        suppressContentEditableWarning
+        onBlur={save}
+        className={
+          'whitespace-pre-wrap rounded-sm outline-none focus:bg-accent/40 focus:ring-1 focus:ring-primary ' +
+          className
+        }
+      >
+        {value}
+      </div>
+      <button
+        type="button"
+        title="История правок"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={openHistory}
+        className="absolute -top-1 right-0 hidden rounded bg-muted px-1 text-[10px] text-muted-foreground hover:bg-accent group-hover:block"
+      >
+        история
+      </button>
+      {history && (
+        <div className="absolute right-0 top-4 z-30 max-h-72 w-80 overflow-auto rounded-md border bg-card p-2 text-xs shadow-lg">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="font-medium">История правок ({history.length})</span>
+            <button onClick={() => setHistory(null)} className="text-muted-foreground hover:text-foreground">
+              ✕
+            </button>
+          </div>
+          {history.length === 0 && <div className="text-muted-foreground">Правок ещё не было.</div>}
+          {history.map((h) => (
+            <div key={h.id} className="border-t py-1">
+              <div className="text-muted-foreground">
+                {h.editor} · {new Date(h.created_at).toLocaleString('ru')}
+              </div>
+              <div className="line-through opacity-60">{(h.old_text ?? '').slice(0, 140)}</div>
+              <div className="text-emerald-700">{(h.new_text ?? '').slice(0, 140)}</div>
+              <button
+                onClick={() => restore(h.old_text)}
+                className="mt-0.5 text-primary hover:underline"
+              >
+                восстановить прежний текст
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
