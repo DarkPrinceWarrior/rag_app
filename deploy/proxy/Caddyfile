@@ -1,0 +1,20 @@
+# Внутренний обратный прокси «один origin»: под одним субдоменом отдаём
+# веб-приложение (API+SPA, :8100) и Keycloak (:8180) с разделением по путям.
+# TLS терминирует ВНЕШНИЙ прокси (Захар) — сюда приходит http на :8090.
+#
+# Запуск: docker compose -f deploy/proxy/docker-compose.yml up -d
+# Захару: <субдомен> → 192.168.101.12 → 8090
+:8090 {
+	# пути Keycloak → KC (:8180). У KC 26 это /realms, /resources, /admin, /js.
+	@kc path /realms* /resources* /admin* /js* /robots.txt
+	handle @kc {
+		reverse_proxy 127.0.0.1:8180 {
+			header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+			header_up X-Forwarded-Host {http.request.host}
+		}
+	}
+	# всё остальное (SPA, /api, /assets, /healthz, /metrics) → приложение (:8100)
+	handle {
+		reverse_proxy 127.0.0.1:8100
+	}
+}

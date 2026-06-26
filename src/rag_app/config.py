@@ -301,6 +301,10 @@ class Settings(BaseSettings):
     auth_enabled: bool = False  # false — dev-режим без токенов
     # issuer зафиксирован KC_HOSTNAME в compose; бэкенд резолвит localhost сам
     oidc_issuer: str = "http://localhost:8180/realms/rag-app"
+    # Split-horizon за внешним прокси: issuer/public — публичный домен, а ключи
+    # (JWKS) API берёт по ВНУТРЕННЕМУ URL Keycloak, не ходя наружу. Пусто →
+    # выводится из oidc_issuer (текущее поведение). См. deploy/PUBLIC.md.
+    oidc_jwks_url: str = ""
     # адрес для браузера (если Keycloak за другим адресом, чем видит бэкенд)
     oidc_public_url: str = "http://localhost:8180/realms/rag-app"
     oidc_client_id: str = "rag-web"

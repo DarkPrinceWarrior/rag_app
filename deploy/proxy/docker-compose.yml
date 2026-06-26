@@ -1,0 +1,17 @@
+# Внутренний «один origin» прокси перед API(:8100) и Keycloak(:8180).
+# network_mode: host — чтобы достучаться до сервисов, слушающих 127.0.0.1 хоста.
+# Слушает :8090; внешний TLS-прокси (Захар) указывает субдомен сюда.
+services:
+  rag-proxy:
+    image: caddy:2
+    container_name: rag-proxy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - rag_proxy_data:/data
+      - rag_proxy_config:/config
+
+volumes:
+  rag_proxy_data:
+  rag_proxy_config:

@@ -42,7 +42,7 @@ class _JwksCache:
 
     async def get_key(self, kid: str) -> jwt.PyJWK:
         if kid not in self._keys or time.monotonic() - self._fetched_at > 3600:
-            url = f"{settings.oidc_issuer}/protocol/openid-connect/certs"
+            url = settings.oidc_jwks_url or f"{settings.oidc_issuer}/protocol/openid-connect/certs"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
