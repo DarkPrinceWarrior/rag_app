@@ -48,11 +48,10 @@ export interface SegmentVersion {
   created_at: string
 }
 
-// фильтры поиска по библиотеке (ТЗ §4.7.3)
+// фильтры списка/поиска по библиотеке (ТЗ §4.7.3): только тип и даты —
+// имя файла и содержимое ищет единый /api/search
 export interface DocFilters {
-  name?: string
   kind?: string
-  project?: string
   date_from?: string
   date_to?: string
 }
@@ -84,6 +83,7 @@ export interface SearchHit {
   page_end: number | null
   snippet: string
   score: number
+  match?: 'filename' | 'content'
 }
 
 export interface Segment {
@@ -254,8 +254,6 @@ export const api = {
     return jget<Document[]>(`/api/documents${qs ? '?' + qs : ''}`)
   },
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
-  patchDocumentMeta: (id: string, project_object: string | null) =>
-    jsend<Document>(`/api/documents/${id}/meta`, 'PATCH', { project_object }),
   listSegmentVersions: (segId: string) =>
     jget<SegmentVersion[]>(`/api/segments/${segId}/versions`),
   deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
@@ -286,10 +284,21 @@ export const api = {
       { target_lang },
     ),
 
-  search: (q: string, opts: { document_id?: string; folder_id?: string } = {}) => {
+  search: (
+    q: string,
+    opts: {
+      document_id?: string
+      folder_id?: string
+      kind?: string
+      date_from?: string
+      date_to?: string
+    } = {},
+  ) => {
     const p = new URLSearchParams({ q })
-    if (opts.document_id) p.set('document_id', opts.document_id)
-    if (opts.folder_id) p.set('folder_id', opts.folder_id)
+    for (const k of ['document_id', 'folder_id', 'kind', 'date_from', 'date_to'] as const) {
+      const v = opts[k]
+      if (v) p.set(k, v)
+    }
     return jget<SearchHit[]>(`/api/search?${p}`)
   },
 

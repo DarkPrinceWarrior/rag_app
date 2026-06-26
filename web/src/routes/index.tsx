@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { MoreVertical, Download, Trash2, FolderInput, Check, X, Languages, Building2 } from 'lucide-react'
+import { MoreVertical, Download, Trash2, FolderInput, Check, X, Languages } from 'lucide-react'
 import {
   api,
   EXPORT_LABELS,
@@ -60,7 +60,7 @@ function Library() {
       </p>
       {upload.isError && <p className="mt-2 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
-      <SearchPanel folder={folder} />
+      <SearchPanel folder={folder} filters={filters} />
       <FilterBar filters={filters} onChange={setFilters} />
 
       <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -103,12 +103,7 @@ function FilterBar({ filters, onChange }: { filters: DocFilters; onChange: (f: D
   const inp = 'h-8 rounded-md border bg-card px-2 text-sm'
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2">
-      <Input
-        className="h-8 w-44"
-        placeholder="Поиск по имени файла"
-        value={filters.name ?? ''}
-        onChange={(e) => set('name', e.target.value)}
-      />
+      <span className="text-xs text-muted-foreground">Фильтры:</span>
       <select className={inp} value={filters.kind ?? ''} onChange={(e) => set('kind', e.target.value)}>
         <option value="">Тип: любой</option>
         <option value="pdf_text">PDF (текст)</option>
@@ -118,12 +113,6 @@ function FilterBar({ filters, onChange }: { filters: DocFilters; onChange: (f: D
         <option value="pptx">PPTX</option>
         <option value="text">TXT</option>
       </select>
-      <Input
-        className="h-8 w-44"
-        placeholder="Объект строительства"
-        value={filters.project ?? ''}
-        onChange={(e) => set('project', e.target.value)}
-      />
       <input
         type="date"
         title="Дата загрузки от"
@@ -458,21 +447,6 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
               )}
 
               <MenuSeparator />
-              <MenuItem
-                icon={<Building2 className="h-4 w-4" />}
-                onClick={() => {
-                  const val = prompt(
-                    'Объект строительства (для поиска по библиотеке):',
-                    d.project_object ?? '',
-                  )
-                  if (val !== null) void api.patchDocumentMeta(d.id, val.trim() || null).then(refresh)
-                  close()
-                }}
-              >
-                Объект строительства{d.project_object ? ` — ${d.project_object}` : '…'}
-              </MenuItem>
-
-              <MenuSeparator />
               <MenuLabel>Переместить в папку</MenuLabel>
               <MenuItem
                 icon={d.folder_id == null ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
@@ -538,12 +512,12 @@ async function downloadFile(url: string) {
   URL.revokeObjectURL(a.href)
 }
 
-function SearchPanel({ folder }: { folder: string }) {
+function SearchPanel({ folder, filters }: { folder: string; filters: DocFilters }) {
   const [q, setQ] = useState('')
   const [submitted, setSubmitted] = useState('')
   const searchQ = useQuery({
-    queryKey: ['search', submitted, folder],
-    queryFn: () => api.search(submitted, folder ? { folder_id: folder } : {}),
+    queryKey: ['search', submitted, folder, filters],
+    queryFn: () => api.search(submitted, { ...(folder ? { folder_id: folder } : {}), ...filters }),
     enabled: submitted.length >= 2,
   })
   return (
@@ -553,7 +527,7 @@ function SearchPanel({ folder }: { folder: string }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && setSubmitted(q.trim())}
-          placeholder="Поиск по библиотеке (гибрид + reranker)…"
+          placeholder="Поиск по библиотеке: по содержанию и имени файла…"
         />
         <Button onClick={() => setSubmitted(q.trim())} disabled={q.trim().length < 2}>
           Найти
@@ -562,9 +536,9 @@ function SearchPanel({ folder }: { folder: string }) {
       {searchQ.data && (
         <div className="mt-2 space-y-1.5">
           {searchQ.data.length === 0 && <p className="text-sm text-muted-foreground">Ничего не найдено.</p>}
-          {searchQ.data.map((h) => (
+          {searchQ.data.map((h, i) => (
             <Link
-              key={h.chunk_id}
+              key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
               to="/view/$id"
               params={{ id: h.document_id }}
               search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
@@ -572,9 +546,11 @@ function SearchPanel({ folder }: { folder: string }) {
             >
               <div className="flex justify-between gap-2">
                 <span className="truncate font-medium">{h.filename}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">{h.heading_path}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {h.match === 'filename' ? '🔎 имя файла' : h.heading_path}
+                </span>
               </div>
-              <div className="mt-0.5 line-clamp-2 text-muted-foreground">{h.snippet}</div>
+              {h.snippet && <div className="mt-0.5 line-clamp-2 text-muted-foreground">{h.snippet}</div>}
             </Link>
           ))}
         </div>

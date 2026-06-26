@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy import text as sql
 
 from rag_app.api.audit import audit
@@ -111,21 +111,16 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
 @router.get("", response_model=list[DocumentOut])
 async def list_documents(
     request: Request,
-    name: str | None = Query(None, description="поиск по имени файла (ТЗ §4.7.3)"),
     kind: str | None = Query(None, description="тип файла: pdf_text|pdf_scan|docx|xlsx|pptx|text"),
-    project: str | None = Query(None, description="объект строительства"),
     date_from: str | None = Query(None, description="дата загрузки от (YYYY-MM-DD)"),
     date_to: str | None = Query(None, description="дата загрузки до (YYYY-MM-DD)"),
 ) -> list[DocumentOut]:
+    # Фильтры списка (ТЗ §4.7.3) — только тип и даты; поиск по имени/содержимому —
+    # в едином /api/search (гибрид + reranker + имя файла).
     async with request.app.state.sessionmaker() as session:
         stmt = _owner_filter(select(Document), request.state.user)
-        # фильтры поиска по метаданным библиотеки (ТЗ §4.7.3)
-        if name and name.strip():
-            stmt = stmt.where(Document.filename.ilike(f"%{name.strip()}%"))
         if kind and kind.strip():
             stmt = stmt.where(Document.kind == kind.strip())
-        if project and project.strip():
-            stmt = stmt.where(Document.project_object.ilike(f"%{project.strip()}%"))
         for raw, op in ((date_from, ">="), (date_to, "<=")):
             if raw:
                 try:
@@ -149,25 +144,6 @@ async def list_documents(
             ).all()
         )
     return [DocumentOut.from_doc(d, reviews.get(d.id, 0)) for d in docs]
-
-
-class DocumentMetaIn(BaseModel):
-    project_object: str | None = None
-
-
-@router.patch("/{doc_id}/meta", response_model=DocumentOut)
-async def patch_document_meta(
-    request: Request, doc_id: uuid.UUID, body: DocumentMetaIn
-) -> DocumentOut:
-    """Объект строительства и пр. метаданные документа (ТЗ §4.7.2/§4.7.3)."""
-    await _get_or_404(request, doc_id)  # RBAC
-    async with request.app.state.sessionmaker() as session:
-        d = await session.get(Document, doc_id)
-        d.project_object = (body.project_object or "").strip() or None
-        await session.commit()
-        await session.refresh(d)
-    await audit(request, "doc_meta", "document", str(doc_id), {"project_object": d.project_object})
-    return DocumentOut.from_doc(d)
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)

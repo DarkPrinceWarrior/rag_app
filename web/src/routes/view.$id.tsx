@@ -465,6 +465,8 @@ function Viewer() {
                     <DocRead
                       segs={pageSegs}
                       citedId={cited}
+                      editable
+                      onSaved={setMsg}
                       onPick={(s) => {
                         const h = highlightOf(s)
                         if (h) setActive(h)
@@ -543,7 +545,7 @@ function Viewer() {
                     {pageSegs.length === 0 ? (
                       <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
                     ) : (
-                      <DocRead segs={pageSegs} citedId={cited} />
+                      <DocRead segs={pageSegs} citedId={cited} editable onSaved={setMsg} />
                     )}
                   </article>
                 </div>
@@ -843,11 +845,15 @@ function DocRead({
   citedId,
   onPick,
   plain = false,
+  editable = false,
+  onSaved,
 }: {
   segs: Segment[]
   citedId: string | null
   onPick?: (s: Segment) => void
   plain?: boolean // DOCX: абзацы как обычный текст (без Markdown/формул), быстро
+  editable?: boolean // правка перевода прямо в тексте + история правок (§4.7.2)
+  onSaved?: (m: string) => void
 }) {
   const nodes: ReactNode[] = []
   let i = 0
@@ -1002,21 +1008,32 @@ function DocRead({
 
     if (s.kind === 'heading') {
       const lvl = Math.min(Math.max(s.heading_level ?? 2, 1), 4)
+      const htext = textOf(s, 'translated') || textOf(s, 'source')
       nodes.push(
-        createElement(
-          `h${lvl}`,
-          { key: s.id, 'data-seg': s.id, onClick: pick, className: headingClass(lvl) + ring },
-          textOf(s, 'translated') || textOf(s, 'source'),
+        editable ? (
+          <div key={s.id} data-seg={s.id} onClick={pick} className={headingClass(lvl) + ring}>
+            <Editable value={htext} segId={s.id} className="" editable onSaved={onSaved} />
+          </div>
+        ) : (
+          createElement(
+            `h${lvl}`,
+            { key: s.id, 'data-seg': s.id, onClick: pick, className: headingClass(lvl) + ring },
+            htext,
+          )
         ),
       )
       i++
       continue
     }
 
-    // абзац: DOCX — обычный текст (быстро, без формул); PDF — через Markdown
+    // абзац: при editable — правка + история (§4.7.2); иначе DOCX plain / PDF Markdown
     const body = textOf(s, 'translated') || textOf(s, 'source')
     nodes.push(
-      plain ? (
+      editable ? (
+        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
+          <Editable value={body} segId={s.id} className="text-[15px] leading-relaxed" editable onSaved={onSaved} />
+        </div>
+      ) : plain ? (
         <p key={s.id} data-seg={s.id} onClick={pick} className={'my-2 whitespace-pre-line text-[15px] leading-relaxed' + ring}>
           {body}
         </p>
@@ -1199,12 +1216,12 @@ function Editable({
       </div>
       <button
         type="button"
-        title="История правок"
+        title="История правок перевода"
         onMouseDown={(e) => e.preventDefault()}
         onClick={openHistory}
-        className="absolute -top-1 right-0 hidden rounded bg-muted px-1 text-[10px] text-muted-foreground hover:bg-accent group-hover:block"
+        className="absolute -top-2 right-0 z-10 rounded border bg-muted px-1 text-[10px] leading-tight text-muted-foreground opacity-60 hover:bg-accent hover:opacity-100"
       >
-        история
+        ⏱ история
       </button>
       {history && (
         <div className="absolute right-0 top-4 z-30 max-h-72 w-80 overflow-auto rounded-md border bg-card p-2 text-xs shadow-lg">

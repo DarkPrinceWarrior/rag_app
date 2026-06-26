@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -148,25 +149,77 @@ async def search(
     document_id: uuid.UUID | None = None,
     folder_id: uuid.UUID | None = None,
     top_k: int = Query(default=10, le=30),
+    kind: str | None = Query(None, description="тип файла (ТЗ §4.7.3)"),
+    date_from: str | None = Query(None, description="дата загрузки от (YYYY-MM-DD)"),
+    date_to: str | None = Query(None, description="дата загрузки до (YYYY-MM-DD)"),
 ) -> list[dict]:
-    """Поиск по библиотеке: гибрид + reranker, сниппеты с привязкой к документу."""
+    """Единый поиск по библиотеке (ТЗ §4.7.3): гибрид + reranker по СОДЕРЖИМОМУ +
+    совпадение по ИМЕНИ ФАЙЛА. Фильтры тип/дата сужают набор документов."""
     user: User = request.state.user
+    owner = None if user.is_admin else user.sub
+    ql = q.strip().lower()
     async with request.app.state.sessionmaker() as db:
+        # набор документов под фильтры (тип/дата/папка/документ + владелец)
+        dstmt = select(Document.id, Document.filename, Document.kind)
+        if not user.is_admin:
+            dstmt = dstmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
+        if document_id:
+            dstmt = dstmt.where(Document.id == document_id)
+        if folder_id:
+            dstmt = dstmt.where(Document.folder_id == folder_id)
+        if kind and kind.strip():
+            dstmt = dstmt.where(Document.kind == kind.strip())
+        for raw, op in ((date_from, ">="), (date_to, "<=")):
+            if raw:
+                try:
+                    d = date.fromisoformat(raw)
+                except ValueError:
+                    continue
+                col = func.date(Document.created_at)
+                dstmt = dstmt.where(col >= d if op == ">=" else col <= d)
+        docrows = (await db.execute(dstmt)).all()
+        narrowed = bool((kind and kind.strip()) or date_from or date_to)
+        if narrowed and not docrows:
+            return []  # фильтры исключили все документы
+        scope_ids = [r.id for r in docrows] if narrowed else None
+        # совпадение по имени файла
+        fname = [r for r in docrows if ql in (r.filename or "").lower()][:10]
+        # поиск по содержимому (в пределах отфильтрованного набора, если есть фильтры)
         chunks = await request.app.state.retriever.retrieve(
-            db, q, document_id=document_id, folder_id=folder_id, top_k=top_k,
-            owner_sub=None if user.is_admin else user.sub,  # RBAC §4.7.1
+            db, q, document_id=document_id, folder_id=folder_id,
+            document_ids=scope_ids, top_k=top_k, owner_sub=owner,
         )
-    return [
+    fname_ids = {str(r.id) for r in fname}
+    results: list[dict] = [
         {
-            "chunk_id": str(c.id),
-            "document_id": str(c.document_id),
-            "filename": c.filename,
-            "heading_path": c.heading_path,
-            "kind": c.kind,
-            "page_start": c.page_start,
-            "page_end": c.page_end,
-            "snippet": (c.text_ru or c.text_en)[:400],
-            "score": round(c.score, 4),
+            "chunk_id": "",
+            "document_id": str(r.id),
+            "filename": r.filename,
+            "heading_path": "совпадение по имени файла",
+            "kind": r.kind,
+            "page_start": None,
+            "page_end": None,
+            "snippet": "",
+            "score": 1.0,
+            "match": "filename",
         }
-        for c in chunks
+        for r in fname
     ]
+    for c in chunks:
+        if str(c.document_id) in fname_ids:
+            continue  # документ уже показан как совпадение по имени
+        results.append(
+            {
+                "chunk_id": str(c.id),
+                "document_id": str(c.document_id),
+                "filename": c.filename,
+                "heading_path": c.heading_path,
+                "kind": c.kind,
+                "page_start": c.page_start,
+                "page_end": c.page_end,
+                "snippet": (c.text_ru or c.text_en)[:400],
+                "score": round(c.score, 4),
+                "match": "content",
+            }
+        )
+    return results
