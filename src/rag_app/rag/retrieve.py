@@ -179,6 +179,16 @@ class Retriever:
             for c, s in zip(candidates, rr, strict=True):
                 c.score = s
             candidates.sort(key=lambda c: -c.score)
+            # Порог релевантности: если даже лучший фрагмент почти нерелевантен
+            # (запрос — не про эти документы), не вываливаем случайные чанки —
+            # пусто → чат честно скажет, что релевантного не нашлось. Только в ветке
+            # успешного реранка (у RRF-фолбэка иная шкала скоров).
+            if candidates and candidates[0].score < settings.rag_rerank_min_score:
+                logger.info(
+                    "retrieve: топ-реранк %.4f < порога %.4f — релевантных фрагментов нет",
+                    candidates[0].score, settings.rag_rerank_min_score,
+                )
+                return []
         except Exception as exc:  # reranker недоступен → порядок RRF
             logger.warning("reranker недоступен (%s) — отдаю RRF-порядок", exc)
             for c in candidates:

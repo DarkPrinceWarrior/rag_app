@@ -132,6 +132,9 @@ class Settings(BaseSettings):
     rag_dense_top_k: int = 50
     rag_sparse_top_k: int = 50
     rag_rerank_top_k: int = 20  # после RRF — в reranker
+    # порог релевантности реранкера [0..1]: если лучший фрагмент ниже — считаем,
+    # что запрос не про эти документы, и не вываливаем случайные чанки (пусто)
+    rag_rerank_min_score: float = 0.02
     rag_context_top_k: int = 5  # в промпт
     # сколько вырезанных рисунков (img_s3 среди найденных чанков) приложить кропами
     # в мультимодальный запрос Qwen3.5 (vision on-demand в чате) — кап под ctx 8192

@@ -164,7 +164,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
 
         # memory_only (§2.3.1): вопрос о пользователе/проекте — документный поиск
         # пропускаем, отвечаем из памяти.
-        needs_docs = route_info.route != "memory_only"
+        needs_docs = route_info.route not in ("memory_only", "out_of_scope")
         agent: AgentLoop | None = None
         chunks = []
         try:
@@ -220,7 +220,8 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             parts: list[str] = []
             try:
                 async for delta in app.state.chat_engine.stream_answer(
-                    body.message, chunks, history, summary=summary, memory_block=memory_block
+                    body.message, chunks, history, summary=summary,
+                    memory_block=memory_block, route=route_info.route,
                 ):
                     parts.append(delta)
                     yield _sse({"type": "delta", "text": delta})
