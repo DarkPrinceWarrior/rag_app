@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import mimetypes
 import uuid
@@ -17,6 +18,7 @@ from rag_app.api.auth import User, require_user
 from rag_app.api.schemas import DocumentOut
 from rag_app.config import settings
 from rag_app.db.models import Document, DocumentStatus, Segment
+from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
 
 router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
@@ -45,6 +47,11 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 @router.post("", response_model=DocumentOut, status_code=201)
 async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
+    # Направление перевода НЕ выбирается вручную (ТЗ §4.3, домен ru/en/zh):
+    # язык-источник определяется автоматически по тексту на этапе перевода,
+    # цель — всегда русский (русский документ не переводится). "auto" —
+    # маркер «ещё не определён», воркер заменит его на ru/en/zh.
+    source_lang, target_lang = "auto", "ru"
     filename = file.filename or "document.pdf"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -85,6 +92,8 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
             content_type=content_type,
             size_bytes=len(data),
             s3_key_original=s3_key,
+            source_lang=source_lang,
+            target_lang=target_lang,
         )
         session.add(doc)
         await session.commit()
@@ -291,6 +300,267 @@ async def document_image(request: Request, doc_id: uuid.UUID, name: str) -> Resp
         raise HTTPException(404, "картинка не найдена") from exc
     media = mimetypes.guess_type(name)[0] or "image/jpeg"
     return Response(content=data, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
+
+
+# --- интерактивный xlsx-просмотр (сетка листов, а не office-PDF «принт») ---
+_SHEET_MAX_ROWS = 1000  # потолок строк на лист для грид-просмотра (латентность/payload)
+_SHEET_MAX_COLS = 60
+
+
+def _fmt_cell(v: object) -> str:
+    """Значение ячейки → строка для грида: даты как ДД.ММ.ГГГГ, числа без
+    «хвостов» float (1.8849999999999998 → 1.885), остальное — как есть."""
+    import datetime as _dt
+
+    if v is None:
+        return ""
+    if isinstance(v, _dt.datetime):
+        return (
+            v.strftime("%d.%m.%Y")
+            if (v.hour, v.minute, v.second) == (0, 0, 0)
+            else v.strftime("%d.%m.%Y %H:%M")
+        )
+    if isinstance(v, _dt.date):
+        return v.strftime("%d.%m.%Y")
+    if isinstance(v, bool):
+        return "ИСТИНА" if v else "ЛОЖЬ"
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
+def _ws_grids(ws: object, trans: dict[str, str]) -> tuple[list[list[str]], list[list[str]], int, int]:
+    """Лист (data_only) → (сетка оригинала, сетка перевода, всего_строк, всего_столбцов).
+
+    Перевод = та же сетка, где строковые ячейки с известным переводом заменены на
+    перевод; числа/формулы (кэш-значения) остаются на месте."""
+    tot_r = getattr(ws, "max_row", 0) or 0
+    tot_c = getattr(ws, "max_column", 0) or 0
+    n_r = min(tot_r, _SHEET_MAX_ROWS)
+    n_c = min(tot_c, _SHEET_MAX_COLS)
+    og: list[list[str]] = []
+    rg: list[list[str]] = []
+    if n_r and n_c:
+        for row in ws.iter_rows(min_row=1, max_row=n_r, max_col=n_c, values_only=True):  # type: ignore[attr-defined]
+            o_row: list[str] = []
+            r_row: list[str] = []
+            for v in row:
+                cell = _fmt_cell(v)
+                o_row.append(cell)
+                t = trans.get(v) if isinstance(v, str) else None
+                r_row.append(t if t else cell)
+            og.append(o_row)
+            rg.append(r_row)
+    return og, rg, tot_r, tot_c
+
+
+def _ws_chart_titles(ws: object) -> list[str]:
+    """Заголовки встроенных диаграмм листа (грид показывает ячейки, не рисунки —
+    о диаграмме сообщаем пометкой, иначе она «пропадает»)."""
+    titles: list[str] = []
+    for c in getattr(ws, "_charts", []) or []:
+        t = getattr(c, "title", None)
+        txt = None
+        try:
+            if t is not None and getattr(t, "tx", None) and getattr(t.tx, "rich", None):
+                txt = t.tx.rich.p[0].r[0].t
+        except Exception:
+            txt = None
+        titles.append(txt or "диаграмма")
+    return titles
+
+
+def _read_xlsx_grids(orig: bytes, trans: dict[str, str]) -> list[dict]:
+    """Оригинал (data_only — с кэш-значениями формул) + словарь переводов
+    {исходный_текст_ячейки: перевод} → листы с сетками orig/ru для грида.
+
+    Перевод накладывается на оригинал из сегментов БД, а НЕ читается из
+    переэкспортированного xlsx: openpyxl при сохранении теряет кэш формул, из-за
+    чего числовые ячейки-формулы (=COUNTIF, =SUM, =IF) выглядели пустыми."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(orig), data_only=True)
+    out: list[dict] = []
+    for ws in wb.worksheets:
+        og, rg, tot_r, tot_c = _ws_grids(ws, trans)
+        out.append(
+            {
+                "name": ws.title,
+                "name_ru": trans.get(ws.title) or ws.title,
+                "orig": og,
+                "ru": rg,
+                "total_rows": tot_r,
+                "total_cols": tot_c,
+                "truncated": tot_r > _SHEET_MAX_ROWS or tot_c > _SHEET_MAX_COLS,
+                "charts": _ws_chart_titles(ws),
+            }
+        )
+    return out
+
+
+@router.get("/{doc_id}/sheets")
+async def document_sheets(request: Request, doc_id: uuid.UUID) -> dict:
+    """Данные xlsx для ИНТЕРАКТИВНОГО просмотра: листы → сетка ячеек (оригинал +
+    перевод). Перевод накладывается на оригинал по тексту ячейки (из сегментов),
+    поэтому числа/формулы видны всегда. Это настоящая таблица, а не PDF-принт."""
+    doc = await _get_or_404(request, doc_id)
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    if kind != "xlsx":
+        raise HTTPException(400, "интерактивная сетка только для xlsx")
+    async with request.app.state.sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(Segment.source_text, Segment.translated_text).where(
+                    Segment.document_id == doc_id,
+                    Segment.translated_text.is_not(None),
+                )
+            )
+        ).all()
+    trans = {src: tr for src, tr in rows if tr}
+    storage = request.app.state.storage
+    orig_bytes = await storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
+    sheets = await asyncio.to_thread(_read_xlsx_grids, orig_bytes, trans)
+    return {"sheets": sheets, "translated_ready": bool(trans)}
+
+
+# --- интерактивный pptx-просмотр (структура слайдов, а не office-PDF «принт») ---
+def _slide_blocks(shapes: object, s_i: int, trans: dict[str, str]) -> list[dict]:
+    """Фигуры слайда (с заходом в группы) → упорядоченные блоки для рендера:
+    text (абзацы), table (ячейки), image (рисунок). Перевод накладывается по
+    location-ключу из сегментов (как inject_pptx)."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    blocks: list[dict] = []
+    for shape in shapes:  # type: ignore[attr-defined]
+        try:
+            stype = shape.shape_type
+        except Exception:
+            stype = None
+        if stype == MSO_SHAPE_TYPE.GROUP:
+            blocks.extend(_slide_blocks(shape.shapes, s_i, trans))
+            continue
+        if getattr(shape, "has_table", False):
+            rows: list[list[dict]] = []
+            for r, row in enumerate(shape.table.rows):
+                cells: list[dict] = []
+                for c, cell in enumerate(row.cells):
+                    o = (cell.text or "").strip()
+                    key = ooxml.location_key({"slide": s_i, "shape": shape.shape_id, "row": r, "col": c})
+                    cells.append({"orig": o, "ru": trans.get(key) or o})
+                rows.append(cells)
+            blocks.append({"type": "table", "rows": rows})
+            continue
+        if stype == MSO_SHAPE_TYPE.PICTURE:
+            blocks.append({"type": "image", "shape": shape.shape_id})
+            continue
+        if getattr(shape, "has_text_frame", False):
+            lines: list[dict] = []
+            for p_i, p in enumerate(shape.text_frame.paragraphs):
+                o = (p.text or "").strip()
+                if not o:
+                    continue
+                key = ooxml.location_key({"slide": s_i, "shape": shape.shape_id, "para": p_i})
+                lines.append({"orig": o, "ru": trans.get(key) or o, "level": getattr(p, "level", 0) or 0})
+            if lines:
+                blocks.append({"type": "text", "lines": lines})
+    return blocks
+
+
+def _build_slides(orig: bytes, trans: dict[str, str]) -> list[dict]:
+    from pptx import Presentation
+
+    prs = Presentation(io.BytesIO(orig))
+    out: list[dict] = []
+    for s_i, slide in enumerate(prs.slides):
+        title_o = ""
+        title_r = ""
+        try:
+            ts = slide.shapes.title
+        except Exception:
+            ts = None
+        if ts is not None and getattr(ts, "has_text_frame", False):
+            title_o = (ts.text or "").strip()
+            key = ooxml.location_key({"slide": s_i, "shape": ts.shape_id, "para": 0})
+            title_r = trans.get(key) or title_o
+        out.append(
+            {
+                "index": s_i,
+                "title": title_o,
+                "title_ru": title_r or title_o,
+                "blocks": _slide_blocks(slide.shapes, s_i, trans),
+            }
+        )
+    return out
+
+
+@router.get("/{doc_id}/slides")
+async def document_slides(request: Request, doc_id: uuid.UUID) -> dict:
+    """Данные pptx для ИНТЕРАКТИВНОГО просмотра: слайды → блоки (текст/таблица/
+    рисунок), оригинал + перевод. Перевод накладывается по location из сегментов.
+    Настоящая презентация (листать слайды, выделять текст), а не PDF-принт."""
+    doc = await _get_or_404(request, doc_id)
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    if kind != "pptx":
+        raise HTTPException(400, "структура слайдов только для pptx")
+    async with request.app.state.sessionmaker() as session:
+        segs = (
+            await session.execute(
+                select(Segment).where(
+                    Segment.document_id == doc_id, Segment.translated_text.is_not(None)
+                )
+            )
+        ).scalars().all()
+    trans = {
+        ooxml.location_key(s.meta["location"]): s.translated_text
+        for s in segs
+        if s.translated_text and s.meta.get("location")
+    }
+    storage = request.app.state.storage
+    orig_bytes = await storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
+    slides = await asyncio.to_thread(_build_slides, orig_bytes, trans)
+    return {"slides": slides, "translated_ready": bool(trans)}
+
+
+def _extract_slide_image(orig: bytes, slide_idx: int, shape_id: int) -> tuple[bytes, str] | None:
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    prs = Presentation(io.BytesIO(orig))
+    slides = list(prs.slides)
+    if slide_idx < 0 or slide_idx >= len(slides):
+        return None
+
+    def find(shapes: object):
+        for shape in shapes:  # type: ignore[attr-defined]
+            try:
+                stype = shape.shape_type
+            except Exception:
+                stype = None
+            if stype == MSO_SHAPE_TYPE.GROUP:
+                hit = find(shape.shapes)
+                if hit:
+                    return hit
+            elif shape.shape_id == shape_id and stype == MSO_SHAPE_TYPE.PICTURE:
+                return shape
+        return None
+
+    shape = find(slides[slide_idx].shapes)
+    if shape is None:
+        return None
+    img = shape.image
+    return img.blob, (img.content_type or "image/png")
+
+
+@router.get("/{doc_id}/slide-image/{slide_idx}/{shape_id}")
+async def slide_image(request: Request, doc_id: uuid.UUID, slide_idx: int, shape_id: int) -> Response:
+    """Рисунок со слайда pptx (по slide+shape_id) — для интерактивного просмотра."""
+    doc = await _get_or_404(request, doc_id)
+    orig_bytes = await request.app.state.storage.get_bytes(settings.bucket_originals, doc.s3_key_original)
+    res = await asyncio.to_thread(_extract_slide_image, orig_bytes, slide_idx, shape_id)
+    if res is None:
+        raise HTTPException(404, "рисунок не найден")
+    blob, media = res
+    return Response(content=blob, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.delete("/{doc_id}", status_code=204)

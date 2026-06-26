@@ -1,5 +1,10 @@
 import { authFetch } from '@/lib/auth'
 
+// Потолок сегментов, который грузит вьювер за один запрос. Бэкстоп против
+// патологических документов (xlsx-дата-дампы на сотни тысяч ячеек вешали
+// «Загрузка…»). Должен совпадать с дефолтом `limit` в API list_segments.
+export const SEGMENTS_LIMIT = 4000
+
 // виды скачивания ПЕРЕВОДА (kind для /download/{kind}) и их подписи.
 // Это всё — переведённый документ в разных форматах; «оригинал» (как загружен)
 // скачивается отдельным пунктом меню (kind=original).
@@ -28,6 +33,7 @@ export interface Document {
   has_view_orig?: boolean // рендер оригинала готов (рано, после парсинга)
   has_view_ru?: boolean // рендер перевода готов (на экспорте)
   parser_backend?: string | null // движок парсинга pdf_text: mineru | dots_mocr | paddle_vl
+  source_lang?: string | null // язык-источник, определён автоматически (ru|en|zh|auto); цель всегда ru
   created_at: string
 }
 
@@ -67,12 +73,61 @@ export interface Segment {
   caption_ru?: string | null
   image_url?: string | null
   location?: Record<string, number> | null
+  // положение в левом (оригинал) и правом (перевод) рендер-PDF — кросс-навигация
+  loc_left?: PdfLoc | null
+  loc_right?: PdfLoc | null
+}
+
+export interface PdfLoc {
+  page: number // 0-based
+  bbox: number[] // [x0,y0,x1,y1] top-left, pt
+  pagesize: number[] // [w,h] pt
 }
 
 export interface TableCell {
   text: string
   colspan: number
   rowspan: number
+}
+
+// xlsx → интерактивный грид-просмотр (а не office-PDF «принт»): лист = сетка
+// строковых значений ячеек, оригинал + перевод.
+export interface SheetData {
+  name: string
+  name_ru?: string // перевод названия листа (для вкладок справа)
+  orig: string[][]
+  ru: string[][]
+  total_rows: number
+  total_cols: number
+  truncated: boolean
+  charts?: string[] // заголовки встроенных диаграмм (в гриде не рисуются)
+}
+export interface SheetsResponse {
+  sheets: SheetData[]
+  translated_ready: boolean
+}
+
+// pptx → интерактивный просмотр слайдов (а не office-PDF «принт»).
+export interface SlideLine {
+  orig: string
+  ru: string
+  level: number
+}
+export interface SlideBlock {
+  type: 'text' | 'table' | 'image'
+  lines?: SlideLine[]
+  rows?: { orig: string; ru: string }[][]
+  shape?: number
+}
+export interface Slide {
+  index: number
+  title: string
+  title_ru: string
+  blocks: SlideBlock[]
+}
+export interface SlidesResponse {
+  slides: Slide[]
+  translated_ready: boolean
 }
 
 export interface Citation {
@@ -164,7 +219,9 @@ export const api = {
   listDocuments: () => jget<Document[]>('/api/documents'),
   getDocument: (id: string) => jget<Document>(`/api/documents/${id}`),
   deleteDocument: (id: string) => jdel(`/api/documents/${id}`),
-  getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments`),
+  getSegments: (id: string) => jget<Segment[]>(`/api/documents/${id}/segments?limit=${SEGMENTS_LIMIT}`),
+  getSheets: (id: string) => jget<SheetsResponse>(`/api/documents/${id}/sheets`),
+  getSlides: (id: string) => jget<SlidesResponse>(`/api/documents/${id}/slides`),
   reexport: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/reexport`, 'POST'),
   retry: (id: string) => jsend<{ status: string }>(`/api/documents/${id}/retry`, 'POST'),
   reparseOcr: (id: string, lang = 'east_slavic') =>
@@ -214,13 +271,14 @@ export const api = {
     jsend<MemoryCandidate>(`/api/memory/candidates/${id}/reject`, 'POST'),
   purgeMemory: () => jsend<{ purged: string; items: number; events: number }>('/api/memory/purge', 'POST', {}),
 
-  extractTable: (query: string, document_id: string | null) =>
-    jsend<ExtractTable>('/api/extract/table', 'POST', { query, document_id }),
-
-  translateFragment: (text: string) =>
-    jsend<{ text: string; engine: string; ms: number }>('/api/translate/fragment', 'POST', { text }),
+  extractTable: (
+    query: string,
+    scope: { document_id?: string | null; folder_id?: string; document_ids?: string[] } = {},
+  ) => jsend<ExtractTable>('/api/extract/table', 'POST', { query, ...scope }),
 
   async uploadDocument(file: File): Promise<Document> {
+    // Направление перевода не выбирается: язык-источник определяется
+    // автоматически, цель всегда русский (ТЗ §4.3).
     const fd = new FormData()
     fd.append('file', file)
     const r = await authFetch('/api/documents', { method: 'POST', body: fd })
@@ -230,3 +288,5 @@ export const api = {
 }
 
 export const downloadUrl = (docId: string, key: string) => `/api/documents/${docId}/download/${key}`
+export const slideImageUrl = (docId: string, slide: number, shape: number) =>
+  `/api/documents/${docId}/slide-image/${slide}/${shape}`

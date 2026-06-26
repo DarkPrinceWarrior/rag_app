@@ -54,20 +54,45 @@ def test_xlsx_roundtrip(tmp_path: Path) -> None:
     ws["B1"] = 16.5  # число — не трогаем
     ws["C1"] = "=B1*2"  # формула — не трогаем
     ws["A2"] = "Test pressure"
+    ws["A3"] = "Design pressure"  # дубль текста A1 → один сегмент, оба перевода
     wb.save(str(src))
 
     drafts = ooxml.extract_xlsx(src)
+    # дедуп по тексту: "Design pressure" один раз
     assert sorted(d.source_text for d in drafts) == ["Design pressure", "Test pressure"]
 
-    translations = {ooxml.location_key(d.meta["location"]): f"RU:{d.source_text}" for d in drafts}
+    # inject теперь по ИСХОДНОМУ ТЕКСТУ ячейки (а не по location)
+    translations = {d.source_text: f"RU:{d.source_text}" for d in drafts}
     dst = tmp_path / "dst.xlsx"
-    assert ooxml.inject_xlsx(src, dst, translations) == 2
+    # 3 ячейки переведены (A1, A2, A3 — дубль тоже), несмотря на 2 сегмента
+    assert ooxml.inject_xlsx(src, dst, translations) == 3
 
     out = load_workbook(str(dst))
     ws2 = out.active
     assert ws2["A1"].value == "RU:Design pressure"
+    assert ws2["A3"].value == "RU:Design pressure"  # дубль получил тот же перевод
     assert ws2["B1"].value == 16.5
     assert ws2["C1"].value == "=B1*2"
+
+
+def test_xlsx_skips_data_dump(tmp_path: Path) -> None:
+    """Числовой/кодовый дамп НЕ плодит сегменты; проза — переводится."""
+    src = tmp_path / "dump.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "Compound name"  # проза (есть пробел) → переводим
+    ws["B1"] = "Melting point, C"  # проза → переводим
+    ws["A2"] = "DMFA"  # короткий код-токен → НЕ переводим
+    ws["B2"] = "0.43"  # число-строка → НЕ переводим
+    ws["A3"] = "130/130/300"  # код → НЕ переводим
+    ws["B3"] = "pH"  # короткий токен → НЕ переводим
+    ws["A4"] = "Eo"  # короткий токен → НЕ переводим
+    ws["B4"] = "BTC"  # короткий код-токен → НЕ переводим
+    ws["A5"] = "Hydrostatic test"  # проза → переводим
+    wb.save(str(src))
+
+    texts = sorted(d.source_text for d in ooxml.extract_xlsx(src))
+    assert texts == ["Compound name", "Hydrostatic test", "Melting point, C"]
 
 
 def test_pptx_roundtrip(tmp_path: Path) -> None:

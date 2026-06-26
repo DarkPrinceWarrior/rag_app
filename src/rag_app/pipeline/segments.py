@@ -149,6 +149,27 @@ def _norm_header(text: Any) -> str:
     return " ".join(str(text or "").split()).lower()
 
 
+def _is_degenerate(text: str) -> bool:
+    """Парсер изредка уходит в repetition-collapse: блок из одного повторяющегося
+    символа (`!!!!…`) или почти без уникальных слов. Такой сегмент — мусор: ломает
+    перевод (выходит за контекст) и засоряет вьювер/RAG. Реальный текст так не
+    выглядит. Короткие строки не трогаем (могут быть «———», «...»)."""
+    t = (text or "").strip()
+    if len(t) < 40:
+        return False
+    body = t.replace(" ", "").replace("\n", "")
+    if body:
+        top = max((body.count(c) for c in set(body)), default=0)
+        if top / len(body) > 0.8:  # один символ доминирует (>80%)
+            return True
+    if len(t) > 8000:
+        return True
+    words = t.split()
+    if len(words) >= 60 and len({w.lower() for w in words}) / len(words) < 0.35:
+        return True
+    return False
+
+
 def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
     # MinerU помечает колонтитулы type=header/footer и НЕ кладёт их в основной
     # поток text. Бегущий колонтитул повторяется на ≥2 страницах — это шум для
@@ -228,6 +249,14 @@ def content_list_to_segments(items: list[dict[str, Any]]) -> list[SegmentDraft]:
             text = (item.get("text") or "").strip()
             if text:
                 drafts.append(SegmentDraft(0, SegmentKind.equation, text, page_idx, meta=base_meta))
+
+    # выбросить вырожденные сегменты (repetition-collapse парсера: `!!!!`-блоб и т.п.)
+    drafts = [
+        d
+        for d in drafts
+        if d.kind not in (SegmentKind.paragraph, SegmentKind.table)
+        or not _is_degenerate(d.source_text)
+    ]
 
     # титульные шапки — в начало своей страницы (перед первым блоком той же страницы)
     for title in titles:

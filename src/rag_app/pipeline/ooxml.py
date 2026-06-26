@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +24,14 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.text import MSO_AUTO_SIZE
 
+from rag_app.config import settings
 from rag_app.db.models import SegmentKind
 from rag_app.pipeline.segments import SegmentDraft
+
+logger = logging.getLogger(__name__)
 
 
 def location_key(location: dict[str, Any]) -> str:
@@ -140,29 +147,97 @@ def inject_docx(src: Path, dst: Path, translations: dict[str, str]) -> int:
 
 # ------------------------------------------------------------------ XLSX
 
+# Слово = ≥2 подряд идущих буквы (латиница/кириллица). Чисто-числовой/кодовый
+# дамп (0.43, 130/130/300, DMFA, pH, Eo) слов в этом смысле не даёт «прозы».
+_WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{2,}")
+
+
+def _is_translatable_xlsx(v: str) -> bool:
+    """Ячейка переводима, если в ней есть осмысленный текст (слово/фраза), а не
+    голый код/число/идентификатор.
+
+    Условие: есть «буквенная» группа ≥2 символов И выполнено одно из:
+      - в строке есть пробел (фраза из нескольких токенов: «Lift method»), либо
+      - длина ≥12 («North Kudrinskoye»), либо
+      - буквы составляют ≥50% непробельных символов (одиночное слово-подпись:
+        «Operating», «Status», «Field:», «Normal», «Inflow», «Shutdown»).
+    Последнее правило ловит короткие однословные заголовки/статусы, которые
+    раньше терялись. Смешанные коды («42/713», «ES-0517», «01.05.2026») при этом
+    отсекаются — в них мало букв либо их нет вовсе. Объём по-прежнему ограничен
+    `xlsx_max_segments` + дедуп, поэтому крупные data-дампы не раздуваются."""
+    s = v.strip()
+    if not s or s.startswith("="):
+        return False
+    if not _WORD_RE.search(s):
+        return False
+    if " " in s or len(s) >= 12:
+        return True
+    letters = sum(c.isalpha() for c in s)
+    nonspace = sum(not c.isspace() for c in s) or 1
+    return letters / nonspace >= 0.5
+
+
 def extract_xlsx(path: Path) -> list[SegmentDraft]:
     wb = load_workbook(str(path))  # data_only=False: формулы остаются формулами
     drafts: list[SegmentDraft] = []
+    seen: set[str] = set()  # дедуп по исходному тексту: одинаковые строки = 1 сегмент
+    capped = False
+    skipped_dup = 0
     for s_i, ws in enumerate(wb.worksheets):
+        # название листа — тоже переводим (вкладки листов показываем и на русском)
+        title = (ws.title or "").strip()
+        if title and title not in seen:
+            seen.add(title)
+            drafts.append(
+                SegmentDraft(
+                    idx=len(drafts),
+                    kind=SegmentKind.paragraph,
+                    source_text=title,
+                    page_idx=s_i,
+                    meta={"location": {"sheet": ws.title, "cell": "__sheet_title__"}, "sheet_title": True},
+                )
+            )
         for row in ws.iter_rows():
             for cell in row:
                 v = cell.value
-                # только строковые значения; формулы ("=...") и числа не трогаем по построению
-                if not isinstance(v, str) or not v.strip() or v.startswith("="):
+                # только строковые значения; формулы и числа не трогаем по построению
+                if not isinstance(v, str) or not _is_translatable_xlsx(v):
                     continue
+                if v in seen:
+                    skipped_dup += 1
+                    continue
+                if len(drafts) >= settings.xlsx_max_segments:
+                    capped = True
+                    continue
+                seen.add(v)
                 drafts.append(
                     SegmentDraft(
                         idx=len(drafts),
                         kind=SegmentKind.paragraph,
                         source_text=v,
                         page_idx=s_i,
+                        # location — первой встреченной ячейки с этим текстом; inject
+                        # применяет перевод ПО ТЕКСТУ ко всем ячейкам-дубликатам.
                         meta={"location": {"sheet": ws.title, "cell": cell.coordinate}},
                     )
                 )
+    if capped:
+        logger.warning(
+            "extract_xlsx %s: достигнут потолок xlsx_max_segments=%d — часть прозовых "
+            "ячеек отброшена (перевод неполный); скрытых дублей-ячеек: %d",
+            path.name,
+            settings.xlsx_max_segments,
+            skipped_dup,
+        )
     return drafts
 
 
 def inject_xlsx(src: Path, dst: Path, translations: dict[str, str]) -> int:
+    """Записать перевод обратно в .xlsx ПО ИСХОДНОМУ ТЕКСТУ ячейки.
+
+    translations: {исходный_текст_ячейки: перевод}. Перевод применяется ко ВСЕМ
+    ячейкам с тем же исходным текстом (дедуп на extract → один перевод
+    раскладывается на все дубликаты)."""
     wb = load_workbook(str(src))
     applied = 0
     for ws in wb.worksheets:
@@ -170,7 +245,7 @@ def inject_xlsx(src: Path, dst: Path, translations: dict[str, str]) -> int:
             for cell in row:
                 if not isinstance(cell.value, str):
                     continue
-                text = translations.get(location_key({"sheet": ws.title, "cell": cell.coordinate}))
+                text = translations.get(cell.value)
                 if text is not None:
                     cell.value = text
                     applied += 1
@@ -180,29 +255,96 @@ def inject_xlsx(src: Path, dst: Path, translations: dict[str, str]) -> int:
 
 # ------------------------------------------------------------------ PPTX
 
-def _pptx_paragraphs(prs: Any):
-    """(paragraph, location) для всех текстовых фреймов и заметок."""
-    for s_i, slide in enumerate(prs.slides):
-        for shape in slide.shapes:
-            if not getattr(shape, "has_text_frame", False):
-                continue
-            for p_i, p in enumerate(shape.text_frame.paragraphs):
-                yield p, {"slide": s_i, "shape": shape.shape_id, "para": p_i}
-        if slide.has_notes_slide:
-            for p_i, p in enumerate(slide.notes_slide.notes_text_frame.paragraphs):
-                yield p, {"slide": s_i, "notes": True, "para": p_i}
+_CITATION_RE = re.compile(r"^\s*\[\d+\]")  # элемент списка литературы: «[1] Stevenson…»
 
 
-def _pptx_paragraph_text(p: Any) -> str:
+def is_pptx_citation(text: str) -> bool:
+    """Запись библиографии вида «[1] …» — список литературы не переводим."""
+    return bool(_CITATION_RE.match(text or ""))
+
+
+def _para_text(p: Any) -> str:
     return "".join(run.text for run in p.runs)
+
+
+def _set_para(p: Any, text: str) -> None:
+    """Записать перевод в абзац, сохранив форматирование первого run'а."""
+    if p.runs:
+        p.runs[0].text = text
+        for run in p.runs[1:]:
+            run.text = ""
+    elif text:
+        p.text = text
+
+
+def _iter_shape_units(shapes: Any, s_i: int):
+    """Рекурсивный обход фигур слайда (С ЗАХОДОМ В ГРУППЫ) → текстовые единицы.
+
+    Yields (location, get_text, set_text) для:
+    - абзацев текстовых фреймов  → {"slide", "shape", "para"}
+    - ячеек таблиц               → {"slide", "shape", "row", "col"}
+    Группы (MSO GROUP) рекурсивно разворачиваются — иначе текст в сгруппированных
+    фигурах теряется (слайды-«только заголовок»). Таблицы (GraphicFrame.has_table)
+    раньше вообще не извлекались."""
+    for shape in shapes:
+        try:
+            is_group = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except Exception:
+            is_group = False
+        if is_group:
+            yield from _iter_shape_units(shape.shapes, s_i)
+            continue
+        if getattr(shape, "has_table", False):
+            tbl = shape.table
+            for r, row in enumerate(tbl.rows):
+                for c, cell in enumerate(row.cells):
+                    loc = {"slide": s_i, "shape": shape.shape_id, "row": r, "col": c}
+
+                    def _get(cell=cell) -> str:
+                        return cell.text
+
+                    def _set(text: str, cell=cell) -> None:
+                        cell.text = text
+
+                    yield loc, _get, _set
+            continue
+        if getattr(shape, "has_text_frame", False):
+            for p_i, p in enumerate(shape.text_frame.paragraphs):
+                loc = {"slide": s_i, "shape": shape.shape_id, "para": p_i}
+
+                def _get(p=p) -> str:
+                    return _para_text(p)
+
+                def _set(text: str, p=p) -> None:
+                    _set_para(p, text)
+
+                yield loc, _get, _set
+
+
+def _pptx_units(prs: Any):
+    """Все переводимые единицы презентации (фигуры+группы+таблицы и заметки)."""
+    for s_i, slide in enumerate(prs.slides):
+        yield from _iter_shape_units(slide.shapes, s_i)
+        if slide.has_notes_slide:
+            tf = slide.notes_slide.notes_text_frame
+            for p_i, p in enumerate(tf.paragraphs):
+                loc = {"slide": s_i, "notes": True, "para": p_i}
+
+                def _get(p=p) -> str:
+                    return _para_text(p)
+
+                def _set(text: str, p=p) -> None:
+                    _set_para(p, text)
+
+                yield loc, _get, _set
 
 
 def extract_pptx(path: Path) -> list[SegmentDraft]:
     prs = Presentation(str(path))
     drafts: list[SegmentDraft] = []
-    for p, location in _pptx_paragraphs(prs):
-        text = _pptx_paragraph_text(p).strip()
-        if not text:
+    for location, get_text, _ in _pptx_units(prs):
+        text = (get_text() or "").strip()
+        if not text or is_pptx_citation(text):  # список литературы не переводим
             continue
         drafts.append(
             SegmentDraft(
@@ -219,17 +361,114 @@ def extract_pptx(path: Path) -> list[SegmentDraft]:
 def inject_pptx(src: Path, dst: Path, translations: dict[str, str]) -> int:
     prs = Presentation(str(src))
     applied = 0
-    for p, location in _pptx_paragraphs(prs):
+    for location, _, set_text in _pptx_units(prs):
         text = translations.get(location_key(location))
         if text is None:
             continue
-        if p.runs:
-            p.runs[0].text = text
-            for run in p.runs[1:]:
-                run.text = ""
+        set_text(text)
         applied += 1
     prs.save(str(dst))
     return applied
+
+
+_CM = 360000  # EMU в сантиметре
+
+
+def _iter_geom_shapes(shapes: Any):
+    """Плоский обход фигур (с заходом в группы) — для геометрии/автоподгонки."""
+    for shape in shapes:
+        try:
+            is_group = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except Exception:
+            is_group = False
+        if is_group:
+            yield from _iter_geom_shapes(shape.shapes)
+        else:
+            yield shape
+
+
+def _shrink_table(shape: Any) -> None:
+    """Ужать таблицу: меньше кегль + минимальные поля ячеек, чтобы переведённый
+    (более длинный) текст переносился на меньшее число строк и таблица не уезжала
+    за нижний край слайда."""
+    from pptx.util import Pt
+
+    for row in shape.table.rows:
+        for cell in row.cells:
+            tf = cell.text_frame
+            try:
+                tf.word_wrap = True
+                cell.margin_top = Pt(1)
+                cell.margin_bottom = Pt(1)
+                cell.margin_left = Pt(2)
+                cell.margin_right = Pt(2)
+            except Exception:
+                pass
+            for p in tf.paragraphs:
+                for run in p.runs:
+                    try:
+                        sz = run.font.size
+                        run.font.size = max(Pt(7), int(sz * 0.62)) if sz is not None else Pt(8)
+                    except Exception:
+                        pass
+
+
+def _autofit_slide(slide: Any) -> None:
+    # препятствия (картинки/таблицы) — их верхняя кромка; текстовый блок, который
+    # их перекрывает, обрежем по высоте до них, чтобы текст не наезжал на картинку.
+    obstacles: list[tuple[int, int]] = []  # (top, shape_id)
+    for sh in _iter_geom_shapes(slide.shapes):
+        try:
+            is_pic = sh.shape_type == MSO_SHAPE_TYPE.PICTURE
+        except Exception:
+            is_pic = False
+        if (getattr(sh, "has_table", False) or is_pic) and sh.top is not None and sh.height is not None:
+            obstacles.append((int(sh.top), sh.shape_id))
+
+    for sh in _iter_geom_shapes(slide.shapes):
+        if getattr(sh, "has_table", False):
+            _shrink_table(sh)
+            continue
+        try:
+            is_pic = sh.shape_type == MSO_SHAPE_TYPE.PICTURE
+        except Exception:
+            is_pic = False
+        if is_pic or not getattr(sh, "has_text_frame", False):
+            continue
+        tf = sh.text_frame
+        # обрезать высоту блока до ближайшего препятствия ниже его верхней кромки
+        if sh.top is not None and sh.height is not None:
+            top = int(sh.top)
+            below = [
+                ot
+                for (ot, oid) in obstacles
+                if oid != sh.shape_id and top + _CM // 3 < ot < top + int(sh.height)
+            ]
+            if below:
+                new_h = min(below) - top - _CM // 7  # небольшой зазор
+                if new_h > _CM // 2:
+                    try:
+                        sh.height = int(new_h)
+                    except Exception:
+                        pass
+        try:
+            tf.word_wrap = True
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        except Exception:
+            pass
+
+
+def pptx_autofit(src: Path, dst: Path) -> None:
+    """Копия pptx для РЕНДЕРА-ПРОСМОТРА (office-PDF), подогнанная под фиксированный
+    размер слайда: перенос слов + «ужать текст до фигуры», обрезка текстовых
+    блоков, перекрывающих картинки, и уменьшение кегля таблиц. Нужна потому, что
+    переведённый (русский) текст длиннее английского и в исходной раскладке
+    наезжает на картинки / выходит за нижний край. Оригинальный .pptx-экспорт
+    не трогаем."""
+    prs = Presentation(str(src))
+    for slide in prs.slides:
+        _autofit_slide(slide)
+    prs.save(str(dst))
 
 
 # ------------------------------------------------------------------ единый вход

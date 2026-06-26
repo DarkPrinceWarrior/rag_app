@@ -46,11 +46,12 @@ function RootLayout() {
       <header className="sticky top-0 z-10 flex items-center gap-2 border-b bg-card/90 px-5 py-2.5 backdrop-blur">
         <Link to="/" className="mr-3 flex items-center gap-2">
           <Logo size={26} />
-          <span className="text-[15px] font-semibold tracking-tight">DocRAGenslate</span>
+          <span className="text-[15px] font-semibold tracking-tight">Толмач</span>
         </Link>
         <nav className="flex items-center gap-1">
           <NavLink to="/" label="Библиотека" />
           <NavLink to="/chat" label="Чат" />
+          <NavLink to="/extract" label="Таблицы" />
         </nav>
         <div className="ml-auto flex items-center gap-2">
           <AccountChip />

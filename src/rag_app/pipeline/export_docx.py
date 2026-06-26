@@ -6,7 +6,8 @@ import io
 import re
 
 from docx import Document as DocxDocument
-from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches, Pt
 
 from rag_app.db.models import Segment, SegmentKind
 
@@ -24,33 +25,196 @@ def _seg_text(seg: Segment) -> str:
     return xml_safe(seg.translated_text if seg.translated_text is not None else seg.source_text)
 
 
-def build_docx(filename: str, segments: list[Segment]) -> bytes:
+# Инлайн-разметка из сегментов (MinerU/paddle дают **жирный** / *италик*). В DOCX
+# превращаем в настоящие run'ы, иначе LibreOffice показывает буквальные «звёздочки».
+_MD_SPLIT = re.compile(r"(\*\*[^*]+\*\*|\*[^*]+\*)")
+
+
+def _strip_md(s: str) -> str:
+    """Убрать парные ** / * (оставить содержимое) — для заголовков и ячеек таблиц."""
+    return re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", s)
+
+
+def _add_md_runs(paragraph, text: str) -> None:
+    """Добавить текст в абзац, разворачивая **жирный** / *италик* в run'ы."""
+    for part in _MD_SPLIT.split(text):
+        if not part:
+            continue
+        if len(part) > 4 and part.startswith("**") and part.endswith("**"):
+            paragraph.add_run(part[2:-2]).bold = True
+        elif len(part) > 2 and part.startswith("*") and part.endswith("*"):
+            paragraph.add_run(part[1:-1]).italic = True
+        else:
+            paragraph.add_run(part)
+
+
+# Инлайн-формулы MinerU/paddle приходят сырым LaTeX ($m \times n$, $x_{3}$,
+# $\mathbf{s}$). DOCX/LibreOffice его не рендерит → показывал бы доллары и
+# бэкслеши «кашей». Приводим к читаемому юникоду (порт web/lib/cleanMath.ts:
+# $…$ снять, \times→×, ^{3}→³, команды/скобки убрать). Не настоящая математика,
+# но читаемо. Дисплейные формулы (kind=equation) сложные — приблизит, не более.
+_SUP = {"0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹"}
+
+
+def _latex_to_text(s: str) -> str:
+    if not s or not any(c in s for c in "$\\^{"):
+        return s
+    s = re.sub(r"\$([^$]*)\$", r"\1", s)  # снять $…$
+    s = s.replace("\\circ", "°").replace("\\complement", "C")
+    s = s.replace("\\times", "×").replace("\\cdot", "·").replace("\\pm", "±")
+    s = re.sub(r"\\[,;: ]", " ", s)  # \, \; \: тонкие пробелы
+    s = re.sub(r"\^\s*\{?\s*([0-9])\s*\}?", lambda m: _SUP.get(m.group(1), m.group(1)), s)  # ^{3}→³
+    s = re.sub(r"\^\s*\{([^}]*)\}", r"\1", s)  # прочие ^{…}
+    s = re.sub(r"\\[a-zA-Z]+", "", s)  # прочие \команды (\mathbf, \boldsymbol, …)
+    s = s.replace("{", "").replace("}", "").replace("$", "")  # остаточные/непарные $
+    return re.sub(r"[ \t]{2,}", " ", s).strip()
+
+
+# Настоящий рендер формул (как KaTeX в «тексте»): LaTeX → PNG через matplotlib
+# mathtext (шрифт Computer Modern — вид LaTeX), встраиваем картинкой. On-prem,
+# без texlive/браузера. Кэш по формуле — в deeplearningbook $m$/$n$/$x_i$ повторяются.
+_MATH_SPLIT = re.compile(r"(\$[^$]+\$)")
+_MATH_CACHE: dict[str, tuple[bytes, float] | None] = {}
+
+
+def _strip_math_delims(s: str) -> str:
+    s = (s or "").strip()
+    for a, b in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")):
+        if len(s) > len(a) + len(b) and s.startswith(a) and s.endswith(b):
+            return s[len(a) : -len(b)].strip()
+    return s
+
+
+_MATH_DPI = 300
+
+
+def _render_latex_png(latex: str, fontsize: int) -> tuple[bytes, float, float] | None:
+    """LaTeX → (PNG, ширина в дюймах, глубина-под-базовой-линией в пунктах) через
+    matplotlib mathtext (Computer Modern). depth нужен для выравнивания инлайн-формулы
+    по базовой линии текста. None — формула не поддержана (текстовый фолбэк). Кэш."""
+    latex = (latex or "").strip()
+    if not latex:
+        return None
+    ck = f"{fontsize}:{latex}"
+    if ck in _MATH_CACHE:
+        return _MATH_CACHE[ck]
+    res: tuple[bytes, float, float] | None = None
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        matplotlib.rcParams["mathtext.fontset"] = "cm"
+        import numpy as np
+        from matplotlib.font_manager import FontProperties
+        from matplotlib.mathtext import MathTextParser
+        from PIL import Image
+
+        rp = MathTextParser("agg").parse(
+            f"${latex}$", dpi=_MATH_DPI, prop=FontProperties(size=fontsize)
+        )
+        arr = np.asarray(rp.image)  # (H,W) uint8, 255 = чернила
+        h, w = arr.shape
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)  # чёрный текст, alpha = чернила
+        rgba[..., 3] = arr
+        buf = io.BytesIO()
+        Image.fromarray(rgba, "RGBA").save(buf, "PNG")
+        res = (buf.getvalue(), max(0.04, w / _MATH_DPI), rp.depth / _MATH_DPI * 72.0)
+    except Exception:  # noqa: BLE001 — неподдержанная формула → текстовый фолбэк
+        res = None
+    _MATH_CACHE[ck] = res
+    return res
+
+
+def _embed_inline(run_owner, img: tuple[bytes, float, float], baseline: bool) -> None:
+    run = run_owner.add_run()
+    run.add_picture(io.BytesIO(img[0]), width=Inches(min(img[1], 6.3)))
+    if baseline and img[2]:
+        # картинка обрезана по чернилам; её низ — на базовой линии текста, а низ
+        # формулы на depth НИЖЕ её baseline → опускаем run на depth, чтобы совпало.
+        run.font.position = Pt(-img[2])
+
+
+def _add_para_with_math(doc, text: str) -> None:
+    """Абзац: текст — run'ами (с **жирным**/*италиком*), инлайн-формулы ($…$) —
+    картинками mathtext; при сбое рендера — читаемый юникод-фолбэк."""
+    if "$" not in text:
+        _add_md_runs(doc.add_paragraph(), _latex_to_text(text))
+        return
+    p = doc.add_paragraph()
+    for part in _MATH_SPLIT.split(text):
+        if not part:
+            continue
+        if len(part) > 2 and part.startswith("$") and part.endswith("$"):
+            img = _render_latex_png(part[1:-1], 11)
+            if img:
+                try:
+                    _embed_inline(p, img, baseline=True)
+                    continue
+                except Exception:  # noqa: BLE001
+                    pass
+            _add_md_runs(p, _latex_to_text(part))
+        else:
+            _add_md_runs(p, _latex_to_text(part))
+
+
+def build_docx(
+    filename: str, segments: list[Segment], images: dict[str, bytes] | None = None
+) -> bytes:
+    """DOCX из переведённых сегментов. images: {img_s3 → байты} для встраивания
+    рисунков (worker качает их из bucket_artifacts; без них — текстовая заглушка)."""
     doc = DocxDocument()
     doc.core_properties.title = filename
 
     for seg in segments:
         if seg.kind == SegmentKind.heading:
             level = min(max(seg.heading_level or 1, 1), 6)
-            doc.add_heading(_seg_text(seg), level=level)
+            doc.add_heading(_strip_md(_latex_to_text(_seg_text(seg))), level=level)
 
         elif seg.kind == SegmentKind.paragraph:
-            doc.add_paragraph(_seg_text(seg))
+            _add_para_with_math(doc, _seg_text(seg))
 
         elif seg.kind == SegmentKind.equation:
-            p = doc.add_paragraph()
-            run = p.add_run(xml_safe(seg.source_text))  # LaTeX переносим как есть
-            run.italic = True
-            run.font.size = Pt(10)
+            src = xml_safe(seg.source_text)
+            img = _render_latex_png(_strip_math_delims(src), 14)
+            if img:
+                try:
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    _embed_inline(p, img, baseline=False)
+                except Exception:  # noqa: BLE001
+                    img = None
+            if not img:
+                run = doc.add_paragraph().add_run(_latex_to_text(src))
+                run.italic = True
+                run.font.size = Pt(10)
 
         elif seg.kind == SegmentKind.image:
-            caption = _seg_text(seg).strip()
-            p = doc.add_paragraph()
-            run = p.add_run(f"[Рисунок]{' ' + caption if caption else ''}")
-            run.italic = True
+            caption = _strip_md(_latex_to_text(_seg_text(seg))).strip()
+            key = (seg.meta or {}).get("img_s3")
+            blob = images.get(key) if images and key else None
+            placed = False
+            if blob:
+                try:
+                    pic = doc.add_picture(io.BytesIO(blob))
+                    maxw = Inches(6)
+                    if pic.width > maxw:
+                        pic.height = int(pic.height * maxw / pic.width)
+                        pic.width = maxw
+                    if caption:
+                        doc.add_paragraph().add_run(caption).italic = True
+                    placed = True
+                except Exception:  # noqa: BLE001 — битый/неподдержанный формат → заглушка
+                    placed = False
+            if not placed:
+                doc.add_paragraph().add_run(
+                    f"[Рисунок]{' ' + caption if caption else ''}"
+                ).italic = True
 
         elif seg.kind == SegmentKind.table:
             rows = seg.meta.get("table_rows_ru") or seg.meta.get("table_rows") or []
-            caption = xml_safe((seg.meta.get("caption_ru") or seg.meta.get("caption") or "").strip())
+            caption = _latex_to_text(
+                xml_safe((seg.meta.get("caption_ru") or seg.meta.get("caption") or "").strip())
+            )
             if caption:
                 p = doc.add_paragraph()
                 p.add_run(caption).bold = True
@@ -60,7 +224,7 @@ def build_docx(filename: str, segments: list[Segment]) -> bytes:
                 table.style = "Table Grid"
                 for i, row in enumerate(rows):
                     for j, cell in enumerate(row):
-                        table.cell(i, j).text = xml_safe(cell)
+                        table.cell(i, j).text = _strip_md(_latex_to_text(xml_safe(cell)))
             doc.add_paragraph()
 
     buf = io.BytesIO()

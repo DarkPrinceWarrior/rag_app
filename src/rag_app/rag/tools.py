@@ -7,14 +7,21 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from rag_app.config import settings
 from rag_app.db.models import ChatMessage, Chunk, Document, DocumentStatus
 from rag_app.rag.retrieve import RetrievedChunk, Retriever
+
+# Номер рисунка/таблицы из запроса: "9.1", "3", "12-4" (допускаем точку/дефис/двоеточие
+# как разделитель составного номера, как в "Figure 9.1" / "Table 2.3").
+_FIGNUM_RE = re.compile(r"\d+(?:[.\-]\d+)*")
+# Ключевые слова перед номером — для подсказки агенту, но матчим в основном по номеру.
+_TABLE_HINTS = ("table", "табл")  # рисунок vs таблица — слабый сигнал, не жёсткий фильтр
 
 
 def _ref(chunk_id: uuid.UUID) -> str:
@@ -43,10 +50,12 @@ class AgentTools:
         folder_id: uuid.UUID | None,
         session_id: uuid.UUID,
         owner_sub: str | None = None,
+        document_ids: list[uuid.UUID] | None = None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.retriever = retriever
         self.document_id = document_id
+        self.document_ids = document_ids or None
         self.folder_id = folder_id
         self.session_id = session_id
         self.owner_sub = owner_sub
@@ -73,7 +82,7 @@ class AgentTools:
         async with self.sessionmaker() as db:
             chunks = await self.retriever.retrieve(
                 db, query, document_id=self.document_id, folder_id=self.folder_id,
-                top_k=settings.agent_search_top_k,
+                document_ids=self.document_ids, top_k=settings.agent_search_top_k,
             )
         if not chunks:
             return f"search_chunks('{query[:80]}'): ничего не найдено."
@@ -119,12 +128,84 @@ class AgentTools:
         body = "\n---\n".join(self._fmt(c, 400) for c in chunks)
         return f"get_tables: {len(chunks)} табл.\n{body}"
 
+    async def find_figure(self, designation: str, document_id: str | None = None) -> str:
+        """Найти image-чанк по ЯВНО названному номеру рисунка/таблицы («рис. 9.1»,
+        «figure 3», «таблица 2»). «Путь B» vision-on-demand: подпись индексируется
+        как chunk kind='image' с meta.img_s3 (кроп). Достаём такой чанк по номеру в
+        подписи, кладём в evidence-пул — его кроп уйдёт в мультимодальный контекст,
+        даже если обычный retrieval его не поднял."""
+        raw = (designation or "").strip()
+        m = _FIGNUM_RE.search(raw)
+        if not m:
+            return (
+                f"find_figure('{raw[:60]}'): не разобрал номер рисунка/таблицы "
+                "(ожидается что-то вроде «9.1», «3», «таблица 2»)."
+            )
+        num = m.group(0)
+        # Границы вокруг номера: слева не цифра/точка/дефис, справа — не цифра
+        # (иначе «9.1» подцепил бы «9.10», «9.11»). \m/\M не работают на «.»,
+        # поэтому явные lookaround-классы. Номер экранируем (точка → литерал).
+        num_re = re.escape(num)
+        pat = rf"(^|[^0-9.\-]){num_re}([^0-9]|$)"
+
+        doc = self.document_id
+        if document_id:
+            try:
+                doc = uuid.UUID(document_id)
+            except ValueError:
+                pass
+
+        async with self.sessionmaker() as db:
+            stmt = (
+                select(Chunk, Document.filename)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(
+                    Chunk.kind == "image",
+                    or_(Chunk.text_en.op("~*")(pat), Chunk.text_ru.op("~*")(pat)),
+                )
+            )
+            if doc is not None:
+                stmt = stmt.where(Chunk.document_id == doc)
+            elif self.folder_id is not None:
+                stmt = stmt.where(Document.folder_id == self.folder_id)
+            elif self.owner_sub is not None:  # RBAC: свои + dev-документы (owner NULL)
+                stmt = stmt.where(
+                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
+                )
+            rows = (await db.execute(stmt.order_by(Chunk.idx).limit(8))).all()
+
+        if not rows:
+            scope = "в этом документе" if doc is not None else "в доступных документах"
+            return f"find_figure('{num}'): рисунок/таблица с номером {num} не найдены {scope}."
+        chunks = [
+            RetrievedChunk(
+                id=ch.id, document_id=ch.document_id, filename=fn, heading_path=ch.heading_path,
+                kind=ch.kind, page_start=ch.page_start, page_end=ch.page_end,
+                text_en=ch.text_en, text_ru=ch.text_ru, meta=ch.meta,
+            )
+            for ch, fn in rows
+        ]
+        self._register(chunks)
+        body = "\n---\n".join(self._fmt(c, 400) for c in chunks)
+        return (
+            f"find_figure('{num}'): {len(chunks)} совпад. (кропы приложены к контексту "
+            f"для рассмотрения).\n{body}"
+        )
+
     async def list_documents(self) -> str:
         """Каталог библиотеки: какие документы загружены (а не их содержимое).
         Для вопросов «какие документы есть», «назови документ из библиотеки»."""
         async with self.sessionmaker() as db:
             stmt = select(Document).where(Document.status == DocumentStatus.done)
-            if self.owner_sub is not None:  # RBAC: свои + dev-документы (owner NULL)
+            # Область чата (набор документов / папка) — каталог должен ей
+            # соответствовать, иначе при folder-scope агент перечислит всю библиотеку.
+            if self.document_ids:
+                stmt = stmt.where(Document.id.in_(self.document_ids))
+            elif self.document_id is not None:
+                stmt = stmt.where(Document.id == self.document_id)
+            elif self.folder_id is not None:
+                stmt = stmt.where(Document.folder_id == self.folder_id)
+            if self.owner_sub is not None:  # RBAC поверх области: свои + dev (owner NULL)
                 stmt = stmt.where(
                     (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
                 )
@@ -178,6 +259,8 @@ class AgentTools:
             return await self.get_section(ref)
         if action == "get_tables":
             return await self.get_tables(document_id or None)
+        if action == "find_figure":
+            return await self.find_figure(query, document_id or None)
         if action == "get_chat_history":
             return await self.get_chat_history()
         if action == "list_documents":

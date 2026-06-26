@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, update
 
@@ -41,6 +41,10 @@ class SegmentOut(BaseModel):
     # адрес узла OOXML (DOCX: {"p"} абзац / {"t","r","c","p"} ячейка) —
     # для реконструкции таблиц в MD-просмотре DOCX
     location: dict | None = None
+    # положение сегмента в ЛЕВОМ (оригинал) и ПРАВОМ (перевод) рендер-PDF —
+    # {page, bbox(top-left,pt), pagesize} — для кросс-навигации по клику (pdf_text/docx)
+    loc_left: dict | None = None
+    loc_right: dict | None = None
 
     @classmethod
     def from_segment(cls, s: Segment) -> SegmentOut:
@@ -53,6 +57,8 @@ class SegmentOut(BaseModel):
         out.caption = meta.get("caption")
         out.caption_ru = meta.get("caption_ru")
         out.location = meta.get("location")
+        out.loc_left = meta.get("loc_left")
+        out.loc_right = meta.get("loc_right")
         img = meta.get("img_s3")
         if img:
             out.image_url = f"/api/documents/{s.document_id}/image/{img.rsplit('/', 1)[-1]}"
@@ -64,14 +70,24 @@ class SegmentPatch(BaseModel):
 
 
 @router.get("/documents/{doc_id}/segments", response_model=list[SegmentOut])
-async def list_segments(request: Request, doc_id: uuid.UUID) -> list[SegmentOut]:
+async def list_segments(
+    request: Request,
+    doc_id: uuid.UUID,
+    limit: int = Query(4000, ge=1, le=100_000),
+) -> list[SegmentOut]:
+    # Бэкстоп против патологических документов (xlsx-дата-дампы на сотни тысяч
+    # ячеек вешали вьювер): отдаём первые `limit` сегментов по idx. Дефолт
+    # большой, но конечный — обычные документы (тысячи сегментов) не обрезаются.
     async with request.app.state.sessionmaker() as session:
         if await session.get(Document, doc_id) is None:
             raise HTTPException(404, "документ не найден")
         segments = (
             (
                 await session.execute(
-                    select(Segment).where(Segment.document_id == doc_id).order_by(Segment.idx)
+                    select(Segment)
+                    .where(Segment.document_id == doc_id)
+                    .order_by(Segment.idx)
+                    .limit(limit)
                 )
             )
             .scalars()

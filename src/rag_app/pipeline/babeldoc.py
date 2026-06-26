@@ -77,6 +77,9 @@ async def run_babeldoc(
     ]
     if ocr_workaround:
         cmd.append("--auto-enable-ocr-workaround")
+    if settings.babeldoc_enhance_compatibility:
+        # шапки с леттерспейс-капсом иначе уходят белым за плашку и обрезаются
+        cmd.append("--enhance-compatibility")
     if glossary_file is not None:
         cmd += ["--glossary-files", str(glossary_file)]
     logger.info("babeldoc: %s%s", input_pdf.name, " (+глоссарий)" if glossary_file else "")

@@ -12,6 +12,7 @@ interface AppConfig {
 interface Tokens {
   access_token: string
   refresh_token?: string
+  id_token?: string // нужен как id_token_hint при end-session (logout)
   exp: number
 }
 
@@ -60,6 +61,8 @@ async function tokenRequest(body: Record<string, string>): Promise<void> {
   saveTokens({
     access_token: data.access_token,
     refresh_token: data.refresh_token,
+    // refresh-ответ может не содержать id_token — сохраняем прежний
+    id_token: data.id_token ?? loadTokens()?.id_token,
     exp: Date.now() + (data.expires_in - 30) * 1000,
   })
 }
@@ -108,8 +111,57 @@ export async function initAuth(): Promise<void> {
 }
 
 export function logout(): void {
+  const tokens = loadTokens()
   sessionStorage.removeItem(TOKENS_KEY)
-  void login()
+  sessionStorage.removeItem(VERIFIER_KEY)
+  // Без auth (dev) — просто на главную.
+  if (!cfg?.auth_enabled) {
+    location.assign('/')
+    return
+  }
+  // Правильный logout: end-session на Keycloak (гасит и SSO-сессию, иначе
+  // повторный login сразу вернёт новый токен — «ничего не происходит»).
+  // post_logout_redirect_uri должен быть зарегистрирован у клиента
+  // (post.logout.redirect.uris="+"); id_token_hint повышает совместимость.
+  const params = new URLSearchParams({
+    client_id: cfg.oidc_client_id,
+    post_logout_redirect_uri: location.origin + '/',
+  })
+  if (tokens?.id_token) params.set('id_token_hint', tokens.id_token)
+  location.assign(`${cfg.oidc_authority}/protocol/openid-connect/logout?${params}`)
+}
+
+export interface CurrentUser {
+  username: string
+  roles: string[]
+  isAdmin: boolean
+}
+
+/** Текущий пользователь из access-токена (preferred_username + realm-роли).
+ * Без auth (dev) — встроенный local-dev/admin. */
+export function currentUser(): CurrentUser {
+  const t = loadTokens()
+  if (!t?.access_token) return { username: 'local-dev', roles: ['admin'], isAdmin: true }
+  try {
+    const payload = JSON.parse(
+      decodeURIComponent(
+        atob(t.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+          .split('')
+          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+          .join(''),
+      ),
+    )
+    const roles: string[] = (payload.realm_access?.roles ?? []).filter((r: string) =>
+      ['user', 'admin'].includes(r),
+    )
+    return {
+      username: payload.preferred_username ?? payload.sub ?? 'пользователь',
+      roles,
+      isAdmin: roles.includes('admin'),
+    }
+  } catch {
+    return { username: 'пользователь', roles: [], isAdmin: false }
+  }
 }
 
 /** fetch с авто-Bearer для /api; на 401 — повторный вход. */

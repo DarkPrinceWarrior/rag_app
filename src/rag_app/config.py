@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # «как в Microsoft» (оригинал и перевод в pdf.js-вьювере, а не плоским текстом).
     office_render_enabled: bool = True
     office_render_timeout_s: int = 150
+    # Потолок сегментов на XLSX-лист-дамп: химические/числовые таблицы (коды,
+    # единицы, значения) после фильтра «только проза» + дедупа по тексту обычно
+    # дают тысячи, но патологический дата-дамп может выдать и больше — обрезаем,
+    # чтобы перевод и вьювер не вешались. Превышение логируется (warning).
+    xlsx_max_segments: int = 5000
 
     # --- Быстрый контур виджета: Hy-MT2-7B, GPU1 :8005 (roadmap § 12.1 п.5) ---
     # Hy-MT2-7B принят 2026-06-19 по COMET-A/B (COMETKiwi-22, 300 сегм.): средний
@@ -91,6 +96,13 @@ class Settings(BaseSettings):
     )
     visual_render_scale: float = 2.0  # 144 DPI (требует --enforce-eager у сервиса)
 
+    # --- Визуальный реранкер Qwen3-VL-Reranker-2B (GPU2 :8009) ---
+    # Cross-encoder (query, страница-картинка) → relevance score; раздаётся
+    # отдельным FastAPI-сервисом через transformers (НЕ vLLM: vllm#35412 даёт
+    # реверсивные скоры, а vLLM 0.22/0.23 не знают Qwen3VLForSequenceClassification).
+    visual_rerank_base_url: str = "http://127.0.0.1:8009"
+    visual_rerank_model: str = "qwen3-vl-reranker-2b"
+
     # --- Генеративный VL для описания/объяснения рисунков (GPU2 :8008) ---
     # Qwen3-VL-8B-Instruct: для сканов-чертежей, P&ID, схем, графиков, фото —
     # раскрывает СМЫСЛ изображения текстом (на русском). В отличие от visual_*
@@ -105,6 +117,9 @@ class Settings(BaseSettings):
     vl_max_side: int = 1400  # макс. сторона картинки-страницы (кап vision-токенов)
     vl_render_scale: float = 1.6  # рендер страницы PDF в картинку для VL
     vl_max_pages: int = 12  # потолок страниц-картинок на документ (латентность)
+    # figure-sweep для pdf_text/docx/pptx: обход страниц с поиском рисунков —
+    # потолок выше (текстовые страницы дёшевы: VL быстро отвечает EMPTY, ~0.8 с/стр)
+    vl_sweep_max_pages: int = 200
 
     rerank_base_url: str = "http://127.0.0.1:8003"
     rerank_model: str = "qwen3-reranker-4b"
@@ -118,7 +133,20 @@ class Settings(BaseSettings):
     rag_sparse_top_k: int = 50
     rag_rerank_top_k: int = 20  # после RRF — в reranker
     rag_context_top_k: int = 5  # в промпт
+    # сколько вырезанных рисунков (img_s3 среди найденных чанков) приложить кропами
+    # в мультимодальный запрос Qwen3.5 (vision on-demand в чате) — кап под ctx 8192
+    rag_vision_max_images: int = 3
+    # визуальный контур (§12.1 шаг4): сколько страниц поднимает page_embeddings и
+    # сколько image-чанков добавить в контекст после визуального реранка
+    rag_visual_pages_k: int = 10
+    rag_visual_top_k: int = 3
     rag_history_messages: int = 8
+    # обрезка одной реплики истории (ассистент вьювера вшивает текст страницы в
+    # сообщение — без лимита история переполняет окно модели на 2-м ходу)
+    rag_history_msg_chars: int = 1200
+    # бюджет блока фрагментов в финальном промпте (символы) — backstop против
+    # переполнения окна модели при multi-hop сборе (Qwen3.5 max-model-len 16384)
+    rag_context_max_chars: int = 28000
     chunk_max_chars: int = 4000  # ~1K токенов
     chunk_min_chars: int = 200  # секции короче — клеим к соседней
 
@@ -200,10 +228,14 @@ class Settings(BaseSettings):
     dots_prompt: str = "prompt_layout_all_en"
     dots_num_thread: int = 8
     dots_timeout_s: int = 1800
-    # PaddleOCR-VL 1.6: on-demand (грузит модель на парс, GPU4), изолированный venv
+    # PaddleOCR-VL-0.9B: VLM-инференс на ПОСТОЯННОМ genai vLLM-сервере (paddlex_
+    # genai_server, GPU0:8118 — on-demand в 3.7 виснет без inference-движка);
+    # layout-детекция локально на paddle_device. Изолированный paddle-venv
+    # (vllm 0.10.2 — пин PaddleOCR genai-plugin, не трогает основной стек).
     paddle_venv_python: str = "/root/parser_trials/paddle/.venv_paddle/bin/python"
     paddle_runner: str = "/root/projects/rag_app/deploy/parsers/run_paddle_cli.py"
-    paddle_device: str = "4"
+    paddle_vl_server_url: str = "http://127.0.0.1:8118/v1"
+    paddle_device: str = "0"
     paddle_timeout_s: int = 1800
 
     # --- Оверлей сканов (перевод поверх изображения по bbox) ---
@@ -230,6 +262,21 @@ class Settings(BaseSettings):
     # отказа «Scanned PDF detected». Image-only сканы (pdf_scan) это не лечит
     # («no paragraphs», проверено) — для них наш оверлей pipeline/scan_pdf.py.
     babeldoc_auto_ocr_workaround: bool = True
+    # --enhance-compatibility (= --skip-clean --dual-translate-first
+    # --disable-rich-text-translate). Гасит по-символьную rich-text стилизацию,
+    # которая на леттерспейс-капсе шапок («S T A N D A R D …») ломала перевод:
+    # русский шёл белым за пределы цветной плашки и обрезался (white-on-white).
+    # С флагом текст плашки рендерится нормальным цветом/кеглем одной строкой и
+    # читается. Жертвуем тонкой стилизацией (цвет/жирность рунов) ради читаемости
+    # — для технических PDF это выигрыш. Проверено на EPC-контракте.
+    babeldoc_enhance_compatibility: bool = True
+    # «Вёрстка» перевода pdf_text = чистый reflow-PDF из нашего DOCX
+    # (build_docx → LibreOffice) ВМЕСТО пиксель-подгонки BabelDOC. Reflow исключает
+    # overflow / «скачущий шрифт» / утечки тегов и непереведённых связок, которыми
+    # BabelDOC сыпет на плотных таблицах и шаблонных блоках (стратегия
+    # «геометрия-в-геометрию» — предел для русского). True → BabelDOC для pdf_text
+    # отключён (код остаётся за этим флагом, реверсивно).
+    translated_pdf_from_docx: bool = True
 
     # --- CORS (этап 5, прод): без wildcard ---
     # Веб-приложение отдаётся тем же origin (:8100) — ему CORS не нужен; список

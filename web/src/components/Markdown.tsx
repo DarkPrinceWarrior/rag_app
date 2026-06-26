@@ -47,7 +47,9 @@ export function Markdown({ content, className }: { content: string; className?: 
           th: ({ children }) => (
             <th className="border border-border px-2.5 py-1.5 text-left font-semibold">{children}</th>
           ),
-          td: ({ children }) => <td className="border border-border px-2.5 py-1.5 align-top">{children}</td>,
+          td: ({ children }) => (
+            <td className="border border-border px-2.5 py-1.5 align-top break-words">{children}</td>
+          ),
           blockquote: ({ children }) => (
             <blockquote className="my-2 border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>
           ),

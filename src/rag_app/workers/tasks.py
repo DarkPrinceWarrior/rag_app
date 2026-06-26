@@ -30,7 +30,13 @@ from rag_app.db.models import (
     Segment,
     SegmentKind,
 )
-from rag_app.llm.client import SegmentContext, Translator, needs_translation, pick_glossary_terms
+from rag_app.llm.client import (
+    SegmentContext,
+    Translator,
+    detect_lang,
+    needs_translation,
+    pick_glossary_terms,
+)
 from rag_app.llm.embeddings import Embedder
 from rag_app.llm.vision import VisionClient
 from rag_app.llm.visual import VisualEmbedder
@@ -141,6 +147,10 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                     # вывода → SegmentDraft напрямую, без mineru content_list/geo
                     kind = DocumentKind.pdf_text
                     drafts = await _vlm_segments(backend, local_file, out_dir)
+                    # PaddleOCR-VL вырезает рисунки в файлы (dots — нет) → грузим в
+                    # img_s3, чтобы они появились в текст-просмотре (как у MinerU)
+                    if backend == "paddle_vl":
+                        await _upload_segment_images(storage, doc_id, out_dir, drafts)
                 else:
                     if doc.parse_force_ocr:
                         # битый ToUnicode-cmap текстового слоя → OCR с картинки
@@ -217,6 +227,8 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                     rpdf.write_bytes(rendered)
                     out_dir = tmp_path / "parser_out"
                     drafts = await _vlm_segments(backend, rpdf, out_dir)
+                    if backend == "paddle_vl":
+                        await _upload_segment_images(storage, doc_id, out_dir, drafts)
                     n_pages, _ = await asyncio.to_thread(pdf_info, rpdf)
                 else:
                     # DOCX: встроенные картинки извлекаем в tmp и грузим в MinIO
@@ -241,7 +253,14 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 raise RuntimeError(f"неподдерживаемый формат: .{ext}")
 
         if not drafts:
-            raise RuntimeError("парсер не извлёк ни одного блока")
+            # скан без распознаваемого текста (OCR дал мусор и его отфильтровали,
+            # либо страница — чистый рисунок): не валим документ — кладём
+            # плейсхолдер-картинку, describe_images (VL) обогатит его описанием.
+            if kind == DocumentKind.pdf_scan:
+                drafts = [SegmentDraft(0, SegmentKind.image, "", 0)]
+                logger.info("parse %s: скан без текста — плейсхолдер-картинка (ждём VL)", doc_id)
+            else:
+                raise RuntimeError("парсер не извлёк ни одного блока")
 
         async with ctx["sessionmaker"]() as session:
             await session.execute(delete(Segment).where(Segment.document_id == doc_id))
@@ -295,7 +314,12 @@ async def _translate_validated(
     translator: Translator, text: str, context: SegmentContext
 ) -> tuple[str, ValidationResult]:
     """Перевод + числовая валидация; один ре-перевод с фидбеком (roadmap § 3.4 п.3)."""
-    if not needs_translation(text):
+    # Документ уже на целевом языке (русский → русский) — переводить нечего,
+    # сегмент остаётся как есть. Иначе — гейт по целевому скрипту: переводим
+    # любой не-русский текст, включая английские вставки в китайском документе.
+    if context.source_lang == context.target_lang or not needs_translation(
+        text, context.source_lang, context.target_lang
+    ):
         return text, ValidationResult(ok=True)
     translated = await translator.translate(text, context)
     result = validate_numbers(text, translated)
@@ -375,6 +399,8 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
     t_task = time.monotonic()
     await _set_status(ctx, doc_id, DocumentStatus.translating)
 
+    doc0 = await _get_doc(ctx, doc_id)
+
     async with ctx["sessionmaker"]() as session:
         segments = list(
             (
@@ -386,24 +412,48 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
             .all()
         )
 
-    # Глоссарий (roadmap § 3.4 п.1): длинные термины первыми — приоритет точных фраз.
-    async with ctx["sessionmaker"]() as session:
-        rows = (await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))).all()
-    all_terms = sorted(((en, ru) for en, ru in rows), key=lambda t: -len(t[0]))
+    # Язык-источник определяем АВТОМАТИЧЕСКИ по тексту документа (домен: ru/en/zh,
+    # ТЗ §4.3). Перевод ВСЕГДА на русский; русский документ не переводится
+    # (identity-замыкание в _translate_validated). Если язык уже зафиксирован
+    # (реразбор) — берём сохранённый, заново не определяем.
+    src_lang = (getattr(doc0, "source_lang", None) or "").strip()
+    if src_lang not in ("en", "ru", "zh"):
+        sample = " ".join((s.source_text or "") for s in segments[:120])[:20000]
+        src_lang = detect_lang(sample)
+    tgt_lang = "ru"
+    if doc0.source_lang != src_lang or doc0.target_lang != tgt_lang:
+        async with ctx["sessionmaker"]() as session:
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id)
+                .values(source_lang=src_lang, target_lang=tgt_lang)
+            )
+            await session.commit()
 
-    # Контекст (roadmap § 3.4): заголовок раздела + предыдущий абзац + термины.
+    # Глоссарий (roadmap § 3.4 п.1) — только для EN→RU (термины хранятся как
+    # en_term/ru_term); для других направлений глоссарий не применяется.
+    all_terms: list[tuple[str, str]] = []
+    if (src_lang, tgt_lang) == ("en", "ru"):
+        async with ctx["sessionmaker"]() as session:
+            rows = (await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))).all()
+        all_terms = sorted(((en, ru) for en, ru in rows), key=lambda t: -len(t[0]))
+
+    # Контекст (roadmap § 3.4): заголовок раздела + предыдущий абзац + термины + направление.
     contexts: dict[uuid.UUID, SegmentContext] = {}
     cur_heading: str | None = None
     prev_text: str | None = None
     for seg in segments:
-        terms = pick_glossary_terms(seg.source_text, all_terms)
+        terms = pick_glossary_terms(seg.source_text, all_terms) if all_terms else []
         if seg.kind == SegmentKind.heading:
             # заголовки — без текстового контекста: модель может «утащить» его в ответ
-            contexts[seg.id] = SegmentContext(glossary=terms)
+            contexts[seg.id] = SegmentContext(glossary=terms, source_lang=src_lang, target_lang=tgt_lang)
             cur_heading = seg.source_text
             prev_text = None
             continue
-        contexts[seg.id] = SegmentContext(heading=cur_heading, prev_text=prev_text, glossary=terms)
+        contexts[seg.id] = SegmentContext(
+            heading=cur_heading, prev_text=prev_text, glossary=terms,
+            source_lang=src_lang, target_lang=tgt_lang,
+        )
         if seg.kind == SegmentKind.paragraph:
             prev_text = seg.source_text
 
@@ -530,6 +580,18 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
                 await ctx["redis"].enqueue_job(
                     "describe_images", doc_id_str, _job_id=f"vl:{doc_id}:{uuid.uuid4().hex[:8]}"
                 )
+        # визуальный индекс (Этап 2): эмбеддинги страниц-рисунков для визуального
+        # retrieval — авто для pdf_scan (все страницы) и любых доков с вырезанными
+        # рисунками (img_s3). index_pages_visual сам отфильтрует страницы.
+        if settings.visual_enabled:
+            vdoc = await _get_doc(ctx, doc_id)
+            vkind = vdoc.kind if isinstance(vdoc.kind, str) else vdoc.kind.value
+            if vkind == DocumentKind.pdf_scan.value or any(
+                (s.meta or {}).get("img_s3") for s in segments
+            ):
+                await ctx["redis"].enqueue_job(
+                    "index_pages_visual", doc_id_str, _job_id=f"vis:{doc_id}:{uuid.uuid4().hex[:8]}"
+                )
         return f"indexed: {len(drafts)} chunks"
     except Exception as exc:
         logger.exception("index %s failed", doc_id)
@@ -570,6 +632,85 @@ def _norm_match(s: str) -> str:
     """Нормализация для сопоставления текста: только буквы/цифры, нижний регистр —
     устойчиво к пунктуации, разным тире (–—-), small-caps, лишним пробелам."""
     return " ".join(_MATCH_NOISE.sub(" ", s or "").lower().split())
+
+
+def _locate_in_pdf(
+    pdf_bytes: bytes, items: list[tuple[uuid.UUID, str]]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """Сегмент (по его тексту) → положение в PDF: {page, bbox (top-left, pt), pagesize}.
+    Для кросс-навигации панелей: клик по абзацу слева подсвечивает его справа и наоборот.
+    Кандидат-страница — по нормализованному совпадению, bbox — поиском pypdfium2 по
+    «сырому» сниппету (первые слова, с сужением 6→2). Несовпавшие сегменты пропускаются."""
+    import pypdfium2 as pdfium
+
+    out: dict[uuid.UUID, dict[str, Any]] = {}
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            n = len(pdf)
+            pages: list[tuple[Any, Any, tuple[float, float]]] = []
+            norm_texts: list[str] = []
+            for i in range(n):
+                page = pdf[i]
+                tp = page.get_textpage()
+                pages.append((page, tp, page.get_size()))
+                norm_texts.append(_norm_match(tp.get_text_bounded()))
+            for sid, text in items:
+                raw = (text or "").strip()
+                nm = _norm_match(raw)
+                if len(nm) < 6:
+                    continue
+                snip = nm[:40]
+                cand = next((i for i in range(n) if snip in norm_texts[i]), None)
+                if cand is None:
+                    continue
+                _, tp, (w, h) = pages[cand]
+                words = raw.split()
+                bbox: list[float] | None = None
+                for k in (6, 4, 3, 2):
+                    needle = " ".join(words[:k])
+                    if len(needle) < 4:
+                        continue
+                    m = tp.search(needle, match_case=False, match_whole_word=False).get_next()
+                    if m:
+                        start, count = m
+                        rs = [tp.get_rect(r) for r in range(tp.count_rects(start, count))]
+                        if rs:
+                            left = min(r[0] for r in rs)
+                            bot = min(r[1] for r in rs)
+                            right = max(r[2] for r in rs)
+                            top = max(r[3] for r in rs)
+                            bbox = [round(left, 1), round(h - top, 1), round(right, 1), round(h - bot, 1)]
+                        break
+                if bbox:
+                    out[sid] = {"page": cand, "bbox": bbox, "pagesize": [round(w, 1), round(h, 1)]}
+        finally:
+            pdf.close()
+    return out
+
+
+async def _store_cross_locs(
+    ctx: dict, doc_id: uuid.UUID, segments: list[Segment], left_pdf: bytes, right_pdf: bytes
+) -> None:
+    """Посчитать и сохранить в meta положение каждого сегмента в ЛЕВОМ (оригинал) и
+    ПРАВОМ (перевод) PDF — для кросс-навигации по клику между панелями вьювера."""
+    items_l = [(s.id, s.source_text) for s in segments if s.source_text]
+    items_r = [(s.id, s.translated_text) for s in segments if s.translated_text]
+    left = await asyncio.to_thread(_locate_in_pdf, left_pdf, items_l)
+    right = await asyncio.to_thread(_locate_in_pdf, right_pdf, items_r)
+    if not left and not right:
+        return
+    async with ctx["sessionmaker"]() as session:
+        rows = (
+            await session.execute(select(Segment).where(Segment.document_id == doc_id))
+        ).scalars().all()
+        for s in rows:
+            meta = dict(s.meta or {})
+            meta["loc_left"] = left.get(s.id)
+            meta["loc_right"] = right.get(s.id)
+            s.meta = meta
+        await session.commit()
+    logger.info("export %s: cross-loc left=%d right=%d", doc_id, len(left), len(right))
 
 
 def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[uuid.UUID, int], int]:
@@ -640,19 +781,24 @@ def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[u
 
 
 async def describe_images(ctx: dict, doc_id_str: str) -> str:
-    """VL-обогащение сканов/чертежей (pdf_scan): рендерим страницы → Qwen3-VL
-    раскрывает СМЫСЛ изображения по-русски → сегменты-описания (kind=image) →
-    переиндексация. Для P&ID/чертежей/фото, где OCR извлекает мало текста."""
+    """VL-обогащение СКАНОВ (pdf_scan): вся страница — рисунок (P&ID/чертёж/фото) →
+    Qwen3.5-VL раскрывает смысл по-русски → сегменты-описания (kind=image) →
+    переиндексация. Нужно для сканов без текстового слоя (искомость в чате).
+
+    pdf_text/docx/pptx рисунки НЕ предописываются: их вырезанные кропы (img_s3)
+    подаются в Qwen3.5-vision ON-DEMAND в чате (rag/chat.py), а в текст-просмотре —
+    картинка + родная подпись."""
     if not settings.vl_enabled:
         return "vl disabled"
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
     doc = await _get_doc(ctx, doc_id)
-    if doc.kind != DocumentKind.pdf_scan.value:
-        return f"skip: kind={doc.kind}"
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
+    if kind != DocumentKind.pdf_scan.value:
+        return f"skip: kind={kind} (рисунки описываются on-demand в чате)"
     try:
         with tempfile.TemporaryDirectory(prefix="rag_vl_") as tmp:
-            local = Path(tmp) / Path(doc.filename).name
+            local = Path(tmp) / "src.pdf"
             await storage.download_to(settings.bucket_originals, doc.s3_key_original, local)
             pages = await asyncio.to_thread(
                 _render_pdf_pages, local.read_bytes(), settings.vl_max_pages, settings.vl_render_scale
@@ -727,51 +873,88 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
 
 # ------------------------------------------------- визуальный индекс (§ 12.1 шаг 4)
 
+async def _figure_pages(ctx: dict, doc_id: uuid.UUID) -> set[int]:
+    """Страницы документа, на которых есть вырезанный рисунок (img_s3) — их и
+    эмбеддим визуально для pdf_text/docx/pptx (чисто текстовые покрывает текст-поиск)."""
+    async with ctx["sessionmaker"]() as session:
+        rows = (
+            await session.execute(
+                select(Segment.page_idx)
+                .where(
+                    Segment.document_id == doc_id,
+                    Segment.kind == SegmentKind.image,
+                    Segment.meta.op("->>")("img_s3").isnot(None),
+                    Segment.page_idx.isnot(None),
+                )
+                .distinct()
+            )
+        ).scalars().all()
+    return {p for p in rows if p is not None}
+
+
 async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
-    """Эмбеддинги страниц-картинок для сканов: печати/штампы/чертежи,
-    где текстовый OCR-контур теряет."""
+    """Эмбеддинги страниц-картинок (Qwen3-VL-Embedding-8B) для визуального retrieval:
+    печати/штампы/чертежи/схемы, где текстовый контур слаб. pdf_scan — все страницы
+    (вся страница = визуал); pdf_text/docx/pptx — только страницы с вырезанными
+    рисунками (img_s3), остальное берёт текстовый поиск."""
     doc_id = uuid.UUID(doc_id_str)
     if not settings.visual_enabled:
         return "visual disabled"
     doc = await _get_doc(ctx, doc_id)
-    if doc.kind != DocumentKind.pdf_scan.value:
-        return f"skip: kind={doc.kind}"
+    kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
     storage: Storage = ctx["storage"]
     visual: VisualEmbedder = ctx["visual"]
 
-    def render_pages(pdf_path: Path) -> list[bytes]:
+    # источник рендера + набор страниц (None = все)
+    if kind == DocumentKind.pdf_scan.value:
+        src_bucket, src_key, page_filter = settings.bucket_originals, doc.s3_key_original, None
+    elif kind == DocumentKind.pdf_text.value:
+        src_bucket, src_key = settings.bucket_originals, doc.s3_key_original
+        page_filter = await _figure_pages(ctx, doc_id)
+    elif kind in ("docx", "pptx") and doc.s3_key_view_orig:
+        src_bucket, src_key = settings.bucket_exports, doc.s3_key_view_orig
+        page_filter = await _figure_pages(ctx, doc_id)
+    else:
+        return f"skip: kind={kind}"
+    if page_filter is not None and not page_filter:
+        return "visual: нет страниц с рисунками"
+
+    def render_pages(pdf_path: Path) -> list[tuple[int, bytes]]:
         import io as _io
 
         import pypdfium2 as pdfium
-        from PIL import Image  # noqa: F401
 
         with PDFIUM_LOCK:
             pdf = pdfium.PdfDocument(str(pdf_path))
             try:
-                pages = []
+                out: list[tuple[int, bytes]] = []
                 for i in range(len(pdf)):
+                    if page_filter is not None and i not in page_filter:
+                        continue
                     img = pdf[i].render(scale=settings.visual_render_scale).to_pil().convert("RGB")
                     buf = _io.BytesIO()
                     img.save(buf, format="JPEG", quality=85)
-                    pages.append(buf.getvalue())
-                return pages
+                    out.append((i, buf.getvalue()))
+                return out
             finally:
                 pdf.close()
 
     try:
         with tempfile.TemporaryDirectory(prefix="rag_visual_") as tmp:
             local_pdf = Path(tmp) / "doc.pdf"
-            await storage.download_to(settings.bucket_originals, doc.s3_key_original, local_pdf)
-            jpegs = await asyncio.to_thread(render_pages, local_pdf)
+            await storage.download_to(src_bucket, src_key, local_pdf)
+            pages = await asyncio.to_thread(render_pages, local_pdf)
+        if not pages:
+            return "visual: нет страниц"
 
-        embs: list[list[float]] = []
-        for jpeg in jpegs:  # последовательно: vision-башня прожорлива
-            embs.append(await visual.embed_page(jpeg))
+        embs: list[tuple[int, list[float]]] = []
+        for pidx, jpeg in pages:  # последовательно: vision-башня прожорлива
+            embs.append((pidx, await visual.embed_page(jpeg)))
 
         async with ctx["sessionmaker"]() as session:
             await session.execute(delete(PageEmbedding).where(PageEmbedding.document_id == doc_id))
             session.add_all(
-                PageEmbedding(document_id=doc_id, page_idx=i, emb=e) for i, e in enumerate(embs)
+                PageEmbedding(document_id=doc_id, page_idx=p, emb=e) for p, e in embs
             )
             await session.execute(
                 update(Document)
@@ -779,7 +962,7 @@ async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
                 .values(index_error=None)
             )
             await session.commit()
-        logger.info("visual index %s: %d страниц", doc_id, len(embs))
+        logger.info("visual index %s: %d страниц (%s)", doc_id, len(embs), kind)
         return f"visual indexed: {len(embs)} pages"
     except Exception as exc:
         logger.exception("visual index %s failed", doc_id)
@@ -889,8 +1072,16 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
         stem = Path(doc.filename).stem
 
         if doc.kind in (DocumentKind.pdf_text, DocumentKind.pdf_scan):
-            # 1) редактируемый DOCX из сегментов
-            data = await asyncio.to_thread(build_docx, doc.filename, segments)
+            # 1) редактируемый DOCX из сегментов (+ встроенные рисунки)
+            images: dict[str, bytes] = {}
+            for s in segments:
+                key = (s.meta or {}).get("img_s3") if s.kind == SegmentKind.image else None
+                if key and key not in images:
+                    try:
+                        images[key] = await storage.get_bytes(settings.bucket_artifacts, key)
+                    except Exception:  # noqa: BLE001 — рисунок необязателен, заглушка в DOCX
+                        pass
+            data = await asyncio.to_thread(build_docx, doc.filename, segments, images)
             docx_key = f"{doc_id}/{stem}.ru.docx"
             await storage.put_bytes(settings.bucket_exports, docx_key, data, _DOCX_MIME)
             values["s3_key_export_docx"] = docx_key
@@ -915,11 +1106,39 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                     )
                     values["s3_key_export_pdf"] = mono_key
                     values["s3_key_export_pdf_dual"] = dual_key
+                elif settings.translated_pdf_from_docx:
+                    # «вёрстка» перевода = чистый reflow-PDF из НАШЕГО DOCX
+                    # (build_docx → LibreOffice). Таблицы/абзацы переносятся, поэтому
+                    # overflow / «скачущий шрифт» / утечки тегов и английских связок
+                    # невозможны by construction (в отличие от пиксель-подгонки
+                    # BabelDOC). Плюс быстрее (LibreOffice ~секунды против минут
+                    # LLM-вызовов BabelDOC) и без нагрузки на GPU.
+                    try:
+                        docx_path = tmp_path / f"{stem}.ru.docx"
+                        docx_path.write_bytes(data)
+                        pdf_bytes = await render_to_pdf(
+                            docx_path, tmp_path, settings.office_render_timeout_s
+                        )
+                        pdf_key = f"{doc_id}/{stem}.ru.pdf"
+                        await storage.put_bytes(
+                            settings.bucket_exports, pdf_key, pdf_bytes, "application/pdf"
+                        )
+                        values["s3_key_export_pdf"] = pdf_key
+                        # кросс-навигация: положение сегмента в оригинале (слева) и
+                        # reflow-PDF перевода (справа) — клик подсвечивает на др. стороне
+                        await _store_cross_locs(
+                            ctx, doc_id, segments, local_pdf.read_bytes(), pdf_bytes
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "export %s: reflow-PDF из DOCX не собрался (%s) — оставляем DOCX",
+                            doc_id,
+                            exc,
+                        )
                 else:
-                    # BabelDOC (PDF с вёрсткой) сам убивает подпроцесс по таймауту
-                    # (babeldoc_timeout_s) — на тяжёлых PDF он очень медленный.
-                    # При сбое/таймауте оставляем уже собранный DOCX и идём в индекс,
-                    # документ не блокируется (вьювер рендерит оригинал через pdf.js).
+                    # BabelDOC (пиксель-вёрстка) — за флагом (translated_pdf_from_docx=False).
+                    # Сам убивает подпроцесс по таймауту (babeldoc_timeout_s) — на тяжёлых
+                    # PDF очень медленный. При сбое оставляем DOCX, документ не блокируется.
                     try:
                         values.update(await _export_pdf_layout(ctx, doc, local_pdf, tmp_path))
                     except Exception as exc:  # noqa: BLE001
@@ -935,11 +1154,21 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
         else:
             # OOXML: переводы обратно в копию оригинала, формат и вёрстка не меняются
             ext = doc.kind if isinstance(doc.kind, str) else doc.kind.value
-            translations = {
-                ooxml.location_key(s.meta["location"]): s.translated_text
-                for s in segments
-                if s.translated_text is not None and s.meta.get("location")
-            }
+            if ext == "xlsx":
+                # XLSX дедуплицирован на extract (1 сегмент = 1 уникальный текст);
+                # inject_xlsx применяет перевод ПО ИСХОДНОМУ ТЕКСТУ ячейки → ключ
+                # словаря = source_text, перевод раскладывается на все дубликаты.
+                translations = {
+                    s.source_text: s.translated_text
+                    for s in segments
+                    if s.translated_text is not None
+                }
+            else:
+                translations = {
+                    ooxml.location_key(s.meta["location"]): s.translated_text
+                    for s in segments
+                    if s.translated_text is not None and s.meta.get("location")
+                }
             with tempfile.TemporaryDirectory(prefix="rag_export_") as tmp:
                 tmp_path = Path(tmp)
                 src = tmp_path / Path(doc.filename).name
@@ -978,6 +1207,9 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                                     )
                                     await session.commit()
                                 values["page_count"] = n_pages
+                            # кросс-навигация docx: положение сегмента в оригинале
+                            # (view_orig) и переводе (view_ru) — клик подсвечивает напротив
+                            await _store_cross_locs(ctx, doc_id, segments, orig_pdf, ru_pdf)
                     except Exception as exc:  # noqa: BLE001 — рендер необязателен
                         logger.warning("export %s: LibreOffice-рендер не удался (%s)", doc_id, exc)
 

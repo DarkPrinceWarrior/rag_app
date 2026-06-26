@@ -28,6 +28,7 @@ from rag_app.llm.client import Translator
 from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.fast import FastTranslator, HyMTDocTranslator
 from rag_app.llm.visual import VisualEmbedder
+from rag_app.llm.visual_reranker import VisualReranker
 from rag_app.rag.chat import ChatEngine
 from rag_app.rag.memory import MemoryService
 from rag_app.rag.retrieve import Retriever
@@ -48,7 +49,9 @@ async def lifespan(app: FastAPI):
     app.state.arq = await create_pool(
         RedisSettings(host=settings.redis_host, port=settings.redis_port, database=settings.redis_db)
     )
-    app.state.retriever = Retriever(Embedder(), Reranker())
+    app.state.retriever = Retriever(
+        Embedder(), Reranker(), VisualEmbedder(), VisualReranker(), app.state.storage
+    )
     app.state.chat_engine = ChatEngine()
     # слой памяти — на тех же embedder/reranker (без лишних клиентов), §15.0
     app.state.memory = MemoryService(app.state.retriever.embedder, app.state.retriever.reranker)
@@ -120,6 +123,12 @@ if (WEB_DIST / "index.html").exists():
         candidate = WEB_DIST / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(WEB_DIST / "index.html")
+        # index.html НЕ кэшировать: он ссылается на хэшированные /assets/* (те
+        # иммутабельны и кэшируются вечно), поэтому новый деплой виден сразу,
+        # без cache-buster/жёсткой перезагрузки.
+        return FileResponse(
+            WEB_DIST / "index.html",
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 else:
     logging.getLogger(__name__).warning("web/dist не найден — соберите SPA: deploy/build_web.sh")

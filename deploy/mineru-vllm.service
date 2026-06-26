@@ -2,6 +2,15 @@
 # Обёртка `vllm serve` + MinerULogitsProcessor; ветка pdf_text идёт через него
 # (backend vlm-http-client). Память 0.30 — GPU5 делит с Qwen3-VL-Embedding (:8007).
 # Раньше жил в tmux `mineru_vlm`; перевели в systemd для автостарта/перезапуска.
+#
+# ВНИМАНИЕ про repetition_penalty (фикс repetition-collapse): здесь его задать
+# НЕЛЬЗЯ. Sampling (temperature/top_p/penalties) задаёт per-request КЛИЕНТ MinerU
+# (mineru_vl_utils) и шлёт repetition_penalty ЯВНО → серверный
+# --override-generation-config перебивается. У mineru CLI флага sampling нет,
+# env не читается. Поэтому правим дефолт клиента скриптом
+# deploy/patches/mineru_sampling.sh (repetition_penalty 1.0→1.1). Применять после
+# `uv sync`/переустановки mineru_vl_utils. Сервер (этот юнит) при этом
+# перезапускать НЕ нужно — sampling берёт клиентский подпроцесс `mineru`.
 [Unit]
 Description=MinerU2.5-Pro VLM server (GPU5, :30010)
 After=network-online.target

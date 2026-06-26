@@ -1,10 +1,15 @@
 import { useRef, useState, useEffect, createElement, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api, type Segment } from '@/lib/api'
+import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { PdfPane, type Highlight } from '@/components/PdfPane'
+import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
+import { ConfirmDialog } from '@/components/ui/modal'
+import { Download, MoreVertical } from 'lucide-react'
+import { PdfPane, type Highlight, type Region } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
+import { XlsxView } from '@/components/XlsxView'
+import { PptxView } from '@/components/PptxView'
 import { Markdown } from '@/components/Markdown'
 import { authFetch } from '@/lib/auth'
 import { cleanMath } from '@/lib/cleanMath'
@@ -18,6 +23,18 @@ export const Route = createFileRoute('/view/$id')({
 })
 
 const PDF_KINDS = ['pdf_text', 'pdf_scan']
+
+// Скачивание экспорта: <a download> не шлёт Bearer → тянем через authFetch в blob.
+async function downloadExport(url: string, filename: string): Promise<void> {
+  const r = await authFetch(url)
+  if (!r.ok) return
+  const obj = URL.createObjectURL(await r.blob())
+  const a = document.createElement('a')
+  a.href = obj
+  a.download = filename
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(obj), 1000)
+}
 
 function highlightOf(s: Segment): Highlight | null {
   if (s.page_idx == null) return null
@@ -36,13 +53,27 @@ function Viewer() {
   // текущая страница (общая для оригинала слева и перевода справа)
   const [page, setPage] = useState(1)
   const [numPages, setNumPages] = useState(0)
+  // «документ (PDF)» / docx «как в Microsoft» — переведённый PDF с другой
+  // пагинацией: НЕ синхронизируем с оригиналом, а ходим кросс-навигацией по клику.
+  const [docPage, setDocPage] = useState(1) // правая панель pdf_text (reflow)
+  const [ruPage, setRuPage] = useState(1) // правая панель docx (view_ru)
+  // подсветка цели при переходе по клику между панелями (кросс-навигация)
+  const [leftHi, setLeftHi] = useState<Highlight | null>(null)
+  const [rightHi, setRightHi] = useState<Highlight | null>(null)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
-  // режим «текст»: просмотр (чистый Markdown+формулы) или правка (DocFlow)
-  const [edit, setEdit] = useState(false)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
+  // вьювер грузит первые SEGMENTS_LIMIT сегментов (бэкстоп против дата-дампов
+  // на сотни тысяч ячеек). Если их меньше, чем segment_count документа —
+  // показан срез, предупреждаем баннером.
+  const loadedSegs = segsQ.data?.length ?? 0
+  const totalSegs = docQ.data?.segment_count ?? 0
+  // xlsx показывается интерактивным гридом со своим капом — баннер сегментов
+  // там не нужен (и сбивает с толку).
+  const segsTruncated =
+    loadedSegs >= SEGMENTS_LIMIT && totalSegs > loadedSegs && docQ.data?.kind !== 'xlsx'
   const isPdf = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   // OOXML с PDF-рендером (LibreOffice) — «как в Microsoft». Оригинал рендерится
   // рано (после парсинга) → показываем его, не дожидаясь перевода; перевод
@@ -92,42 +123,122 @@ function Viewer() {
     }
   }, [segsQ.data, seg, pageParam, isPdf])
 
-  async function reexport() {
-    setMsg('Экспорт в очереди…')
-    await api.reexport(id)
-    setMsg('Экспорт пересобирается')
-    setTimeout(() => setMsg(''), 4000)
+  // Подтверждение деструктивных/долгих действий вьювера — строгая модалка
+  // (вместо нативного confirm): иконка, заголовок, описание «что произойдёт».
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string
+    description?: ReactNode
+    points?: ReactNode[]
+    warning?: ReactNode
+    note?: ReactNode
+    confirmLabel: string
+    tone: 'default' | 'danger'
+    run: () => Promise<void>
+  } | null>(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
+
+  async function runConfirm() {
+    if (!confirmAction) return
+    setConfirmBusy(true)
+    try {
+      await confirmAction.run()
+    } finally {
+      setConfirmBusy(false)
+      setConfirmAction(null)
+    }
   }
 
-  async function reparseOcr() {
-    if (!confirm('Переразобрать через OCR? Для PDF с нечитаемым текстовым слоем (битый cmap). Текущие сегменты и перевод заменятся.'))
-      return
-    setMsg('OCR-переразбор в очереди…')
-    await api.reparseOcr(id, 'east_slavic')
-    setMsg('Переразбор запущен — обновите страницу через ~минуту')
-    setTimeout(() => setMsg(''), 8000)
+  const PARSER_NAMES: Record<string, string> = {
+    mineru: 'MinerU2.5-Pro + добор',
+    dots_mocr: 'dots.mocr',
+    paddle_vl: 'PaddleOCR-VL 1.6',
+  }
+
+  function askReexport() {
+    setConfirmAction({
+      title: 'Пересобрать перевод и экспорт?',
+      tone: 'default',
+      confirmLabel: 'Пересобрать',
+      description: 'Перевод соберётся заново из текущих сегментов. Сам разбор документа не трогаем.',
+      points: [
+        'Сегменты и распознавание остаются как есть',
+        'Все сегменты переводятся заново',
+        <>Пересобираются файлы экспорта: <b className="font-medium text-foreground">PDF</b> и <b className="font-medium text-foreground">DOCX</b> (side-by-side)</>,
+      ],
+      note: '≈ 1–2 минуты. Обновите страницу после завершения.',
+      run: async () => {
+        setMsg('Экспорт в очереди…')
+        await api.reexport(id)
+        setMsg('Экспорт пересобирается')
+        setTimeout(() => setMsg(''), 4000)
+      },
+    })
+  }
+
+  function askReparseOcr() {
+    setConfirmAction({
+      title: 'Переразобрать через OCR-распознавание?',
+      tone: 'danger',
+      confirmLabel: 'Переразобрать (OCR)',
+      description: 'Для PDF с нечитаемым текстовым слоем — битый cmap, когда текст выглядит как латиница-каша.',
+      points: [
+        'Документ распознаётся заново постранично (OCR)',
+        'Затем — повторный перевод и пересборка экспорта',
+      ],
+      warning: 'Текущие сегменты, перевод и экспорт будут заменены.',
+      note: 'Займёт от минуты. Обновите страницу после завершения.',
+      run: async () => {
+        setMsg('OCR-переразбор в очереди…')
+        await api.reparseOcr(id, 'east_slavic')
+        setMsg('Переразбор запущен — обновите страницу через ~минуту')
+        setTimeout(() => setMsg(''), 8000)
+      },
+    })
   }
 
   // Выбор движка парсинга pdf_text/docx (mineru / dots.mocr / PaddleOCR-VL 1.6).
-  // Меняет parser_backend на документе и переразбирает: сегменты и перевод заменятся.
-  async function reparseBackend(backend: string) {
+  function askReparseBackend(backend: string) {
     const cur = docQ.data?.parser_backend || 'mineru'
     if (backend === cur) return
-    const names: Record<string, string> = {
-      mineru: 'MinerU2.5-Pro + добор',
-      dots_mocr: 'dots.mocr',
-      paddle_vl: 'PaddleOCR-VL 1.6',
-    }
-    if (!confirm(`Переразобрать через «${names[backend]}»? Текущие сегменты и перевод заменятся.`)) return
-    setMsg(`Переразбор через ${names[backend]} в очереди…`)
-    await api.reparse(id, backend)
-    setMsg('Переразбор запущен — обновите страницу через ~минуту')
-    setTimeout(() => setMsg(''), 8000)
+    setConfirmAction({
+      title: `Сменить парсер на «${PARSER_NAMES[backend]}»?`,
+      tone: 'danger',
+      confirmLabel: 'Переразобрать',
+      description: (
+        <>
+          Сейчас документ разобран движком{' '}
+          <span className="font-medium text-foreground">{PARSER_NAMES[cur]}</span>. Он будет
+          полностью переразобран другим парсером.
+        </>
+      ),
+      points: [
+        <>Полный переразбор движком <span className="font-medium text-foreground">{PARSER_NAMES[backend]}</span></>,
+        'Повторный перевод всех сегментов',
+        'Пересборка экспорта (PDF/DOCX)',
+      ],
+      warning: 'Текущие сегменты, перевод и экспорт будут заменены.',
+      note: 'Несколько минут. Обновите страницу после завершения.',
+      run: async () => {
+        setMsg(`Переразбор через ${PARSER_NAMES[backend]} в очереди…`)
+        await api.reparse(id, backend)
+        setMsg('Переразбор запущен — обновите страницу через ~минуту')
+        setTimeout(() => setMsg(''), 8000)
+      },
+    })
   }
 
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
   const hasTransPdf = !!docQ.data?.exports.includes('pdf')
+  const hasDocxExport = !!docQ.data?.exports.includes('docx')
+  const dlStem = (docQ.data?.filename ?? 'документ').replace(/\.[^.]+$/, '')
   const header = (
+    <>
+    {segsTruncated && (
+      <div className="border-b bg-amber-50 px-5 py-1.5 text-center text-xs text-amber-800">
+        Показаны первые {loadedSegs.toLocaleString('ru')} сегментов из{' '}
+        {totalSegs.toLocaleString('ru')} (документ очень большой — остальные не загружены)
+      </div>
+    )}
     <div className="sticky top-[49px] z-[5] flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
       <span className="truncate text-sm font-medium">
         {docQ.data?.filename} · {docQ.data?.status}
@@ -136,13 +247,43 @@ function Viewer() {
       {isPdfDoc && hasTransPdf && (
         <div className="flex items-center overflow-hidden rounded-md border text-xs">
           <button
-            onClick={() => setRightText(false)}
+            onClick={() => {
+              // вход в layout-режим: встать на переведённую страницу с тем же
+              // контентом (RU объёмнее — номер не совпадает), а не сбрасывать на 1
+              const rp = rightPageForLeft(page)
+              if (rp != null) setDocPage(rp)
+              setRightText(false)
+            }}
+            title="Переведённый документ как PDF: заголовки, абзацы и таблицы с переносом (собран из перевода). Своя пагинация — для постраничного сравнения с оригиналом удобнее «текст»."
             className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
-            перевод: вёрстка
+            документ (PDF)
           </button>
           <button
             onClick={() => setRightText(true)}
+            title="Интерактивный перевод постранично, синхронно с оригиналом: заголовки, абзацы, таблицы, сноски без переполнения. Рекомендуется."
+            className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+          >
+            текст
+          </button>
+        </div>
+      )}
+      {hasViewOrig && docQ.data?.kind === 'docx' && (
+        <div className="flex items-center overflow-hidden rounded-md border text-xs">
+          <button
+            onClick={() => {
+              const rp = rightPageForLeft(page)
+              if (rp != null) setRuPage(rp)
+              setRightText(false)
+            }}
+            title="Переведённый документ с сохранённой вёрсткой Word (LibreOffice-рендер). Точная раскладка оригинала."
+            className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+          >
+            как в Microsoft
+          </button>
+          <button
+            onClick={() => setRightText(true)}
+            title="Интерактивный перевод постранично, синхронно с оригиналом: абзацы, таблицы, картинки."
             className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             текст
@@ -152,7 +293,7 @@ function Viewer() {
       {(isPdfDoc || docQ.data?.kind === 'docx') && (
         <select
           value={docQ.data?.parser_backend || 'mineru'}
-          onChange={(e) => reparseBackend(e.target.value)}
+          onChange={(e) => askReparseBackend(e.target.value)}
           title="Движок парсинга: переразобрать документ выбранным парсером"
           className="rounded-md border bg-background px-2 py-1 text-xs"
         >
@@ -162,14 +303,49 @@ function Viewer() {
         </select>
       )}
       {isPdfDoc && (
-        <Button variant="outline" size="sm" onClick={reparseOcr} title="Если текст в PDF распознан как латиница-каша">
+        <Button variant="outline" size="sm" onClick={askReparseOcr} title="Если текст в PDF распознан как латиница-каша">
           OCR-распознавание
         </Button>
       )}
-      <Button size="sm" onClick={reexport}>
+      {(hasTransPdf || hasDocxExport) && (
+        <Menu trigger={<MoreVertical className="h-4 w-4" />} title="Скачать перевод">
+          {(close) => (
+            <>
+              <MenuLabel>Скачать перевод</MenuLabel>
+              {(docQ.data?.exports ?? []).map((k) => (
+                <MenuItem
+                  key={k}
+                  icon={<Download className="h-4 w-4" />}
+                  onClick={() => {
+                    void downloadExport(downloadUrl(id, k), `${dlStem}.ru.${k}`)
+                    close()
+                  }}
+                >
+                  {EXPORT_LABELS[k] ?? k}
+                </MenuItem>
+              ))}
+            </>
+          )}
+        </Menu>
+      )}
+      <Button size="sm" onClick={askReexport}>
         Пересобрать экспорт
       </Button>
     </div>
+    <ConfirmDialog
+      open={!!confirmAction}
+      onClose={() => setConfirmAction(null)}
+      onConfirm={runConfirm}
+      title={confirmAction?.title ?? ''}
+      description={confirmAction?.description}
+      points={confirmAction?.points}
+      warning={confirmAction?.warning}
+      note={confirmAction?.note}
+      confirmLabel={confirmAction?.confirmLabel}
+      tone={confirmAction?.tone}
+      busy={confirmBusy}
+    />
+    </>
   )
 
   if (segsQ.isLoading)
@@ -182,7 +358,58 @@ function Viewer() {
 
   const segs = segsQ.data ?? []
 
-  // PDF: слева оригинал постранично, справа перевод ТОЙ ЖЕ страницы; листаются синхронно.
+  // --- Кросс-навигация PDF↔PDF (pdf_text/docx): клик по фрагменту на одной панели
+  // подсвечивает его на другой и листает туда (страницы НЕ синхронны — после
+  // перевода объём другой). regionsFor — кликабельные сегменты текущей страницы.
+  const regionsFor = (side: 'left' | 'right', curPage: number): Region[] =>
+    segs.flatMap((s) => {
+      const loc = side === 'left' ? s.loc_left : s.loc_right
+      return loc && loc.page === curPage - 1 && loc.bbox?.length === 4
+        ? [{ segId: s.id, bbox: loc.bbox, pageSize: loc.pagesize }]
+        : []
+    })
+  const crossToRight = (segId: string, setRight: (p: number) => void) => {
+    const s = segs.find((x) => x.id === segId)
+    if (s?.loc_right && s.loc_right.bbox?.length === 4) {
+      setRight(s.loc_right.page + 1)
+      setRightHi({ page: s.loc_right.page + 1, bbox: s.loc_right.bbox, pageSize: s.loc_right.pagesize })
+    }
+  }
+  const crossToLeft = (segId: string) => {
+    const s = segs.find((x) => x.id === segId)
+    if (s?.loc_left && s.loc_left.bbox?.length === 4) {
+      setPage(s.loc_left.page + 1)
+      setLeftHi({ page: s.loc_left.page + 1, bbox: s.loc_left.bbox, pageSize: s.loc_left.pagesize })
+    }
+  }
+  // переведённая страница, на которой лежит КОНТЕНТ страницы оригинала leftPage
+  // (страницы не синхронны — RU объёмнее EN). Берём МЕДИАНУ правых страниц
+  // среди сегментов левой страницы — устойчиво к единичным мисматчам cross-loc
+  // (одиночный короткий сегмент, ошибочно найденный на чужой странице, не
+  // утягивает результат, как это делал min). null → маппинга нет.
+  const rightPageForLeft = (leftPage: number): number | null => {
+    const rs = segs
+      .flatMap((s) => (s.loc_left?.page === leftPage - 1 && s.loc_right ? [s.loc_right.page] : []))
+      .sort((a, b) => a - b)
+    if (rs.length) return rs[Math.floor(rs.length / 2)] + 1
+    // на этой странице нет смапленных сегментов (cross-loc покрывает не каждую
+    // страницу больших docx) — берём ближайший по loc_left сегмент с маппингом,
+    // чтобы не сваливаться на стр. 1
+    let best: number | null = null
+    let bestDist = Infinity
+    for (const s of segs) {
+      if (s.loc_left && s.loc_right) {
+        const d = Math.abs(s.loc_left.page - (leftPage - 1))
+        if (d < bestDist) {
+          bestDist = d
+          best = s.loc_right.page
+        }
+      }
+    }
+    return best != null ? best + 1 : null
+  }
+
+  // PDF: слева оригинал, справа перевод; кросс-навигация по клику (страницы не синхронны).
   if (isPdf) {
     const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
     const pageText = pageSegs
@@ -194,12 +421,32 @@ function Viewer() {
         {header}
         <div className="flex h-[calc(100vh-97px)]">
           <div className="w-1/2 border-r">
-            <PdfPane docId={id} page={page} highlight={active} onPageChange={setPage} onNumPages={setNumPages} />
+            <PdfPane
+              docId={id}
+              page={page}
+              fitWidth
+              highlight={leftHi || active}
+              onPageChange={setPage}
+              onNumPages={setNumPages}
+              regions={hasTransPdf && !rightText ? regionsFor('left', page) : undefined}
+              onRegionClick={(sid) => crossToRight(sid, setDocPage)}
+            />
           </div>
           <div className="flex w-1/2 flex-col">
             {hasTransPdf && !rightText ? (
-              // перевод с сохранённой вёрсткой (BabelDOC) — отдельной pdf.js-панелью
-              <PdfPane docId={id} urlKind="pdf" label="перевод · вёрстка" page={page} highlight={null} onPageChange={setPage} />
+              // «документ (PDF)» — reflow-PDF перевода. Своя пагинация (не синхронна с
+              // оригиналом); связь — кросс-навигацией по клику (regions + highlight).
+              <PdfPane
+                docId={id}
+                urlKind="pdf"
+                label="перевод · документ — кликните фрагмент, чтобы найти его в оригинале"
+                fitWidth
+                page={docPage}
+                highlight={rightHi}
+                onPageChange={setDocPage}
+                regions={regionsFor('right', docPage)}
+                onRegionClick={crossToLeft}
+              />
             ) : (
               <>
                 <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
@@ -212,46 +459,17 @@ function Viewer() {
                   <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
                     →
                   </Button>
-                  <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                    <button
-                      onClick={() => setEdit(false)}
-                      className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      просмотр
-                    </button>
-                    <button
-                      onClick={() => setEdit(true)}
-                      className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                    >
-                      править
-                    </button>
-                  </div>
                 </div>
                 <div className="flex-1 overflow-auto">
                   <article className="mx-auto max-w-3xl px-6 py-5">
-                    {edit ? (
-                      <DocFlow
-                        segs={pageSegs}
-                        field="translated"
-                        editable
-                        showPages={false}
-                        citedId={cited}
-                        onSaved={setMsg}
-                        onPick={(s) => {
-                          const h = highlightOf(s)
-                          if (h) setActive(h)
-                        }}
-                      />
-                    ) : (
-                      <DocRead
-                        segs={pageSegs}
-                        citedId={cited}
-                        onPick={(s) => {
-                          const h = highlightOf(s)
-                          if (h) setActive(h)
-                        }}
-                      />
-                    )}
+                    <DocRead
+                      segs={pageSegs}
+                      citedId={cited}
+                      onPick={(s) => {
+                        const h = highlightOf(s)
+                        if (h) setActive(h)
+                      }}
+                    />
                   </article>
                 </div>
               </>
@@ -278,71 +496,58 @@ function Viewer() {
               docId={id}
               urlKind="view_orig"
               label="оригинал"
-              scale={1.0}
+              fitWidth
               page={page}
-              highlight={null}
+              highlight={leftHi}
               onPageChange={setPage}
               onNumPages={setNumPages}
+              regions={!rightText ? regionsFor('left', page) : undefined}
+              onRegionClick={(sid) => crossToRight(sid, setRuPage)}
             />
           </div>
           <div className="flex w-1/2 flex-col">
-            <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                ←
-              </Button>
-              <span className="text-muted-foreground">
-                стр. {page} / {numPages || '…'}
-              </span>
-              <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
-                →
-              </Button>
-              <div className="ml-2 flex items-center overflow-hidden rounded-md border text-xs">
-                <button
-                  onClick={() => setRightText(true)}
-                  className={'px-2 py-0.5 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                >
-                  текст
-                </button>
-                <button
-                  onClick={() => setRightText(false)}
-                  className={'px-2 py-0.5 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                >
-                  как в Microsoft
-                </button>
-              </div>
-              {rightText && (
-                <div className="ml-auto flex items-center overflow-hidden rounded-md border text-xs">
-                  <button
-                    onClick={() => setEdit(false)}
-                    className={'px-2 py-0.5 ' + (!edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                  >
-                    просмотр
-                  </button>
-                  <button
-                    onClick={() => setEdit(true)}
-                    className={'px-2 py-0.5 ' + (edit ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
-                  >
-                    править
-                  </button>
-                </div>
-              )}
-            </div>
-            {rightText ? (
-              <div className="flex-1 overflow-auto">
-                <article className="mx-auto max-w-3xl px-6 py-5">
-                  {pageSegs.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
-                  ) : edit ? (
-                    <DocFlow segs={pageSegs} field="translated" editable showPages={false} citedId={cited} onSaved={setMsg} />
-                  ) : (
-                    <DocRead segs={pageSegs} citedId={cited} />
-                  )}
-                </article>
-              </div>
-            ) : hasViewRu ? (
-              <PdfPane docId={id} urlKind="view_ru" label="перевод" scale={1.0} page={page} highlight={null} onPageChange={setPage} />
+            {/* Тумблер «текст | как в Microsoft» — в шапке. «Как в Microsoft» = view_ru
+                со СВОЕЙ пагинацией (ruPage, не синхронна с оригиналом — объём после
+                перевода другой); связь — кросс-навигацией по клику. */}
+            {!rightText ? (
+              hasViewRu ? (
+                <PdfPane
+                  docId={id}
+                  urlKind="view_ru"
+                  label="перевод — кликните фрагмент, чтобы найти его в оригинале"
+                  fitWidth
+                  page={ruPage}
+                  highlight={rightHi}
+                  onPageChange={setRuPage}
+                  regions={regionsFor('right', ruPage)}
+                  onRegionClick={crossToLeft}
+                />
+              ) : (
+                <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
+              )
             ) : (
-              <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
+              <>
+                <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
+                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                    ←
+                  </Button>
+                  <span className="text-muted-foreground">
+                    стр. {page} / {numPages || '…'}
+                  </span>
+                  <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
+                    →
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-auto">
+                  <article className="mx-auto max-w-3xl px-6 py-5">
+                    {pageSegs.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
+                    ) : (
+                      <DocRead segs={pageSegs} citedId={cited} />
+                    )}
+                  </article>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -356,8 +561,34 @@ function Viewer() {
     )
   }
 
-  // XLSX/PPTX с PDF-рендером: «как в Microsoft» — оригинал и перевод двумя
-  // pdf.js-панелями, листаются синхронно (текстовый MD-просмотр им не идёт).
+  // XLSX → ИНТЕРАКТИВНЫЙ грид (а не office-PDF «принт»): настоящая таблица с
+  // вкладками листов, линейкой строк/столбцов, выделением ячеек и синхронной
+  // прокруткой панелей оригинал|перевод. Данные тянутся из самих xlsx-файлов.
+  if (docQ.data?.kind === 'xlsx') {
+    return (
+      <div>
+        {header}
+        <XlsxView docId={id} />
+        <DocAssistant docId={id} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // PPTX → ИНТЕРАКТИВНЫЙ просмотр слайдов (а не office-PDF «принт»): рейка
+  // слайдов + оригинал|перевод блоками (текст/таблица/рисунок), выделяемый текст.
+  // Тумблер «как в PowerPoint» оставляет office-PDF для точной вёрстки.
+  if (docQ.data?.kind === 'pptx') {
+    return (
+      <div>
+        {header}
+        <PptxView docId={id} hasViewOrig={hasViewOrig} hasViewRu={hasViewRu} />
+        <DocAssistant docId={id} filename={docQ.data?.filename} />
+      </div>
+    )
+  }
+
+  // Прочие office-форматы с PDF-рендером (фолбэк): оригинал и перевод двумя
+  // pdf.js-панелями.
   if (hasViewOrig) {
     return (
       <div>
@@ -368,7 +599,7 @@ function Viewer() {
               docId={id}
               urlKind="view_orig"
               label="оригинал"
-              scale={1.0}
+              fitWidth
               page={page}
               highlight={null}
               onPageChange={setPage}
@@ -381,7 +612,7 @@ function Viewer() {
                 docId={id}
                 urlKind="view_ru"
                 label="перевод"
-                scale={1.0}
+                fitWidth
                 page={page}
                 highlight={null}
                 onPageChange={setPage}
@@ -581,6 +812,32 @@ function AuthImage({ src, alt }: { src: string; alt?: string }) {
   return <img src={url} alt={alt || ''} className="mx-auto max-h-[460px] rounded border bg-white" />
 }
 
+// VL иногда пишет внутри ячейки markdown-таблицы литеральный `|` (например
+// «Y|BTC» — металл|лиганд). GFM принимает его за разделитель столбцов → строка
+// разъезжается и последний столбец отваливается. Экранируем `|`, окружённый
+// непробельными символами, ТОЛЬКО в строках-рядах таблицы (начинаются с `|`),
+// не трогая структурные ` | ` и инлайн-код в обычных абзацах.
+function escapeTablePipes(md: string): string {
+  return md
+    .split('\n')
+    .map((ln) => {
+      if (!/^\s*\|/.test(ln)) return ln
+      // строку-разделитель GFM (|---|:--:|…) НЕ трогаем — иначе экранированные пайпы
+      // ломают распознавание таблицы и она рендерится сырым текстом
+      if (/^\s*\|?[\s:|-]+$/.test(ln)) return ln
+      return ln.replace(/([^\s|])\|([^\s|])/g, '$1\\|$2')
+    })
+    .join('\n')
+}
+
+// CommonMark схлопывает одиночный \n внутри абзаца в пробел (soft break) — из-за
+// этого многострочные сегменты слипаются: сноски (⁵ … ⁶ …) текут в одну строку, а
+// «**Метка:**\n*[плейсхолдер]*» рендерится в одну строку. Превращаем ОДИНОЧНЫЙ \n
+// в жёсткий перенос (два пробела + \n = <br>); двойной \n (разрыв абзаца) не трогаем.
+function mdHardBreaks(md: string): string {
+  return md.replace(/([^\n])\n(?!\n)/g, '$1  \n')
+}
+
 function DocRead({
   segs,
   citedId,
@@ -682,7 +939,10 @@ function DocRead({
       nodes.push(
         <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3 overflow-x-auto' + ring}>
           {clauseTable ? (
-            <table className="border-collapse text-sm">
+            // table-fixed + w-full: длинная (1500+ симв.) колонка описания иначе
+            // распирает таблицу шире страницы и текст красится за рамку. break-words
+            // ломает сверхдлинные токены. Узкая колонка-метка (ci=0) — доля ширины.
+            <table className="w-full table-fixed border-collapse text-sm">
               <tbody>
                 {trows.map((row, ri) => (
                   <tr key={ri}>
@@ -690,8 +950,14 @@ function DocRead({
                       <td
                         key={ci}
                         colSpan={c.colspan > 1 ? c.colspan : undefined}
-                        rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
-                        className="whitespace-pre-line border border-border px-2.5 py-1.5 align-top leading-relaxed"
+                        // rowspan парсера бывает больше числа строк сегмента (таблицу
+                        // разбило по границе страницы) — клампим по остатку строк,
+                        // иначе браузер перекашивает раскладку
+                        rowSpan={c.rowspan > 1 ? Math.min(c.rowspan, trows.length - ri) : undefined}
+                        className={
+                          'whitespace-pre-line break-words border border-border px-2.5 py-1.5 align-top leading-relaxed ' +
+                          (ci === 0 ? 'w-1/5 font-medium' : '')
+                        }
                       >
                         {splitClauses(cleanMath(c.text))}
                       </td>
@@ -711,13 +977,23 @@ function DocRead({
 
     if (s.kind === 'image') {
       const cap = textOf(s, 'translated') || textOf(s, 'source')
+      // Описание скана/картинки от VL (Qwen-VL) приходит готовым Markdown —
+      // заголовки, таблица, списки. Рендерим его как Markdown (таблица = таблица),
+      // а не сплошной плоской подписью по центру. Короткие реальные подписи
+      // («Рис. 1. …») остаются мелким figcaption по центру.
+      const richCap = cap.length > 200 || /(^|\n)\s*#{1,6}\s|\n\s*\||\n-{3,}/.test(cap)
       if (s.image_url || cap.trim())
         nodes.push(
           <figure key={s.id} data-seg={s.id} onClick={pick} className={'my-4' + ring}>
-            {s.image_url && <AuthImage src={s.image_url} alt={cap} />}
-            {cap.trim() && (
-              <figcaption className="mt-1.5 text-center text-sm text-muted-foreground">{cleanMath(cap)}</figcaption>
-            )}
+            {s.image_url && <AuthImage src={s.image_url} alt="" />}
+            {cap.trim() &&
+              (richCap ? (
+                <div className="mt-2">
+                  <Markdown content={escapeTablePipes(cap)} className="text-[15px] leading-relaxed" />
+                </div>
+              ) : (
+                <figcaption className="mt-1.5 text-center text-sm text-muted-foreground">{cleanMath(cap)}</figcaption>
+              ))}
           </figure>,
         )
       i++
@@ -749,7 +1025,7 @@ function DocRead({
         // его же правилом first/last-child (один абзац = и первый, и последний),
         // поэтому пробел держим на обёртке — иначе абзацы слипаются в «стену».
         <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
-          <Markdown content={body} className="text-[15px] leading-relaxed" />
+          <Markdown content={mdHardBreaks(body)} className="text-[15px] leading-relaxed" />
         </div>
       ),
     )
@@ -938,8 +1214,8 @@ function TableBlock({
                 <td
                   key={ci}
                   colSpan={c.colspan > 1 ? c.colspan : undefined}
-                  rowSpan={c.rowspan > 1 ? c.rowspan : undefined}
-                  className="border border-border px-2.5 py-1 align-top"
+                  rowSpan={c.rowspan > 1 ? Math.min(c.rowspan, cells.length - ri) : undefined}
+                  className="border border-border px-2.5 py-1 align-top break-words"
                 >
                   {cleanMath(c.text)}
                 </td>

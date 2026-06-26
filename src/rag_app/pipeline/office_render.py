@@ -50,6 +50,20 @@ def _convert_sync(src: Path, out_dir: Path, timeout_s: int) -> Path:
 
 
 async def render_to_pdf(src: Path, out_dir: Path, timeout_s: int = 150) -> bytes:
-    """OOXML-файл → PDF-байты (LibreOffice). Бросает OfficeRenderError при сбое."""
-    pdf = await asyncio.to_thread(_convert_sync, src, out_dir, timeout_s)
+    """OOXML-файл → PDF-байты (LibreOffice). Бросает OfficeRenderError при сбое.
+
+    Для .pptx предварительно включаем автоподгонку текста (перенос + «ужать до
+    фигуры»), иначе LibreOffice выпускает длинный/переведённый текст за границы
+    фигур и наезжает на картинки. Затрагивает только PDF-просмотр."""
+    render_src = src
+    if src.suffix.lower() == ".pptx":
+        try:
+            from rag_app.pipeline.ooxml import pptx_autofit
+
+            fitted = out_dir / f"{src.stem}__fit.pptx"
+            await asyncio.to_thread(pptx_autofit, src, fitted)
+            render_src = fitted
+        except Exception:
+            render_src = src
+    pdf = await asyncio.to_thread(_convert_sync, render_src, out_dir, timeout_s)
     return pdf.read_bytes()
