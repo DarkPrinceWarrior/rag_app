@@ -73,6 +73,8 @@ services:
       # фиксируем issuer (иначе он зависит от того, по какому хосту пришли,
       # и не совпадает с проверкой на бэкенде)
       KC_HOSTNAME: ${RAG_KC_HOSTNAME:-http://localhost:8180}
+      # за внешним TLS-прокси доверяем X-Forwarded-* (scheme/host) от Caddy :8090
+      KC_PROXY_HEADERS: xforwarded
     ports:
       - "127.0.0.1:8180:8080"
     volumes:

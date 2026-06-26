@@ -7,7 +7,7 @@
 
 ```
 Привет, мне нужно это развернуть
-Сабдомен:    translate.ds-mind-lab.ru
+Сабдомен:    doc-rag-translate.ds-mind-lab.ru
 Адрес тачки: 192.168.101.12
 Порт:        8090
 ```
@@ -17,7 +17,7 @@ origin раздаёт:
 - `/realms*`, `/resources*`, `/admin*`, `/js*` → Keycloak (127.0.0.1:8180);
 - всё остальное (SPA, `/api`, `/healthz`, `/metrics`) → приложение (127.0.0.1:8100).
 
-Внешний TLS-прокси Захара: `https://translate.ds-mind-lab.ru` → `192.168.101.12:8090`,
+Внешний TLS-прокси Захара: `https://doc-rag-translate.ds-mind-lab.ru` → `192.168.101.12:8090`,
 с пробросом `X-Forwarded-Proto: https`.
 
 ## Запуск внутреннего прокси (уже сделано)
@@ -34,7 +34,7 @@ docker compose -f deploy/proxy/docker-compose.yml up -d
 
 1. **Keycloak** (env, перезапуск контейнера) — внешнее имя + доверие прокси:
    ```
-   RAG_KC_HOSTNAME=https://translate.ds-mind-lab.ru
+   RAG_KC_HOSTNAME=https://doc-rag-translate.ds-mind-lab.ru
    KC_PROXY_HEADERS=xforwarded
    ```
    (в `docker-compose.yml` keycloak: добавить `KC_PROXY_HEADERS`; `KC_HOSTNAME`
@@ -42,23 +42,23 @@ docker compose -f deploy/proxy/docker-compose.yml up -d
 
 2. **API** (env `.env.api.local`, перезапуск tmux rag_api) — split-horizon:
    ```
-   RAG_OIDC_ISSUER=https://translate.ds-mind-lab.ru/realms/rag-app
-   RAG_OIDC_PUBLIC_URL=https://translate.ds-mind-lab.ru/realms/rag-app
+   RAG_OIDC_ISSUER=https://doc-rag-translate.ds-mind-lab.ru/realms/rag-app
+   RAG_OIDC_PUBLIC_URL=https://doc-rag-translate.ds-mind-lab.ru/realms/rag-app
    RAG_OIDC_JWKS_URL=http://127.0.0.1:8180/realms/rag-app/protocol/openid-connect/certs
    ```
    issuer/public — публичный домен (для браузера и проверки токена), ключи API
    берёт по внутреннему URL Keycloak (не ходит наружу).
 
-3. **Redirect URI** уже в `deploy/keycloak/rag-app-realm.json` (`https://translate.ds-mind-lab.ru/*`).
+3. **Redirect URI** уже в `deploy/keycloak/rag-app-realm.json` (`https://doc-rag-translate.ds-mind-lab.ru/*`).
    Realm импортирован — добавить URI в РАБОТАЮЩИЙ Keycloak: админ-консоль
    (`/admin`, admin/kc-admin-2026) → Clients → rag-web → Valid redirect URIs, либо
    re-import realm.
 
 ## Проверка после перехода
 
-- `https://translate.ds-mind-lab.ru/` → страница входа Keycloak → логин
+- `https://doc-rag-translate.ds-mind-lab.ru/` → страница входа Keycloak → логин
   `ruslan / rag-dev-2026` → библиотека.
-- `https://translate.ds-mind-lab.ru/api/config` → `oidc_authority` = публичный URL.
+- `https://doc-rag-translate.ds-mind-lab.ru/api/config` → `oidc_authority` = публичный URL.
 - Перевод RU→EN/ZH, поиск, чат, история правок — функционально.
 
 ## Замечание по 152-ФЗ

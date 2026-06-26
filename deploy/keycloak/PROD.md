@@ -35,7 +35,9 @@ HTTP, открывает TLS `:8443`. `--optimized` не импортирует 
 
 ## 3. Федерация AD/LDAP
 
-Шаблон — `deploy/keycloak/ldap-federation.example.json`. Координаты AD
+Шаблон — `deploy/keycloak/ldap-federation.example.json.tmpl` (расширение
+`.tmpl`, а не `.json`, чтобы Keycloak `start-dev --import-realm` не пытался
+импортировать его как realm и не падал на старте). Координаты AD
 (`connectionUrl`, `bindDn`, `usersDn`, сервисная учётка) даёт заказчик;
 без них компонент не создать, поэтому локально не проверялось.
 
@@ -43,7 +45,7 @@ HTTP, открывает TLS `:8443`. `--optimized` не импортирует 
 # через kcadm (внутри контейнера keycloak)
 kcadm.sh config credentials --server http://localhost:8080 \
   --realm master --user "$RAG_KC_ADMIN" --password "$RAG_KC_ADMIN_PASSWORD"
-kcadm.sh create components -r rag-app -f /path/ldap-federation.example.json
+kcadm.sh create components -r rag-app -f /path/ldap-federation.example.json.tmpl
 ```
 
 Роли `user`/`admin` маппятся из групп AD отдельными `role-ldap-mapper`

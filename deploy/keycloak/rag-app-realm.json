@@ -19,7 +19,7 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:8100/*", "http://127.0.0.1:8100/*", "https://translate.ds-mind-lab.ru/*", "https://mhjdfiggibjmaiomlggloepafgphgdpa.chromiumapp.org/*"],
+      "redirectUris": ["http://localhost:8100/*", "http://127.0.0.1:8100/*", "https://doc-rag-translate.ds-mind-lab.ru/*", "https://mhjdfiggibjmaiomlggloepafgphgdpa.chromiumapp.org/*"],
       "webOrigins": ["+"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
