@@ -17,7 +17,7 @@ from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
 from rag_app.api.schemas import DocumentOut
 from rag_app.config import settings
-from rag_app.db.models import Document, DocumentStatus, Segment
+from rag_app.db.models import Document, DocumentStatus, DocumentTranslation, Segment
 from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
 
@@ -286,6 +286,108 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> Response:
             headers={**base, "Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(chunk))},
         )
     return Response(content=data, media_type=media, headers={**base, "Content-Length": str(total)})
+
+
+# --- Доп. переводы документа (ТЗ §4.3): RU→EN / RU→ZH по запросу --------------
+
+class TranslationIn(BaseModel):
+    target_lang: str  # en | ru | zh
+
+
+@router.post("/{doc_id}/translations", status_code=202)
+async def create_translation(request: Request, doc_id: uuid.UUID, body: TranslationIn) -> dict:
+    """Запустить перевод документа на дополнительный язык. Основной перевод (→ru)
+    не трогается; результат — отдельный артефакт DocumentTranslation."""
+    doc = await _get_or_404(request, doc_id)
+    target = (body.target_lang or "").strip().lower()
+    if target not in ("en", "ru", "zh"):
+        raise HTTPException(422, "target_lang: en | ru | zh")
+    src = (doc.source_lang or "").strip().lower() or "ru"
+    if target == src:
+        raise HTTPException(422, f"документ уже на языке «{target}» — переводить не нужно")
+    if doc.status not in (DocumentStatus.done, DocumentStatus.translated, DocumentStatus.exporting):
+        raise HTTPException(409, "документ ещё не обработан — дождитесь готовности")
+    async with request.app.state.sessionmaker() as db:
+        row = (
+            await db.execute(
+                select(DocumentTranslation).where(
+                    DocumentTranslation.document_id == doc_id,
+                    DocumentTranslation.target_lang == target,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = DocumentTranslation(document_id=doc_id, target_lang=target, status="translating")
+            db.add(row)
+        else:  # перезапуск — сброс прошлого результата
+            row.status = "translating"
+            row.error = None
+            row.data = {}
+            row.translated_count = 0
+            row.s3_key_docx = None
+            row.s3_key_source = None
+        await db.commit()
+    await request.app.state.arq.enqueue_job(
+        "translate_to_language", str(doc_id), target, _job_id=f"translate_lang:{doc_id}:{target}"
+    )
+    await audit(request, "translate_lang", "document", str(doc_id), {"target_lang": target})
+    return {"target_lang": target, "status": "translating"}
+
+
+@router.get("/{doc_id}/translations")
+async def list_translations(request: Request, doc_id: uuid.UUID) -> list[dict]:
+    await _get_or_404(request, doc_id)
+    async with request.app.state.sessionmaker() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(DocumentTranslation).where(DocumentTranslation.document_id == doc_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        {
+            "target_lang": r.target_lang,
+            "status": r.status,
+            "translated_count": r.translated_count,
+            "segment_count": r.segment_count,
+            "needs_review_count": r.needs_review_count,
+            "has_export": bool(r.s3_key_docx or r.s3_key_source),
+            "error": r.error,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/{doc_id}/translations/{lang}/download")
+async def download_translation(request: Request, doc_id: uuid.UUID, lang: str) -> Response:
+    await _get_or_404(request, doc_id)
+    async with request.app.state.sessionmaker() as db:
+        row = (
+            await db.execute(
+                select(DocumentTranslation).where(
+                    DocumentTranslation.document_id == doc_id,
+                    DocumentTranslation.target_lang == lang,
+                )
+            )
+        ).scalar_one_or_none()
+    key = (row.s3_key_docx or row.s3_key_source) if row else None
+    if not key:
+        raise HTTPException(404, "перевод ещё не готов")
+    media = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if row.s3_key_docx
+        else "application/octet-stream"
+    )
+    data = await request.app.state.storage.get_bytes(settings.bucket_exports, key)
+    await audit(request, "download_translation", "document", str(doc_id), {"lang": lang})
+    name = Path(key).name.encode("ascii", "ignore").decode() or f"translation.{lang}"
+    return Response(
+        content=data, media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @router.get("/{doc_id}/image/{name}")

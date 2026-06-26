@@ -160,6 +160,36 @@ class Segment(Base):
     document: Mapped[Document] = relationship(back_populates="segments")
 
 
+class DocumentTranslation(Base):
+    """Дополнительный перевод документа на язык, отличный от основного (ТЗ §4.3):
+    русский документ → EN/ZH по запросу. Основной перевод (→ru) лежит в
+    Segment.translated_text; здесь — параллельные цели. Один ряд = (документ × язык).
+    Переводы сегментов — в data (JSONB: {segment_id: {text, meta, validation}}), чтобы
+    конкурентные задачи EN и ZH не конфликтовали по строкам сегментов."""
+
+    __tablename__ = "document_translations"
+    __table_args__ = (UniqueConstraint("document_id", "target_lang", name="uq_doc_translation"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    target_lang: Mapped[str] = mapped_column(String(8))  # en | ru | zh
+    # translating | exporting | done | error (строка, не SQL-enum)
+    status: Mapped[str] = mapped_column(String(16), default="translating")
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0)
+    translated_count: Mapped[int] = mapped_column(Integer, default=0)
+    needs_review_count: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    s3_key_docx: Mapped[str | None] = mapped_column(String(1024), default=None)
+    s3_key_source: Mapped[str | None] = mapped_column(String(1024), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Folder(Base):
     """Папки библиотеки. Изоляция по владельцу (ТЗ §4.7.1): у каждой папки —
     owner_sub; имя уникально в пределах владельца (составной ключ)."""

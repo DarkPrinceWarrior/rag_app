@@ -17,6 +17,9 @@ _NUMBER = re.compile(r"\d+(?:[  ,]\d{3})*(?:[.,]\d+)?")
 
 def extract_numbers(text: str) -> Counter[str]:
     """Мультимножество нормализованных чисел текста."""
+    # Полноширинные цифры ０-９ (китайский вывод Hy-MT) → ASCII, иначе числовая
+    # валидация для цели zh даёт ложные «потери» (ТЗ §4.3.2/§4.3.7).
+    text = text.translate({0xFF10 + i: str(i) for i in range(10)})
     out: Counter[str] = Counter()
     for m in _NUMBER.finditer(text):
         raw = m.group(0)

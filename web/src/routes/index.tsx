@@ -2,8 +2,15 @@ import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { MoreVertical, Download, Trash2, FolderInput, Check, X } from 'lucide-react'
-import { api, EXPORT_LABELS, downloadUrl, type Document, type Folder } from '@/lib/api'
+import { MoreVertical, Download, Trash2, FolderInput, Check, X, Languages } from 'lucide-react'
+import {
+  api,
+  EXPORT_LABELS,
+  downloadUrl,
+  translationDownloadUrl,
+  type Document,
+  type Folder,
+} from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -243,6 +250,27 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
     mutationFn: (folderId: string | null) => api.moveDocument(d.id, folderId),
     onSuccess: refresh,
   })
+  // доп. переводы документа (ТЗ §4.3): RU→EN/RU→ZH
+  const translations = useQuery({
+    queryKey: ['translations', d.id],
+    queryFn: () => api.listTranslations(d.id),
+    enabled: d.status === 'done',
+    refetchInterval: (q) =>
+      q.state.data?.some((t) => t.status === 'translating' || t.status === 'exporting') ? 2500 : false,
+  })
+  const translate = useMutation({
+    mutationFn: (lang: string) => api.createTranslation(d.id, lang),
+    onSuccess: () => translations.refetch(),
+  })
+  const TR_LANGS = [
+    { code: 'en', label: 'English' },
+    { code: 'zh', label: '中文 (упрощённый)' },
+    { code: 'ru', label: 'Русский' },
+  ]
+  const srcLang = d.source_lang || 'ru'
+  const trList = translations.data ?? []
+  // не-ru документ уже переведён на ru основным потоком → ru повторно не предлагаем
+  const offerLangs = TR_LANGS.filter((l) => l.code !== srcLang && !(srcLang !== 'ru' && l.code === 'ru'))
   const progress =
     d.status === 'translating' && d.segment_count
       ? `${Math.round((d.translated_count / d.segment_count) * 100)}%`
@@ -258,6 +286,22 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
               {DIRECTION[d.source_lang].label}
             </span>
           )}
+          {trList.map((t) => (
+            <span
+              key={t.target_lang}
+              className={cn(
+                'rounded px-1.5 py-0.5 font-medium',
+                t.status === 'done'
+                  ? 'bg-emerald-50 text-emerald-700'
+                  : t.status === 'error'
+                    ? 'bg-destructive/10 text-destructive'
+                    : 'bg-amber-50 text-amber-700',
+              )}
+            >
+              → {t.target_lang.toUpperCase()}
+              {t.status === 'done' ? ' ✓' : t.status === 'error' ? ' ✗' : '…'}
+            </span>
+          ))}
           {progress && <span>{progress}</span>}
           {d.page_count != null && <span>{d.page_count} стр.</span>}
           {d.review_count > 0 && <span className="text-amber-600">⚠ проверить числа: {d.review_count}</span>}
@@ -314,6 +358,51 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
               >
                 Оригинал (как загружен)
               </MenuItem>
+
+              {d.status === 'done' && offerLangs.length > 0 && (
+                <>
+                  <MenuSeparator />
+                  <MenuLabel>Перевести на язык</MenuLabel>
+                  {offerLangs.map((l) => {
+                    const t = trList.find((x) => x.target_lang === l.code)
+                    const busy = t?.status === 'translating' || t?.status === 'exporting'
+                    return (
+                      <MenuItem
+                        key={l.code}
+                        icon={<Languages className="h-4 w-4" />}
+                        disabled={busy || translate.isPending}
+                        onClick={() => {
+                          translate.mutate(l.code)
+                          close()
+                        }}
+                      >
+                        {l.label}
+                        {t
+                          ? t.status === 'done'
+                            ? ' — готово ✓'
+                            : t.status === 'error'
+                              ? ' — ошибка'
+                              : ' — перевод…'
+                          : ''}
+                      </MenuItem>
+                    )
+                  })}
+                  {trList
+                    .filter((t) => t.status === 'done' && t.has_export)
+                    .map((t) => (
+                      <MenuItem
+                        key={`dl-${t.target_lang}`}
+                        icon={<Download className="h-4 w-4" />}
+                        onClick={() => {
+                          void downloadFile(translationDownloadUrl(d.id, t.target_lang))
+                          close()
+                        }}
+                      >
+                        Скачать перевод — {t.target_lang.toUpperCase()}
+                      </MenuItem>
+                    ))}
+                </>
+              )}
 
               <MenuSeparator />
               <MenuLabel>Переместить в папку</MenuLabel>

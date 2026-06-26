@@ -43,6 +43,17 @@ export interface Folder {
   documents: number
 }
 
+// Доп. перевод документа на язык, отличный от источника (ТЗ §4.3): RU→EN/RU→ZH.
+export interface TranslationInfo {
+  target_lang: string
+  status: string // translating | exporting | done | error
+  translated_count: number
+  segment_count: number
+  needs_review_count: number
+  has_export: boolean
+  error: string | null
+}
+
 export interface SearchHit {
   chunk_id: string
   document_id: string
@@ -237,6 +248,15 @@ export const api = {
   moveDocument: (id: string, folder_id: string | null) =>
     jsend<{ status: string }>(`/api/documents/${id}/folder`, 'PATCH', { folder_id }),
 
+  // доп. переводы документа (ТЗ §4.3)
+  listTranslations: (id: string) => jget<TranslationInfo[]>(`/api/documents/${id}/translations`),
+  createTranslation: (id: string, target_lang: string) =>
+    jsend<{ target_lang: string; status: string }>(
+      `/api/documents/${id}/translations`,
+      'POST',
+      { target_lang },
+    ),
+
   search: (q: string, opts: { document_id?: string; folder_id?: string } = {}) => {
     const p = new URLSearchParams({ q })
     if (opts.document_id) p.set('document_id', opts.document_id)
@@ -288,5 +308,7 @@ export const api = {
 }
 
 export const downloadUrl = (docId: string, key: string) => `/api/documents/${docId}/download/${key}`
+export const translationDownloadUrl = (docId: string, lang: string) =>
+  `/api/documents/${docId}/translations/${lang}/download`
 export const slideImageUrl = (docId: string, slide: number, shape: number) =>
   `/api/documents/${docId}/slide-image/${slide}/${shape}`

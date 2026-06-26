@@ -25,6 +25,7 @@ from rag_app.db.models import (
     Document,
     DocumentKind,
     DocumentStatus,
+    DocumentTranslation,
     GlossaryTerm,
     PageEmbedding,
     Segment,
@@ -526,6 +527,181 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
     except Exception as exc:
         logger.exception("translate %s failed", doc_id)
         await _set_status(ctx, doc_id, DocumentStatus.error, f"перевод: {exc}")
+        raise
+
+
+# ------------------------------------------- translate-to (доп. язык, ТЗ §4.3)
+
+async def _set_translation_status(
+    ctx: dict, doc_id: uuid.UUID, target_lang: str, status: str, **fields: Any
+) -> None:
+    async with ctx["sessionmaker"]() as session:
+        row = (
+            await session.execute(
+                select(DocumentTranslation).where(
+                    DocumentTranslation.document_id == doc_id,
+                    DocumentTranslation.target_lang == target_lang,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = DocumentTranslation(
+                document_id=doc_id, target_lang=target_lang, status=status, **fields
+            )
+            session.add(row)
+        else:
+            row.status = status
+            for k, v in fields.items():
+                setattr(row, k, v)
+        await session.commit()
+
+
+async def _export_translation(
+    ctx: dict, doc: Document, segments: list[Segment], target_lang: str
+) -> dict[str, str]:
+    """Экспортный артефакт перевода: DOCX для pdf/text, инъекция в копию оригинала
+    для OOXML. Сегменты уже гидратированы (translated_text/meta под этот язык)."""
+    storage: Storage = ctx["storage"]
+    stem = Path(doc.filename).stem
+    kind = doc.kind.value if hasattr(doc.kind, "value") else doc.kind
+    out: dict[str, str] = {}
+    if kind in (DocumentKind.pdf_text.value, DocumentKind.pdf_scan.value, DocumentKind.text.value):
+        images: dict[str, bytes] = {}
+        for s in segments:
+            key = (s.meta or {}).get("img_s3") if s.kind == SegmentKind.image else None
+            if key and key not in images:
+                try:
+                    images[key] = await storage.get_bytes(settings.bucket_artifacts, key)
+                except Exception:  # noqa: BLE001
+                    pass
+        data = await asyncio.to_thread(build_docx, doc.filename, segments, images)
+        key = f"{doc.id}/{target_lang}/{stem}.{target_lang}.docx"
+        await storage.put_bytes(settings.bucket_exports, key, data, _DOCX_MIME)
+        out["s3_key_docx"] = key
+    else:  # OOXML — перевод обратно в копию оригинала, формат сохраняется
+        ext = kind
+        if ext == "xlsx":
+            translations = {
+                s.source_text: s.translated_text for s in segments if s.translated_text is not None
+            }
+        else:
+            translations = {
+                ooxml.location_key(s.meta["location"]): s.translated_text
+                for s in segments
+                if s.translated_text is not None and s.meta.get("location")
+            }
+        with tempfile.TemporaryDirectory(prefix="rag_tr_") as tmp:
+            tmp_path = Path(tmp)
+            src = tmp_path / Path(doc.filename).name
+            dst = tmp_path / f"{stem}.{target_lang}.{ext}"
+            await storage.download_to(settings.bucket_originals, doc.s3_key_original, src)
+            await asyncio.to_thread(ooxml.inject, ext, src, dst, translations)
+            key = f"{doc.id}/{target_lang}/{dst.name}"
+            await storage.put_bytes(settings.bucket_exports, key, dst.read_bytes(), _OOXML_MIME[ext])
+            out["s3_key_source"] = key
+    return out
+
+
+async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) -> str:
+    """Перевод документа на ДОПОЛНИТЕЛЬНЫЙ язык (ТЗ §4.3: RU→EN/RU→ZH и пр.). Не
+    трогает основной перевод (Segment.translated_text); результат — в строке
+    DocumentTranslation(document, target_lang) + экспортный артефакт."""
+    doc_id = uuid.UUID(doc_id_str)
+    translator: Translator = ctx["translator"]
+    t_task = time.monotonic()
+    doc = await _get_doc(ctx, doc_id)
+    src_lang = (getattr(doc, "source_lang", None) or "").strip() or "ru"
+
+    async with ctx["sessionmaker"]() as session:
+        segments = list(
+            (
+                await session.execute(
+                    select(Segment).where(Segment.document_id == doc_id).order_by(Segment.idx)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    todo = [s for s in segments if s.kind in TRANSLATABLE_KINDS]
+    await _set_translation_status(
+        ctx, doc_id, target_lang, "translating",
+        segment_count=len(todo), translated_count=0, error=None,
+    )
+
+    contexts: dict[uuid.UUID, SegmentContext] = {}
+    cur_heading: str | None = None
+    prev_text: str | None = None
+    for seg in segments:
+        if seg.kind == SegmentKind.heading:
+            contexts[seg.id] = SegmentContext(source_lang=src_lang, target_lang=target_lang)
+            cur_heading = seg.source_text
+            prev_text = None
+            continue
+        contexts[seg.id] = SegmentContext(
+            heading=cur_heading, prev_text=prev_text, source_lang=src_lang, target_lang=target_lang
+        )
+        if seg.kind == SegmentKind.paragraph:
+            prev_text = seg.source_text
+
+    sem = asyncio.Semaphore(settings.translate_concurrency)
+    failures: list[str] = []
+
+    async def work(seg: Segment) -> tuple[uuid.UUID, dict[str, Any]] | None:
+        async with sem:
+            try:
+                return seg.id, await _translate_segment(translator, seg, contexts[seg.id])
+            except Exception as exc:
+                failures.append(f"сегмент {seg.idx}: {exc}")
+                logger.error("translate %s->%s seg %d: %s", doc_id, target_lang, seg.idx, exc)
+                return None
+
+    data: dict[str, Any] = {}
+    review = 0
+    try:
+        results = await asyncio.gather(*[work(s) for s in todo])
+        for r in results:
+            if r is None:
+                continue
+            seg_id, vals = r
+            entry: dict[str, Any] = {"text": vals.get("translated_text")}
+            if vals.get("meta") is not None:
+                entry["meta"] = vals["meta"]
+            if vals.get("validation") is not None:
+                entry["validation"] = vals["validation"]
+            if vals.get("needs_review"):
+                review += 1
+            data[str(seg_id)] = entry
+        if failures:
+            raise RuntimeError(
+                f"не переведено сегментов: {len(failures)}; первые: " + "; ".join(failures[:3])
+            )
+
+        # гидратация в памяти (без коммита) → сборка экспорта существующими билдерами
+        by_id = {str(s.id): s for s in segments}
+        for sid, entry in data.items():
+            s = by_id.get(sid)
+            if s is None:
+                continue
+            s.translated_text = entry.get("text")
+            if entry.get("meta"):
+                s.meta = {**(s.meta or {}), **entry["meta"]}
+        await _set_translation_status(ctx, doc_id, target_lang, "exporting", data=data)
+        export_keys = await _export_translation(ctx, doc, segments, target_lang)
+        await _set_translation_status(
+            ctx, doc_id, target_lang, "done",
+            translated_count=len(data), needs_review_count=review, data=data, **export_keys,
+        )
+        logger.info(
+            "translate %s->%s: %d сегм. за %.1fс",
+            doc_id, target_lang, len(data), time.monotonic() - t_task,
+        )
+        return f"translated {doc_id}->{target_lang}: {len(data)} segments"
+    except Exception as exc:
+        logger.exception("translate %s->%s failed", doc_id, target_lang)
+        await _set_translation_status(
+            ctx, doc_id, target_lang, "error", error=str(exc)[:500], data=data
+        )
         raise
 
 

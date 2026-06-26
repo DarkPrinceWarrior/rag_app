@@ -29,6 +29,7 @@ from rag_app.workers.tasks import (
     parse_document,
     render_original_view,
     translate_document,
+    translate_to_language,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -61,6 +62,7 @@ class WorkerSettings:
     functions = [
         parse_document,
         translate_document,
+        translate_to_language,
         export_document,
         render_original_view,
         index_document,
