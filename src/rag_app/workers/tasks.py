@@ -57,7 +57,7 @@ from rag_app.pipeline.parse import (
 )
 from rag_app.pipeline.scan_pdf import build_scan_overlay
 from rag_app.pipeline.segments import SegmentDraft, content_list_to_segments
-from rag_app.pipeline.validate import ValidationResult, validate_numbers
+from rag_app.pipeline.validate import ValidationResult, validate_numbers, validate_standards
 from rag_app.rag.chunking import segments_to_chunks
 from rag_app.storage.s3 import Storage
 
@@ -323,15 +323,24 @@ async def _translate_validated(
         return text, ValidationResult(ok=True)
     translated = await translator.translate(text, context)
     result = validate_numbers(text, translated)
+    result.standards = validate_standards(text, translated)  # §4.3.5
+    result.ok = result.ok and not result.standards
     if result.ok:
         return translated, result
+    issues = []
+    if result.missing:
+        issues.append(f"числа искажены/потеряны: {', '.join(result.missing)}")
+    if result.standards:
+        issues.append(f"обозначения стандартов искажены/потеряны: {', '.join(result.standards)}")
     feedback = (
-        f"числа из оригинала искажены или потеряны: {', '.join(result.missing)}. "
-        "Перенеси ВСЕ числа, единицы и обозначения без изменений."
+        f"{'; '.join(issues)}. Перенеси ВСЕ числа, единицы измерения и обозначения "
+        "стандартов (ГОСТ/ISO/API/ASTM и т.п.) без изменений."
     )
     translated2 = await translator.translate(text, context, feedback=feedback)
     result2 = validate_numbers(text, translated2)
-    return (translated2, result2) if result2.ok else (translated2, result2)
+    result2.standards = validate_standards(text, translated2)
+    result2.ok = result2.ok and not result2.standards
+    return translated2, result2
 
 
 async def _translate_segment(translator: Translator, seg: Segment, context: SegmentContext) -> dict[str, Any]:

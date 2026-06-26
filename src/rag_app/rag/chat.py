@@ -136,6 +136,48 @@ def extract_citations(answer: str, chunks: list[RetrievedChunk]) -> list[dict[st
     return sorted(seen, key=lambda x: x["n"])
 
 
+def _content_chars(content: Any) -> int:
+    """Объём текста сообщения (мультимодальный list — суммируем только текст)."""
+    if isinstance(content, str):
+        return len(content)
+    return sum(len(p.get("text", "")) for p in content if p.get("type") == "text")
+
+
+def _fit_context_window(messages: list[dict[str, Any]], n_images: int) -> None:
+    """§4.5: не дать входу переполнить окно модели. Бюджет символов = (окно −
+    ответ − запас − стоимость картинок) × символов-на-токен. При переборе режем
+    историю (старейшие реплики, индексы между system и текущим вопросом), затем
+    усекаем текст контекста — graceful-деградация вместо ошибки vLLM."""
+    budget = (
+        settings.chat_context_window
+        - settings.chat_output_tokens
+        - 400
+        - n_images * settings.chat_image_tokens
+    ) * settings.chat_chars_per_token
+    budget = max(budget, 4000)
+
+    def total() -> int:
+        return sum(_content_chars(m["content"]) for m in messages)
+
+    dropped = 0
+    # messages[0] — system, messages[-1] — текущий вопрос; между ними история
+    while total() > budget and len(messages) > 2:
+        del messages[1]
+        dropped += 1
+    if total() > budget:  # даже без истории перебор — усечь текст контекста
+        over = total() - budget
+        last = messages[-1]["content"]
+        if isinstance(last, str):
+            messages[-1]["content"] = last[: max(500, len(last) - over)]
+        else:
+            for part in last:
+                if part.get("type") == "text" and len(part["text"]) > over + 500:
+                    part["text"] = part["text"][: len(part["text"]) - over]
+                    break
+    if dropped:
+        logger.info("chat: окно близко к пределу — отброшено %d старых реплик истории", dropped)
+
+
 class ChatEngine:
     def __init__(self) -> None:
         self.client = AsyncOpenAI(
@@ -180,6 +222,7 @@ class ChatEngine:
             system += f"\n\n=== Память о пользователе и проекте ===\n{memory_block}"
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         messages.extend(history[-settings.rag_history_messages :])
+        attached = 0
         if chunks:
             text_block = (
                 f"Фрагменты документов:\n\n{build_context_block(chunks)}\n\n"
@@ -213,6 +256,7 @@ class ChatEngine:
                 "Ответь на основании памяти о пользователе/проекте и истории диалога."
             )
         messages.append({"role": "user", "content": user_content})
+        _fit_context_window(messages, attached)  # §4.5: не переполнить окно модели
         stream = await self.client.chat.completions.create(
             model=settings.llm_model,
             messages=messages,

@@ -144,7 +144,7 @@ _ACTION_SCHEMA = {
         "action": {
             "type": "string",
             "enum": [
-                "search_chunks", "get_section", "get_tables", "find_figure",
+                "search_chunks", "get_section", "get_chapter", "get_tables", "find_figure",
                 "get_chat_history", "list_documents", "finish",
             ],
         },
@@ -162,7 +162,10 @@ _AGENT_SYSTEM = """\
 Вызывай инструменты по одному за шаг:
 - search_chunks(query): гибридный поиск фрагментов (делай разные запросы для
   сравнения и сбора по всему документу);
-- get_section(ref): полный текст фрагмента по ref из результатов поиска;
+- get_section(ref): полный текст ОДНОГО фрагмента по ref из результатов поиска;
+- get_chapter(query): раздел/глава ЦЕЛИКОМ по номеру из заголовка (query = номер,
+  напр. "3", "4.2"). Для «перескажи главу 3», «что в разделе 4.2», «сократи
+  раздел 5» — собирает ВСЕ фрагменты этого раздела (и подразделов), а не один кусок;
 - get_tables(document_id): все таблицы документа (для «вытащи спецификации» и т.п.);
 - find_figure(query): найти рисунок/таблицу по ЯВНО названному номеру из вопроса
   (query = номер, напр. "9.1", "3", "таблица 2"). Вызывай, когда пользователь прямо
@@ -254,7 +257,9 @@ class AgentLoop:
             async with self.tools.sessionmaker() as db:
                 evidence = await self.tools.retriever.retrieve(
                     db, question, document_id=self.tools.document_id,
-                    folder_id=self.tools.folder_id, top_k=settings.rag_context_top_k,
+                    folder_id=self.tools.folder_id, document_ids=self.tools.document_ids,
+                    top_k=settings.rag_context_top_k,
+                    owner_sub=self.tools.owner_sub,  # RBAC §4.7.1: фолбэк тоже изолируем
                 )
         self.chunks = await self._rerank_top(question, evidence)
         yield {

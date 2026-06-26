@@ -97,6 +97,59 @@ class AgentTools:
             return f"get_section('{ref}'): нет такого фрагмента (ref берётся из search_chunks)."
         return f"get_section('{ref}'):\n{self._fmt(c, 2800)}"
 
+    async def get_chapter(self, designation: str, document_id: str | None = None) -> str:
+        """Раздел/глава ЦЕЛИКОМ по номеру из заголовка (heading_path), а не один
+        фрагмент (ТЗ §4.4.3c, «перескажи главу 3»). Собирает все фрагменты раздела
+        и его подразделов по совпадению номера в пути заголовков."""
+        m = _FIGNUM_RE.search(designation or "")
+        if not m:
+            return (
+                f"get_chapter('{(designation or '')[:60]}'): не разобрал номер раздела "
+                "(ожидается «3», «4.2» и т.п.)."
+            )
+        num = m.group(0)
+        # номер на границе в heading_path: «3» ловит «3», «3.1»; «4.2» — «4.2», «4.2.1»;
+        # слева не цифра/точка/дефис (чтобы «3» не цеплял «13»), справа — не цифра.
+        pat = rf"(^|[^0-9.\-]){re.escape(num)}([^0-9]|$)"
+        doc = self.document_id
+        if document_id:
+            try:
+                doc = uuid.UUID(document_id)
+            except ValueError:
+                pass
+        async with self.sessionmaker() as db:
+            stmt = (
+                select(Chunk, Document.filename)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(Chunk.heading_path.op("~")(pat))
+            )
+            if doc is not None:
+                stmt = stmt.where(Chunk.document_id == doc)
+            elif self.document_ids:
+                stmt = stmt.where(Chunk.document_id.in_(self.document_ids))
+            elif self.folder_id is not None:
+                stmt = stmt.where(Document.folder_id == self.folder_id)
+            if self.owner_sub is not None:  # RBAC §4.7.1: раздел только своих документов
+                stmt = stmt.where(
+                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
+                )
+            rows = (
+                await db.execute(stmt.order_by(Chunk.idx).limit(settings.agent_max_context_chunks))
+            ).all()
+        if not rows:
+            return f"get_chapter('{num}'): раздел {num} не найден (поиск по заголовкам)."
+        chunks = [
+            RetrievedChunk(
+                id=ch.id, document_id=ch.document_id, filename=fn, heading_path=ch.heading_path,
+                kind=ch.kind, page_start=ch.page_start, page_end=ch.page_end,
+                text_en=ch.text_en, text_ru=ch.text_ru, meta=ch.meta,
+            )
+            for ch, fn in rows
+        ]
+        self._register(chunks)
+        body = "\n---\n".join(self._fmt(c, 600) for c in chunks)
+        return f"get_chapter('{num}'): {len(chunks)} фрагм. раздела.\n{body}"
+
     async def get_tables(self, document_id: str | None = None) -> str:
         doc = self.document_id
         if document_id:
@@ -260,6 +313,8 @@ class AgentTools:
             return await self.search_chunks(query)
         if action == "get_section":
             return await self.get_section(ref)
+        if action == "get_chapter":
+            return await self.get_chapter(query, document_id or None)
         if action == "get_tables":
             return await self.get_tables(document_id or None)
         if action == "find_figure":
