@@ -27,6 +27,7 @@ import { useLibrarySearch } from '@/lib/librarySearch'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui/menu'
+import { ConfirmDialog } from '@/components/ui/modal'
 import { StatusBadge } from '@/components/StatusBadge'
 
 export const Route = createFileRoute('/')({ component: Library })
@@ -89,6 +90,7 @@ function Library() {
   const qc = useQueryClient()
   const { submitted, filters, clearSearch } = useLibrarySearch()
   const [folder, setFolder] = useState<string>('') // '' = все
+  const [folderToDelete, setFolderToDelete] = useState<Folder | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const docsQ = useQuery({
@@ -102,6 +104,15 @@ function Library() {
     mutationFn: (file: File) => api.uploadDocument(file),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
   })
+  const deleteFolder = useMutation({
+    mutationFn: (target: Folder) => api.deleteFolder(target.id),
+    onSuccess: (_, target) => {
+      if (folder === target.id) setFolder('')
+      setFolderToDelete(null)
+      qc.invalidateQueries({ queryKey: ['folders'] })
+      qc.invalidateQueries({ queryKey: ['documents'] })
+    },
+  })
 
   const hasFilters = Object.values(filters).some(Boolean)
   const statsDocsQ = useQuery({
@@ -114,6 +125,10 @@ function Library() {
   const docs = allDocs.filter((d) => !folder || d.folder_id === folder)
   const searchTerm = submitted.trim().toLocaleLowerCase('ru-RU')
   const searchActive = searchTerm.length >= 2
+  const folders = foldersQ.data ?? []
+  const visibleFolders = searchActive
+    ? folders.filter((f) => f.name.toLocaleLowerCase('ru-RU').includes(searchTerm))
+    : folders
   const visibleDocs = searchActive
     ? docs.filter((d) => d.filename.toLocaleLowerCase('ru-RU').includes(searchTerm))
     : docs
@@ -168,7 +183,7 @@ function Library() {
               Папок пока нет. Создайте первую папку для группировки документов.
             </div>
           )}
-          {foldersQ.data?.map((f) => {
+          {folders.map((f) => {
             const stats = folderStats.get(f.id)
             return (
               <FolderCard
@@ -178,20 +193,42 @@ function Library() {
                 count={stats?.count ?? f.documents}
                 size={stats?.size ?? 0}
                 onClick={() => setFolder((current) => (current === f.id ? '' : f.id))}
-                onDelete={() => {
-                  if (confirm(`Удалить папку «${f.name}»?\nДокументы из неё не удаляются — останутся в библиотеке без папки.`)) {
-                    void api.deleteFolder(f.id).then(() => {
-                      if (folder === f.id) setFolder('')
-                      qc.invalidateQueries({ queryKey: ['folders'] })
-                      qc.invalidateQueries({ queryKey: ['documents'] })
-                    })
-                  }
-                }}
+                onDelete={() => setFolderToDelete(f)}
               />
             )
           })}
         </div>
       </section>
+      )}
+
+      {searchActive && visibleFolders.length > 0 && (
+        <section className="mt-8">
+          <div>
+            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">
+              Папки: {submitted}
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">Карточки папок с совпадением в названии</p>
+          </div>
+          <div className="mt-6 flex gap-2 overflow-x-auto pb-2">
+            {visibleFolders.map((f) => {
+              const stats = folderStats.get(f.id)
+              return (
+                <FolderCard
+                  key={f.id}
+                  folder={f}
+                  active={folder === f.id}
+                  count={stats?.count ?? f.documents}
+                  size={stats?.size ?? 0}
+                  onClick={() => {
+                    setFolder(f.id)
+                    clearSearch()
+                  }}
+                  onDelete={() => setFolderToDelete(f)}
+                />
+              )
+            })}
+          </div>
+        </section>
       )}
 
       <section className={searchActive ? 'mt-8' : 'mt-12'}>
@@ -234,11 +271,26 @@ function Library() {
               : 'Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX/JPG/PNG/TXT.'}
           </p>
         ) : (
-          <DocList docs={visibleDocs} folders={foldersQ.data ?? []} />
+          <DocList docs={visibleDocs} folders={folders} />
         )}
       </section>
 
       <SearchResults folder={folder} filters={filters} />
+      <ConfirmDialog
+        open={!!folderToDelete}
+        onClose={() => !deleteFolder.isPending && setFolderToDelete(null)}
+        onConfirm={() => folderToDelete && deleteFolder.mutate(folderToDelete)}
+        title={folderToDelete ? `Удалить папку «${folderToDelete.name}»?` : 'Удалить папку?'}
+        description="Папка исчезнет из библиотеки, но документы из неё не удалятся."
+        points={[
+          'Документы останутся в общей библиотеке без папки.',
+          'Переводы, превью, индекс поиска и чаты по документам сохранятся.',
+        ]}
+        warning="Саму папку восстановить нельзя."
+        confirmLabel="Удалить папку"
+        tone="danger"
+        busy={deleteFolder.isPending}
+      />
     </div>
   )
 }
@@ -751,41 +803,54 @@ function SearchResults({ folder, filters }: { folder: string; filters: DocFilter
   const contentHits = (searchQ.data ?? []).filter((h) => h.match !== 'filename')
 
   return (
-    <div className="mt-8 rounded-lg border border-[#e5e5e5] bg-card p-4">
+    <section className="mt-10">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="truncate text-[18px] font-semibold leading-[1.35] text-[#222226]">
+          <h2 className="truncate text-[23px] font-semibold leading-[1.3] text-[#222226]">
             Совпадения в содержимом
-          </h3>
+          </h2>
           <div className="mt-0.5 text-xs text-muted-foreground">Фрагменты документов по запросу: {submitted}</div>
         </div>
       </div>
       {searchQ.isLoading ? (
-        <p className="mt-3 text-sm text-muted-foreground">Ищу…</p>
+        <p className="mt-6 text-sm text-muted-foreground">Ищу…</p>
       ) : (
         searchQ.data && (
-          <div className="mt-3 space-y-1.5">
-            {contentHits.length === 0 && <p className="text-sm text-muted-foreground">Совпадений внутри документов не найдено.</p>}
+          <div className="mt-6 grid gap-2">
+            {contentHits.length === 0 && (
+              <p className="rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
+                Совпадений внутри документов не найдено.
+              </p>
+            )}
           {contentHits.map((h, i) => (
             <Link
               key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
               to="/view/$id"
               params={{ id: h.document_id }}
               search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
-              className="block rounded-md border border-[#e5e5e5] bg-card px-3 py-2 text-sm transition hover:bg-[#222226]/[0.03]"
+              className="group block rounded-lg border border-[#e5e5e5] bg-card px-4 py-3 text-sm shadow-sm transition hover:border-[#6269f3]/35 hover:bg-[#222226]/[0.02] hover:shadow-[0_7px_14px_rgba(0,0,0,0.05)]"
             >
-              <div className="flex justify-between gap-2">
-                <span className="truncate font-medium">{h.filename}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {h.heading_path || (h.page_start != null ? `стр. ${h.page_start + 1}` : 'фрагмент')}
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate font-medium leading-[1.45] text-[#222226]">{h.filename}</div>
+                  {h.heading_path && (
+                    <div className="mt-0.5 truncate text-xs text-muted-foreground">{h.heading_path}</div>
+                  )}
+                </div>
+                <span className="shrink-0 rounded-full bg-[#222226]/5 px-2 py-1 text-[11px] font-medium leading-none text-muted-foreground">
+                  {h.page_start != null ? `стр. ${h.page_start + 1}` : 'фрагмент'}
                 </span>
               </div>
-              {h.snippet && <div className="mt-0.5 line-clamp-2 text-muted-foreground">{h.snippet}</div>}
+              {h.snippet && (
+                <div className="mt-2 line-clamp-2 border-l-2 border-[#6269f3]/25 pl-3 leading-relaxed text-muted-foreground">
+                  {h.snippet}
+                </div>
+              )}
             </Link>
           ))}
           </div>
         )
       )}
-    </div>
+    </section>
   )
 }
