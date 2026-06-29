@@ -821,8 +821,8 @@ function SearchResults({ folder, filters }: { folder: string; filters: DocFilter
   const contentHits = (searchQ.data ?? []).filter((h) => h.match !== 'filename')
 
   return (
-    <section className="mt-10">
-      <div className="max-w-[832px]">
+    <section className="mt-10 min-w-0">
+      <div className="min-w-0">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="truncate text-[23px] font-semibold leading-[1.3] text-[#222226]">
@@ -835,7 +835,7 @@ function SearchResults({ folder, filters }: { folder: string; filters: DocFilter
           <p className="mt-6 text-sm text-muted-foreground">Ищу…</p>
         ) : (
           searchQ.data && (
-            <div className="mt-6 grid gap-2">
+            <div className="mt-6 grid min-w-0 gap-2">
               {contentHits.length === 0 && (
                 <p className="rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
                   Совпадений внутри документов не найдено.
@@ -847,7 +847,7 @@ function SearchResults({ folder, filters }: { folder: string; filters: DocFilter
                   to="/view/$id"
                   params={{ id: h.document_id }}
                   search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
-                  className="group block rounded-lg border border-[#e5e5e5] bg-card px-4 py-3 text-sm shadow-sm transition hover:border-[#6269f3]/35 hover:bg-[#222226]/[0.02] hover:shadow-[0_7px_14px_rgba(0,0,0,0.05)]"
+                  className="group block min-w-0 overflow-hidden rounded-lg border border-[#e5e5e5] bg-card px-4 py-3 text-sm shadow-sm transition hover:border-[#6269f3]/35 hover:bg-[#222226]/[0.02] hover:shadow-[0_7px_14px_rgba(0,0,0,0.05)]"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -861,7 +861,7 @@ function SearchResults({ folder, filters }: { folder: string; filters: DocFilter
                     </span>
                   </div>
                   {h.snippet && (
-                    <div className="mt-2 line-clamp-2 border-l-2 border-[#6269f3]/25 pl-3 leading-relaxed text-muted-foreground">
+                    <div className="mt-2 line-clamp-2 break-words border-l-2 border-[#6269f3]/25 pl-3 leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
                       {h.snippet}
                     </div>
                   )}
