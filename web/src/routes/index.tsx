@@ -432,11 +432,18 @@ function DocList({ docs, folders }: { docs: Document[]; folders: Folder[] }) {
 
 function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
   const qc = useQueryClient()
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['documents'] })
     qc.invalidateQueries({ queryKey: ['folders'] }) // счётчики папок
   }
-  const del = useMutation({ mutationFn: () => api.deleteDocument(d.id), onSuccess: refresh })
+  const del = useMutation({
+    mutationFn: () => api.deleteDocument(d.id),
+    onSuccess: () => {
+      setDeleteOpen(false)
+      refresh()
+    },
+  })
   const move = useMutation({
     mutationFn: (folderId: string | null) => api.moveDocument(d.id, folderId),
     onSuccess: refresh,
@@ -470,10 +477,11 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
   const tone = FORMAT_TONE[format] ?? FORMAT_TONE.TXT
   const canOpen = Boolean(d.status === 'done' || d.has_view || d.has_view_orig || d.has_view_ru)
   return (
-    <article className="group flex min-h-[333px] w-full min-w-0 flex-col rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 shadow-sm transition hover:border-[#ef9a11]/60 hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
-      <DocumentPreview d={d} tone={tone} canOpen={canOpen} />
+    <>
+      <article className="group flex min-h-[333px] w-full min-w-0 flex-col rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 shadow-sm transition hover:border-[#ef9a11]/60 hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
+        <DocumentPreview d={d} tone={tone} canOpen={canOpen} />
 
-      <div className="flex min-w-0 flex-1 flex-col px-3 pt-3">
+        <div className="flex min-w-0 flex-1 flex-col px-3 pt-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <span className={cn('inline-flex rounded px-1.5 py-0.5 text-[11px] font-semibold leading-none', tone.badge)}>
@@ -594,13 +602,7 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
                   disabled={del.isPending}
                   icon={<Trash2 className="h-4 w-4" />}
                   onClick={() => {
-                    if (
-                      confirm(
-                        `Удалить «${d.filename}»?\nДокумент, перевод, поисковый индекс и связанные чаты будут удалены безвозвратно.`,
-                      )
-                    ) {
-                      del.mutate()
-                    }
+                    setDeleteOpen(true)
                     close()
                   }}
                 >
@@ -669,8 +671,24 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
             <span className="text-[11px] text-muted-foreground">превью готовится</span>
           )}
         </div>
-      </div>
-    </article>
+        </div>
+      </article>
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => !del.isPending && setDeleteOpen(false)}
+        onConfirm={() => del.mutate()}
+        title={`Удалить «${d.filename}»?`}
+        description="Документ будет удалён из библиотеки вместе со связанными данными."
+        points={[
+          'Исходный файл, перевод и экспортированные артефакты будут удалены.',
+          'Поисковый индекс, сегменты и связанные чаты по документу будут очищены.',
+        ]}
+        warning="Действие необратимо."
+        confirmLabel="Удалить документ"
+        tone="danger"
+        busy={del.isPending}
+      />
+    </>
   )
 }
 
@@ -804,53 +822,55 @@ function SearchResults({ folder, filters }: { folder: string; filters: DocFilter
 
   return (
     <section className="mt-10">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-[23px] font-semibold leading-[1.3] text-[#222226]">
-            Совпадения в содержимом
-          </h2>
-          <div className="mt-0.5 text-xs text-muted-foreground">Фрагменты документов по запросу: {submitted}</div>
-        </div>
-      </div>
-      {searchQ.isLoading ? (
-        <p className="mt-6 text-sm text-muted-foreground">Ищу…</p>
-      ) : (
-        searchQ.data && (
-          <div className="mt-6 grid gap-2">
-            {contentHits.length === 0 && (
-              <p className="rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
-                Совпадений внутри документов не найдено.
-              </p>
-            )}
-          {contentHits.map((h, i) => (
-            <Link
-              key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
-              to="/view/$id"
-              params={{ id: h.document_id }}
-              search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
-              className="group block rounded-lg border border-[#e5e5e5] bg-card px-4 py-3 text-sm shadow-sm transition hover:border-[#6269f3]/35 hover:bg-[#222226]/[0.02] hover:shadow-[0_7px_14px_rgba(0,0,0,0.05)]"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate font-medium leading-[1.45] text-[#222226]">{h.filename}</div>
-                  {h.heading_path && (
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">{h.heading_path}</div>
-                  )}
-                </div>
-                <span className="shrink-0 rounded-full bg-[#222226]/5 px-2 py-1 text-[11px] font-medium leading-none text-muted-foreground">
-                  {h.page_start != null ? `стр. ${h.page_start + 1}` : 'фрагмент'}
-                </span>
-              </div>
-              {h.snippet && (
-                <div className="mt-2 line-clamp-2 border-l-2 border-[#6269f3]/25 pl-3 leading-relaxed text-muted-foreground">
-                  {h.snippet}
-                </div>
-              )}
-            </Link>
-          ))}
+      <div className="max-w-[832px]">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-[23px] font-semibold leading-[1.3] text-[#222226]">
+              Совпадения в содержимом
+            </h2>
+            <div className="mt-0.5 text-xs text-muted-foreground">Фрагменты документов по запросу: {submitted}</div>
           </div>
-        )
-      )}
+        </div>
+        {searchQ.isLoading ? (
+          <p className="mt-6 text-sm text-muted-foreground">Ищу…</p>
+        ) : (
+          searchQ.data && (
+            <div className="mt-6 grid gap-2">
+              {contentHits.length === 0 && (
+                <p className="rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
+                  Совпадений внутри документов не найдено.
+                </p>
+              )}
+              {contentHits.map((h, i) => (
+                <Link
+                  key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
+                  to="/view/$id"
+                  params={{ id: h.document_id }}
+                  search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
+                  className="group block rounded-lg border border-[#e5e5e5] bg-card px-4 py-3 text-sm shadow-sm transition hover:border-[#6269f3]/35 hover:bg-[#222226]/[0.02] hover:shadow-[0_7px_14px_rgba(0,0,0,0.05)]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium leading-[1.45] text-[#222226]">{h.filename}</div>
+                      {h.heading_path && (
+                        <div className="mt-0.5 truncate text-xs text-muted-foreground">{h.heading_path}</div>
+                      )}
+                    </div>
+                    <span className="shrink-0 rounded-full bg-[#222226]/5 px-2 py-1 text-[11px] font-medium leading-none text-muted-foreground">
+                      {h.page_start != null ? `стр. ${h.page_start + 1}` : 'фрагмент'}
+                    </span>
+                  </div>
+                  {h.snippet && (
+                    <div className="mt-2 line-clamp-2 border-l-2 border-[#6269f3]/25 pl-3 leading-relaxed text-muted-foreground">
+                      {h.snippet}
+                    </div>
+                  )}
+                </Link>
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </section>
   )
 }
