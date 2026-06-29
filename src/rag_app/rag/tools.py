@@ -108,16 +108,20 @@ class AgentTools:
                 "(ожидается «3», «4.2» и т.п.)."
             )
         num = m.group(0)
-        # номер на границе в heading_path: «3» ловит «3», «3.1»; «4.2» — «4.2», «4.2.1»;
+        # «пункт 5» = РАЗДЕЛ ВЕРХНЕГО УРОВНЯ «5. …» (heading_path начинается с номера),
+        # а не вложенный «2. … → 5. …». Поэтому сначала ищем верхний уровень; если
+        # его нет (составной номер «4.2» лежит внутри пути) — номер где угодно в пути:
         # слева не цифра/точка/дефис (чтобы «3» не цеплял «13»), справа — не цифра.
-        pat = rf"(^|[^0-9.\-]){re.escape(num)}([^0-9]|$)"
+        top_pat = rf"^\s*{re.escape(num)}[.\s]"
+        broad_pat = rf"(^|[^0-9.\-]){re.escape(num)}([^0-9]|$)"
         doc = self.document_id
         if document_id:
             try:
                 doc = uuid.UUID(document_id)
             except ValueError:
                 pass
-        async with self.sessionmaker() as db:
+
+        def _scoped(pat: str):
             stmt = (
                 select(Chunk, Document.filename)
                 .join(Document, Document.id == Chunk.document_id)
@@ -133,9 +137,12 @@ class AgentTools:
                 stmt = stmt.where(
                     (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
                 )
-            rows = (
-                await db.execute(stmt.order_by(Chunk.idx).limit(settings.agent_max_context_chunks))
-            ).all()
+            return stmt.order_by(Chunk.idx).limit(settings.agent_max_context_chunks)
+
+        async with self.sessionmaker() as db:
+            rows = (await db.execute(_scoped(top_pat))).all()
+            if not rows:  # верхнеуровневого «N.» нет — ищем номер где угодно в пути
+                rows = (await db.execute(_scoped(broad_pat))).all()
         if not rows:
             return f"get_chapter('{num}'): раздел {num} не найден (поиск по заголовкам)."
         chunks = [

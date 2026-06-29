@@ -43,16 +43,16 @@ function AccountChip() {
 function RootLayout() {
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 flex items-center gap-2 border-b bg-card/90 px-5 py-2.5 backdrop-blur">
-        <Link to="/" className="mr-3 flex items-center gap-2">
+      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b bg-card/90 px-4 py-2.5 backdrop-blur sm:px-5">
+        <Link to="/" className="mr-3 flex min-w-0 items-center gap-2">
           <Logo size={26} />
-          <span className="text-[15px] font-semibold tracking-tight">DocRAGenslate</span>
+          <span className="text-[15px] font-semibold">DocRAGenslate</span>
         </Link>
         <nav className="flex items-center gap-1">
           <NavLink to="/" label="Библиотека" />
           <NavLink to="/chat" label="Чат" />
         </nav>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex min-w-0 items-center gap-2">
           <AccountChip />
           <Button variant="ghost" size="sm" onClick={logout}>
             Выйти

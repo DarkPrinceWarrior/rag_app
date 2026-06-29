@@ -13,20 +13,20 @@ Code navigation uses three MCP servers, each with one job — do not duplicate t
   Use fff instead of shell `find`/`grep`/`rg`. One bare identifier per query;
   after two greps, read the code.
 - **codegraph** — structural questions over a tree-sitter symbol graph.
-  `codegraph_context "<task>"` is the primary tool (entry points + related
-  symbols + code in one call). Also `codegraph_search` (symbol by name —
-  prefer over `fff grep`), `codegraph_callers`/`codegraph_callees`,
-  `codegraph_impact` (blast radius before a refactor), `codegraph_node`,
-  `codegraph_explore`. Trust its results — full AST parse; do not re-verify
-  with grep. `codegraph status` в начале сессии, `codegraph sync` после
-  bulk-изменений.
+  `codegraph_explore "<task>"` is the primary tool (entry points + related
+  symbols + code in one call); use `codegraph_context` only on hosts where that
+  tool is exposed. Also `codegraph_search` (symbol by name — prefer over
+  `fff grep`), `codegraph_callers`/`codegraph_callees`, `codegraph_impact`
+  (blast radius before a refactor), and `codegraph_node`. Trust its results —
+  full AST parse; do not re-verify with grep. `codegraph status` в начале
+  сессии, `codegraph sync` после bulk-изменений.
 - **serena** — LSP-precise symbol navigation and the only tool that *edits*
   at symbol level (`find_symbol`, `get_symbols_overview`,
   `find_referencing_symbols`, `replace_symbol_body`, `insert_*`,
   `rename_symbol`, `safe_delete_symbol`). Prefer over reading whole files.
   Project language: **python** (см. `.serena/project.yml`).
 
-Cycle: locate (fff / `codegraph_search`) → understand (`codegraph_context`) →
+Cycle: locate (fff / `codegraph_search`) → understand (`codegraph_explore`) →
 assess risk (`codegraph_impact`) → read and edit (serena) → verify.
 
 Other MCP / plugins: **context7** for version-sensitive library docs (prefer
@@ -37,16 +37,21 @@ smoke-checks of any web UI.
 
 Use Honcho through the installed host plugin as the memory layer for this
 repository: `codex-honcho` in Codex and `honcho@honcho` from
-`plastic-labs/claude-honcho` in Claude Code. Context is loaded at session start
-by the plugin hooks; trust it, but consult Honcho again before answering
-questions about project preferences, working rules, prior decisions, or
-remembered context.
+`plastic-labs/claude-honcho` in Claude Code. For Codex, install or refresh it
+with `npm install -g @honcho-ai/codex-honcho@latest` and `codex-honcho install`;
+do not hand-maintain a separate Honcho MCP block. The installer manages hooks,
+the `honcho-memory` skill, and the marked Honcho MCP registration.
+
+Context is loaded at session start by the plugin hooks; trust it, but consult
+Honcho again before answering questions about project preferences, working
+rules, prior decisions, or remembered context.
 
 Use the bundled Honcho memory guidance when active recall or durable writeback
 is needed. Under the plugin-managed Honcho server, prefer `search` and `chat`
-for recall, and `create_conclusion` to save durable preferences, decisions,
-patterns, and gotchas. Use host-specific config tools such as `get_config` and
-`set_config` when available.
+for recall, `get_peer_context`/`get_context` or `get_representation` for the
+current user/project model, and `create_conclusions`/`create_conclusion` to
+save durable preferences, decisions, patterns, and gotchas. Use host-specific
+config tools such as `get_config` and `set_config` when available.
 
 Separate confirmed facts from inference. Treat files and command outputs as
 confirmed; treat Honcho memory and architectural guesses as inference unless

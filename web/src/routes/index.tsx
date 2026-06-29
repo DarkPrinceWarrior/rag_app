@@ -1,8 +1,18 @@
 import { useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useVirtualizer } from '@tanstack/react-virtual'
-import { MoreVertical, Download, Trash2, FolderInput, Check, X, Languages } from 'lucide-react'
+import {
+  Check,
+  CloudUpload,
+  Download,
+  FolderInput,
+  Languages,
+  MessageCircle,
+  MoreVertical,
+  PlusCircle,
+  Trash2,
+  X,
+} from 'lucide-react'
 import {
   api,
   EXPORT_LABELS,
@@ -31,6 +41,50 @@ const DIRECTION: Record<string, { label: string; cls: string }> = {
   ru: { label: 'RU · без перевода', cls: 'bg-muted text-muted-foreground' },
 }
 
+const FORMAT_TONE: Record<string, { badge: string; surface: string }> = {
+  DOCX: { badge: 'bg-blue-50 text-[#0a78ff]', surface: 'group-hover:bg-blue-50/60' },
+  PDF: { badge: 'bg-red-50 text-[#ff160a]', surface: 'group-hover:bg-red-50/50' },
+  PPTX: { badge: 'bg-amber-50 text-[#ff9d0a]', surface: 'group-hover:bg-[#ef9a11]' },
+  XLSX: { badge: 'bg-emerald-50 text-[#008562]', surface: 'group-hover:bg-emerald-50/60' },
+  TXT: { badge: 'bg-slate-100 text-slate-700', surface: 'group-hover:bg-slate-100' },
+  IMAGE: { badge: 'bg-violet-50 text-violet-700', surface: 'group-hover:bg-violet-50/70' },
+}
+
+function documentFormat(d: Document) {
+  const ext = /\.([a-z0-9]+)$/i.exec(d.filename)?.[1]?.toUpperCase()
+  if (ext === 'JPG' || ext === 'JPEG' || ext === 'PNG') return 'IMAGE'
+  if (ext) return ext
+  if (d.kind.startsWith('pdf')) return 'PDF'
+  return d.kind.toUpperCase()
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 Б'
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toLocaleString('ru-RU', {
+    maximumFractionDigits: value >= 10 || unit === 0 ? 0 : 1,
+  })} ${units[unit]}`
+}
+
+function formatDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'дата не указана'
+  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(date)
+}
+
+function formatFileCount(count: number) {
+  const mod10 = count % 10
+  const mod100 = count % 100
+  const word = mod10 === 1 && mod100 !== 11 ? 'файл' : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? 'файла' : 'файлов'
+  return `${count} ${word}`
+}
+
 function Library() {
   const qc = useQueryClient()
   const [folder, setFolder] = useState<string>('') // '' = все
@@ -49,50 +103,121 @@ function Library() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
   })
 
-  const docs = (docsQ.data ?? []).filter((d) => !folder || d.folder_id === folder)
+  const hasFilters = Object.values(filters).some(Boolean)
+  const statsDocsQ = useQuery({
+    queryKey: ['documents', 'folder-stats'],
+    queryFn: () => api.listDocuments({}),
+    enabled: hasFilters,
+    refetchInterval: (q) => (q.state.data?.some(inProgress) ? 2500 : false),
+  })
+  const allDocs = docsQ.data ?? []
+  const docs = allDocs.filter((d) => !folder || d.folder_id === folder)
+  const selectedFolder = foldersQ.data?.find((f) => f.id === folder)
+  const statsDocs = hasFilters ? (statsDocsQ.data ?? allDocs) : allDocs
+  const folderStats = new Map<string, { count: number; size: number }>()
+  for (const d of statsDocs) {
+    if (!d.folder_id) continue
+    const current = folderStats.get(d.folder_id) ?? { count: 0, size: 0 }
+    current.count += 1
+    current.size += d.size_bytes
+    folderStats.set(d.folder_id, current)
+  }
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-5">
-      <UploadZone busy={upload.isPending} onFile={(f) => upload.mutate(f)} fileInput={fileInput} />
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        Язык документа определяется автоматически — перевод всегда на русский. Русский документ не
-        переводится (доступны просмотр, поиск и чат).
-      </p>
-      {upload.isError && <p className="mt-2 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
+    <div className="mx-auto max-w-[1136px] px-4 pb-14 pt-8">
+      <input
+        ref={fileInput}
+        type="file"
+        hidden
+        accept=".pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.txt"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) upload.mutate(file)
+          e.currentTarget.value = ''
+        }}
+      />
 
       <SearchPanel folder={folder} filters={filters} />
       <FilterBar filters={filters} onChange={setFilters} />
+      {upload.isError && <p className="mt-3 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
-      <div className="mt-5 flex flex-wrap items-center gap-2">
-        <FolderChip active={folder === ''} onClick={() => setFolder('')} label="Все" count={docsQ.data?.length} />
-        {foldersQ.data?.map((f) => (
-          <FolderChip
-            key={f.id}
-            active={folder === f.id}
-            onClick={() => setFolder(f.id)}
-            label={f.name}
-            count={f.documents}
-            onDelete={() => {
-              if (confirm(`Удалить папку «${f.name}»?\nДокументы из неё не удаляются — останутся в библиотеке без папки.`)) {
-                void api.deleteFolder(f.id).then(() => {
-                  if (folder === f.id) setFolder('')
-                  qc.invalidateQueries({ queryKey: ['folders'] })
-                  qc.invalidateQueries({ queryKey: ['documents'] })
-                })
-              }
-            }}
-          />
-        ))}
-        <NewFolder onCreated={() => qc.invalidateQueries({ queryKey: ['folders'] })} />
-      </div>
+      <section className="mt-8">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Папки</h2>
+            {folder && (
+              <button
+                type="button"
+                onClick={() => setFolder('')}
+                className="rounded-full bg-[#222226]/5 px-3 py-1 text-xs font-medium text-muted-foreground transition hover:bg-[#222226]/10 hover:text-foreground"
+              >
+                Все документы
+              </button>
+            )}
+          </div>
+          <NewFolder onCreated={() => qc.invalidateQueries({ queryKey: ['folders'] })} />
+        </div>
+        <div className="mt-6 flex gap-2 overflow-x-auto pb-2">
+          {foldersQ.isLoading && <p className="py-10 text-sm text-muted-foreground">Загрузка папок…</p>}
+          {!foldersQ.isLoading && foldersQ.data?.length === 0 && (
+            <div className="rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
+              Папок пока нет. Создайте первую папку для группировки документов.
+            </div>
+          )}
+          {foldersQ.data?.map((f) => {
+            const stats = folderStats.get(f.id)
+            return (
+              <FolderCard
+                key={f.id}
+                folder={f}
+                active={folder === f.id}
+                count={stats?.count ?? f.documents}
+                size={stats?.size ?? 0}
+                onClick={() => setFolder((current) => (current === f.id ? '' : f.id))}
+                onDelete={() => {
+                  if (confirm(`Удалить папку «${f.name}»?\nДокументы из неё не удаляются — останутся в библиотеке без папки.`)) {
+                    void api.deleteFolder(f.id).then(() => {
+                      if (folder === f.id) setFolder('')
+                      qc.invalidateQueries({ queryKey: ['folders'] })
+                      qc.invalidateQueries({ queryKey: ['documents'] })
+                    })
+                  }
+                }}
+              />
+            )
+          })}
+        </div>
+      </section>
 
-      {docsQ.isLoading ? (
-        <p className="mt-6 text-sm text-muted-foreground">Загрузка…</p>
-      ) : docs.length === 0 ? (
-        <p className="mt-6 text-sm text-muted-foreground">Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX выше.</p>
-      ) : (
-        <DocList docs={docs} folders={foldersQ.data ?? []} />
-      )}
+      <section className="mt-12">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Документы</h2>
+            {selectedFolder && (
+              <p className="mt-1 text-xs text-muted-foreground">Папка: {selectedFolder.name}</p>
+            )}
+          </div>
+          <Button
+            variant="ghost"
+            className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
+            disabled={upload.isPending}
+            onClick={() => fileInput.current?.click()}
+          >
+            <CloudUpload className="h-4 w-4" />
+            {upload.isPending ? 'Загружаю…' : 'Загрузить ещё'}
+          </Button>
+        </div>
+
+        {docsQ.isLoading ? (
+          <p className="mt-6 text-sm text-muted-foreground">Загрузка…</p>
+        ) : docs.length === 0 ? (
+          <p className="mt-6 rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
+            Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX/JPG/PNG/TXT.
+          </p>
+        ) : (
+          <DocList docs={docs} folders={foldersQ.data ?? []} />
+        )}
+      </section>
     </div>
   )
 }
@@ -136,81 +261,84 @@ function FilterBar({ filters, onChange }: { filters: DocFilters; onChange: (f: D
   )
 }
 
-function UploadZone({
-  busy,
-  onFile,
-  fileInput,
-}: {
-  busy: boolean
-  onFile: (f: File) => void
-  fileInput: React.RefObject<HTMLInputElement | null>
-}) {
-  const [drag, setDrag] = useState(false)
-  return (
-    <div
-      onClick={() => fileInput.current?.click()}
-      onDragOver={(e) => {
-        e.preventDefault()
-        setDrag(true)
-      }}
-      onDragLeave={() => setDrag(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDrag(false)
-        const f = e.dataTransfer.files[0]
-        if (f) onFile(f)
-      }}
-      className={
-        'cursor-pointer rounded-lg border-2 border-dashed p-6 text-center text-sm transition-colors ' +
-        (drag ? 'border-primary bg-accent' : 'border-border bg-card text-muted-foreground hover:bg-accent/50')
-      }
-    >
-      {busy ? 'Загружаю…' : 'Перетащите документ сюда или кликните — PDF, DOCX, XLSX, PPTX, JPG, PNG, TXT'}
-      <input
-        ref={fileInput}
-        type="file"
-        hidden
-        accept=".pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.txt"
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
-      />
-    </div>
-  )
-}
-
-function FolderChip({
+function FolderCard({
+  folder,
   active,
   onClick,
-  label,
   count,
+  size,
   onDelete,
 }: {
+  folder: Folder
   active: boolean
   onClick: () => void
-  label: string
-  count?: number
+  count: number
+  size: number
   onDelete?: () => void
 }) {
   return (
-    <span
+    <article
       className={cn(
-        'inline-flex items-center rounded-full border text-sm transition-colors',
-        active ? 'border-primary bg-primary text-primary-foreground' : 'bg-card hover:bg-accent',
+        'group relative flex w-[237px] shrink-0 flex-col gap-[11px] rounded-lg border bg-card p-1 pb-4 transition',
+        active ? 'border-[#ef9a11] shadow-[0_7px_14px_rgba(0,0,0,0.07)]' : 'border-[#e5e5e5] hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
       )}
     >
-      <button onClick={onClick} className={cn('py-1 pl-3', onDelete ? 'pr-1' : 'pr-3')}>
-        {label}
-        {count != null && <span className="ml-1.5 opacity-70">{count}</span>}
-      </button>
       {onDelete && (
         <button
-          onClick={onDelete}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
           title="Удалить папку"
-          className="mr-1 rounded-full p-0.5 opacity-60 transition hover:bg-black/10 hover:opacity-100"
+          className="absolute right-2 top-2 z-[1] flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.85] text-muted-foreground opacity-0 shadow-sm transition hover:text-destructive group-hover:opacity-100"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-4 w-4" />
         </button>
       )}
-    </span>
+      <button type="button" onClick={onClick} className="flex flex-col gap-[11px] text-left">
+        <div
+          className={cn(
+            'flex h-[137px] w-full items-center justify-center rounded-md transition-colors',
+            active ? 'bg-[#ef9a11]' : 'bg-[#222226]/[0.02] group-hover:bg-[#ef9a11]/10',
+          )}
+        >
+          <FolderIllustration active={active} />
+        </div>
+        <div className="w-full px-4 text-center">
+          <div className="truncate text-[14.3px] font-medium leading-[1.5] text-[#222226]">
+            {folder.name}
+          </div>
+          <div className="mt-1 flex items-center justify-center gap-2 whitespace-nowrap text-[11.11px] font-medium leading-[1.5] text-[#c1c1c1]">
+            <span>{formatFileCount(count)}</span>
+            <span className="text-[#d9d9d9]">•</span>
+            <span>{formatBytes(size)}</span>
+          </div>
+        </div>
+      </button>
+    </article>
+  )
+}
+
+function FolderIllustration({ active }: { active: boolean }) {
+  return (
+    <div className="relative h-[86px] w-[96px]">
+      <div
+        className={cn(
+          'absolute left-[8px] top-[9px] h-[18px] w-[38px] rounded-t-[10px]',
+          active ? 'bg-[#f6fbff]' : 'bg-[#d8eafa]',
+        )}
+      />
+      <div
+        className={cn(
+          'absolute inset-x-0 bottom-0 h-[68px] rounded-[10px] border shadow-[inset_0_1px_2px_rgba(255,255,255,0.85),0_5px_12px_rgba(74,103,139,0.2)]',
+          active
+            ? 'border-[#d4e3f6] bg-gradient-to-b from-[#f6fbff] to-[#c6d8f1]'
+            : 'border-[#c5d7ee] bg-gradient-to-b from-[#eef7ff] via-[#d9e7f8] to-[#bccce3]',
+        )}
+      />
+      <div className="absolute inset-x-[10px] top-[28px] h-px bg-white/70" />
+    </div>
   )
 }
 
@@ -227,12 +355,17 @@ function NewFolder({ onCreated }: { onCreated: () => void }) {
   })
   if (!open)
     return (
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        + папка
+      <Button
+        variant="ghost"
+        className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
+        onClick={() => setOpen(true)}
+      >
+        <PlusCircle className="h-4 w-4" />
+        Создать папку
       </Button>
     )
   return (
-    <span className="flex items-center gap-1">
+    <span className="flex items-center gap-1 rounded-2xl bg-[#222226]/5 p-1">
       <Input
         autoFocus
         value={name}
@@ -244,9 +377,9 @@ function NewFolder({ onCreated }: { onCreated: () => void }) {
         // увели курсор, ничего не введя — поле сворачивается (задержка, чтобы успел клик по «ок»)
         onBlur={() => setTimeout(() => !name.trim() && setOpen(false), 120)}
         placeholder="название"
-        className="h-8 w-36"
+        className="h-8 w-40 rounded-xl border-0 bg-white"
       />
-      <Button size="sm" disabled={!name.trim()} onClick={() => create.mutate()}>
+      <Button size="sm" className="rounded-xl" disabled={!name.trim()} onClick={() => create.mutate()}>
         ок
       </Button>
     </span>
@@ -254,34 +387,16 @@ function NewFolder({ onCreated }: { onCreated: () => void }) {
 }
 
 function DocList({ docs, folders }: { docs: Document[]; folders: Folder[] }) {
-  const parentRef = useRef<HTMLDivElement>(null)
-  const v = useVirtualizer({
-    count: docs.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 84,
-    overscan: 8,
-  })
   return (
-    <div ref={parentRef} className="mt-4 max-h-[calc(100vh-260px)] overflow-auto">
-      <div style={{ height: v.getTotalSize(), position: 'relative' }}>
-        {v.getVirtualItems().map((item) => {
-          const d = docs[item.index]
-          return (
-            <div
-              key={d.id}
-              style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${item.start}px)` }}
-              className="pb-2"
-            >
-              <DocRow d={d} folders={folders} />
-            </div>
-          )
-        })}
-      </div>
+    <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      {docs.map((d) => (
+        <DocCard key={d.id} d={d} folders={folders} />
+      ))}
     </div>
   )
 }
 
-function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
+function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
   const qc = useQueryClient()
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['documents'] })
@@ -317,11 +432,158 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
     d.status === 'translating' && d.segment_count
       ? `${Math.round((d.translated_count / d.segment_count) * 100)}%`
       : null
+  const format = documentFormat(d)
+  const tone = FORMAT_TONE[format] ?? FORMAT_TONE.TXT
+  const canOpen = Boolean(d.status === 'done' || d.has_view || d.has_view_orig || d.has_view_ru)
   return (
-    <div className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3 shadow-sm">
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium">{d.filename}</div>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+    <article className="group flex min-h-[333px] w-full min-w-0 flex-col rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 shadow-sm transition hover:border-[#ef9a11]/60 hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
+      <DocumentPreview d={d} tone={tone} canOpen={canOpen} />
+
+      <div className="flex min-w-0 flex-1 flex-col px-3 pt-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <span className={cn('inline-flex rounded px-1.5 py-0.5 text-[11px] font-semibold leading-none', tone.badge)}>
+              {format}
+            </span>
+            <div className="mt-2 line-clamp-2 min-h-[38px] text-[13px] font-medium leading-[1.45] text-[#222226]">
+              {d.filename}
+            </div>
+          </div>
+          <Menu
+            trigger={<MoreVertical className="h-4 w-4" />}
+            triggerClassName="mt-0 h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-[#222226]/5"
+            title="Действия"
+          >
+            {(close) => (
+              <>
+                <MenuLabel>Скачать перевод</MenuLabel>
+                {d.exports.map((k) => (
+                  <MenuItem
+                    key={k}
+                    icon={<Download className="h-4 w-4" />}
+                    onClick={() => {
+                      void downloadFile(downloadUrl(d.id, k))
+                      close()
+                    }}
+                  >
+                    {EXPORT_LABELS[k] ?? k}
+                  </MenuItem>
+                ))}
+                {d.exports.length === 0 && (
+                  <div className="px-2 py-1 text-xs text-muted-foreground">перевод ещё не готов</div>
+                )}
+                <MenuSeparator />
+                <MenuItem
+                  icon={<Download className="h-4 w-4" />}
+                  onClick={() => {
+                    void downloadFile(downloadUrl(d.id, 'original'))
+                    close()
+                  }}
+                >
+                  Оригинал (как загружен)
+                </MenuItem>
+
+                {d.status === 'done' && offerLangs.length > 0 && (
+                  <>
+                    <MenuSeparator />
+                    <MenuLabel>Перевести на язык</MenuLabel>
+                    {offerLangs.map((l) => {
+                      const t = trList.find((x) => x.target_lang === l.code)
+                      const busy = t?.status === 'translating' || t?.status === 'exporting'
+                      return (
+                        <MenuItem
+                          key={l.code}
+                          icon={<Languages className="h-4 w-4" />}
+                          disabled={busy || translate.isPending}
+                          onClick={() => {
+                            translate.mutate(l.code)
+                            close()
+                          }}
+                        >
+                          {l.label}
+                          {t
+                            ? t.status === 'done'
+                              ? ' — готово ✓'
+                              : t.status === 'error'
+                                ? ' — ошибка'
+                                : ' — перевод…'
+                            : ''}
+                        </MenuItem>
+                      )
+                    })}
+                    {trList
+                      .filter((t) => t.status === 'done' && t.has_export)
+                      .map((t) => (
+                        <MenuItem
+                          key={`dl-${t.target_lang}`}
+                          icon={<Download className="h-4 w-4" />}
+                          onClick={() => {
+                            void downloadFile(translationDownloadUrl(d.id, t.target_lang))
+                            close()
+                          }}
+                        >
+                          Скачать перевод — {t.target_lang.toUpperCase()}
+                        </MenuItem>
+                      ))}
+                  </>
+                )}
+
+                <MenuSeparator />
+                <MenuLabel>Переместить в папку</MenuLabel>
+                <MenuItem
+                  icon={d.folder_id == null ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
+                  disabled={move.isPending}
+                  onClick={() => {
+                    if (d.folder_id != null) move.mutate(null)
+                    close()
+                  }}
+                >
+                  Без папки
+                </MenuItem>
+                {folders.map((f) => (
+                  <MenuItem
+                    key={f.id}
+                    icon={d.folder_id === f.id ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
+                    disabled={move.isPending}
+                    onClick={() => {
+                      if (d.folder_id !== f.id) move.mutate(f.id)
+                      close()
+                    }}
+                  >
+                    {f.name}
+                  </MenuItem>
+                ))}
+
+                <MenuSeparator />
+                <MenuItem
+                  destructive
+                  disabled={del.isPending}
+                  icon={<Trash2 className="h-4 w-4" />}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Удалить «${d.filename}»?\nДокумент, перевод, поисковый индекс и связанные чаты будут удалены безвозвратно.`,
+                      )
+                    ) {
+                      del.mutate()
+                    }
+                    close()
+                  }}
+                >
+                  Удалить
+                </MenuItem>
+              </>
+            )}
+          </Menu>
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span>{formatBytes(d.size_bytes)}</span>
+          <span className="text-[#d9d9d9]">•</span>
+          <span>{formatDate(d.created_at)}</span>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px]">
           <StatusBadge status={d.status} />
           {d.source_lang && DIRECTION[d.source_lang] && (
             <span className={cn('rounded px-1.5 py-0.5 font-medium', DIRECTION[d.source_lang].cls)}>
@@ -344,157 +606,91 @@ function DocRow({ d, folders }: { d: Document; folders: Folder[] }) {
               {t.status === 'done' ? ' ✓' : t.status === 'error' ? ' ✗' : '…'}
             </span>
           ))}
-          {progress && <span>{progress}</span>}
-          {d.page_count != null && <span>{d.page_count} стр.</span>}
-          {d.review_count > 0 && <span className="text-amber-600">⚠ проверить числа: {d.review_count}</span>}
+          {progress && <span className="rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700">{progress}</span>}
+          {d.page_count != null && (
+            <span className="rounded bg-[#222226]/5 px-1.5 py-0.5 font-medium text-muted-foreground">
+              {d.page_count} стр.
+            </span>
+          )}
+          {d.review_count > 0 && (
+            <span className="rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700">
+              проверить числа: {d.review_count}
+            </span>
+          )}
           {del.isError && <span className="text-destructive">Ошибка удаления</span>}
           {d.error && <span className="text-destructive">{d.error.slice(0, 80)}</span>}
         </div>
-      </div>
-      <div className="flex shrink-0 items-center justify-end gap-1.5">
-        {d.status === 'done' && (
-          <>
-            <Link to="/view/$id" params={{ id: d.id }}>
-              <Button variant="secondary" size="sm">
-                Просмотр
-              </Button>
-            </Link>
+
+        <div className="mt-auto flex items-center justify-between gap-2 pt-4">
+          {d.status === 'done' ? (
             <Link to="/chat" search={{ doc: d.id }}>
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" className="h-8 rounded-xl px-2.5">
+                <MessageCircle className="h-4 w-4" />
                 Чат
               </Button>
             </Link>
-          </>
-        )}
-        {d.status === 'error' && (
-          <Button variant="ghost" size="sm" onClick={() => void api.retry(d.id)}>
-            Повторить
-          </Button>
-        )}
-        <Menu trigger={<MoreVertical className="h-4 w-4" />} title="Действия">
-          {(close) => (
-            <>
-              <MenuLabel>Скачать перевод</MenuLabel>
-              {d.exports.map((k) => (
-                <MenuItem
-                  key={k}
-                  icon={<Download className="h-4 w-4" />}
-                  onClick={() => {
-                    void downloadFile(downloadUrl(d.id, k))
-                    close()
-                  }}
-                >
-                  {EXPORT_LABELS[k] ?? k}
-                </MenuItem>
-              ))}
-              {d.exports.length === 0 && (
-                <div className="px-2 py-1 text-xs text-muted-foreground">перевод ещё не готов</div>
-              )}
-              <MenuSeparator />
-              <MenuItem
-                icon={<Download className="h-4 w-4" />}
-                onClick={() => {
-                  void downloadFile(downloadUrl(d.id, 'original'))
-                  close()
-                }}
-              >
-                Оригинал (как загружен)
-              </MenuItem>
-
-              {d.status === 'done' && offerLangs.length > 0 && (
-                <>
-                  <MenuSeparator />
-                  <MenuLabel>Перевести на язык</MenuLabel>
-                  {offerLangs.map((l) => {
-                    const t = trList.find((x) => x.target_lang === l.code)
-                    const busy = t?.status === 'translating' || t?.status === 'exporting'
-                    return (
-                      <MenuItem
-                        key={l.code}
-                        icon={<Languages className="h-4 w-4" />}
-                        disabled={busy || translate.isPending}
-                        onClick={() => {
-                          translate.mutate(l.code)
-                          close()
-                        }}
-                      >
-                        {l.label}
-                        {t
-                          ? t.status === 'done'
-                            ? ' — готово ✓'
-                            : t.status === 'error'
-                              ? ' — ошибка'
-                              : ' — перевод…'
-                          : ''}
-                      </MenuItem>
-                    )
-                  })}
-                  {trList
-                    .filter((t) => t.status === 'done' && t.has_export)
-                    .map((t) => (
-                      <MenuItem
-                        key={`dl-${t.target_lang}`}
-                        icon={<Download className="h-4 w-4" />}
-                        onClick={() => {
-                          void downloadFile(translationDownloadUrl(d.id, t.target_lang))
-                          close()
-                        }}
-                      >
-                        Скачать перевод — {t.target_lang.toUpperCase()}
-                      </MenuItem>
-                    ))}
-                </>
-              )}
-
-              <MenuSeparator />
-              <MenuLabel>Переместить в папку</MenuLabel>
-              <MenuItem
-                icon={d.folder_id == null ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
-                disabled={move.isPending}
-                onClick={() => {
-                  if (d.folder_id != null) move.mutate(null)
-                  close()
-                }}
-              >
-                Без папки
-              </MenuItem>
-              {folders.map((f) => (
-                <MenuItem
-                  key={f.id}
-                  icon={d.folder_id === f.id ? <Check className="h-4 w-4" /> : <FolderInput className="h-4 w-4" />}
-                  disabled={move.isPending}
-                  onClick={() => {
-                    if (d.folder_id !== f.id) move.mutate(f.id)
-                    close()
-                  }}
-                >
-                  {f.name}
-                </MenuItem>
-              ))}
-
-              <MenuSeparator />
-              <MenuItem
-                destructive
-                disabled={del.isPending}
-                icon={<Trash2 className="h-4 w-4" />}
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Удалить «${d.filename}»?\nДокумент, перевод, поисковый индекс и связанные чаты будут удалены безвозвратно.`,
-                    )
-                  ) {
-                    del.mutate()
-                  }
-                  close()
-                }}
-              >
-                Удалить
-              </MenuItem>
-            </>
+          ) : d.status === 'error' ? (
+            <Button variant="ghost" size="sm" className="h-8 rounded-xl px-2.5" onClick={() => void api.retry(d.id)}>
+              Повторить
+            </Button>
+          ) : (
+            <span className="text-xs text-muted-foreground">Обработка…</span>
           )}
-        </Menu>
+          {!canOpen && d.status === 'done' && (
+            <span className="text-[11px] text-muted-foreground">превью готовится</span>
+          )}
+        </div>
       </div>
+    </article>
+  )
+}
+
+function DocumentPreview({
+  d,
+  tone,
+  canOpen,
+}: {
+  d: Document
+  tone: { badge: string; surface: string }
+  canOpen: boolean
+}) {
+  const preview = (
+    <div
+      className={cn(
+        'relative flex h-[234px] w-full items-center justify-center overflow-hidden rounded-md bg-[#222226]/[0.02] transition-colors',
+        tone.surface,
+      )}
+    >
+      <div className="relative h-[219px] w-[213px] rounded-[6px] border border-[#e3e5ea] bg-white shadow-[0_10px_24px_rgba(30,42,62,0.08)]">
+        <div className="absolute left-5 right-5 top-6 h-3 rounded bg-[#222226]/10" />
+        <div className="absolute left-5 right-8 top-12 h-2 rounded bg-[#222226]/[0.07]" />
+        <div className="absolute left-5 right-16 top-[72px] h-2 rounded bg-[#222226]/[0.07]" />
+        <div className="absolute left-5 top-24 h-[54px] w-[74px] rounded border border-[#e3e5ea] bg-gradient-to-br from-[#f4f8ff] to-[#dfe8f5]" />
+        <div className="absolute left-[110px] right-5 top-24 space-y-2">
+          <div className="h-2 rounded bg-[#222226]/[0.08]" />
+          <div className="h-2 rounded bg-[#222226]/[0.08]" />
+          <div className="h-2 w-2/3 rounded bg-[#222226]/[0.08]" />
+        </div>
+        <div className="absolute bottom-8 left-5 right-5 grid grid-cols-3 gap-2">
+          <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+          <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+          <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+        </div>
+      </div>
+      {!canOpen && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/45 text-xs font-medium text-muted-foreground">
+          {d.status === 'error' ? 'ошибка обработки' : 'превью готовится'}
+        </div>
+      )}
     </div>
+  )
+
+  if (!canOpen) return preview
+
+  return (
+    <Link to="/view/$id" params={{ id: d.id }} aria-label={`Открыть ${d.filename}`} className="block">
+      {preview}
+    </Link>
   )
 }
 
