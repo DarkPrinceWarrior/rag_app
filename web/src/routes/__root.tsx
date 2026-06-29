@@ -1,31 +1,137 @@
 import { useState, type FormEvent } from 'react'
 import { createRootRoute, Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Menu as MenuIcon, Search } from 'lucide-react'
+import { Search, SlidersHorizontal, X } from 'lucide-react'
 import { currentUser } from '@/lib/auth'
 import { LibrarySearchContext, useLibrarySearch, type LibrarySearchContextValue } from '@/lib/librarySearch'
+import type { DocFilters } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 function HeaderSearch() {
-  const { query, setQuery, submitSearch } = useLibrarySearch()
+  const { query, filters, setQuery, setFilters, submitSearch, clearSearch } = useLibrarySearch()
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const path = useRouterState({ select: (s) => s.location.pathname })
+  const showFilters = path === '/'
+  const activeFilterCount = Object.values(filters).filter(Boolean).length
+  const setFilter = (key: keyof DocFilters, value: string) =>
+    setFilters({ ...filters, [key]: value || undefined })
 
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     submitSearch()
+    setFiltersOpen(false)
   }
 
   return (
-    <form
-      onSubmit={onSubmit}
-      className="flex h-10 w-full max-w-[600px] items-center gap-2.5 rounded-[32px] bg-[#f3f3f3] px-4 text-[#222226]"
-    >
-      <Search className="h-5 w-5 shrink-0 text-[#222226]/35" />
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Найти среди документов"
-        className="min-w-0 flex-1 bg-transparent text-[16px] font-medium leading-[1.5] text-[#222226] outline-none placeholder:text-[#222226]/25"
-      />
-    </form>
+    <div className="relative min-w-0 flex-1 md:max-w-[600px]">
+      <form
+        onSubmit={onSubmit}
+        className="flex h-10 w-full items-center gap-2 rounded-[32px] bg-[#f3f3f3] py-1.5 pl-4 pr-1.5 text-[#222226]"
+      >
+        <Search className="h-5 w-5 shrink-0 text-[#222226]/35" />
+        <input
+          value={query}
+          onChange={(e) => {
+            const value = e.target.value
+            setQuery(value)
+            if (!value.trim()) clearSearch()
+          }}
+          placeholder="Найти среди документов"
+          className="min-w-0 flex-1 bg-transparent text-[16px] font-medium leading-[1.5] text-[#222226] outline-none placeholder:text-[#222226]/25"
+        />
+        {query && (
+          <button
+            type="button"
+            aria-label="Очистить поиск"
+            onClick={clearSearch}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[#222226]/35 transition hover:bg-white hover:text-[#222226]/70"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+        {showFilters && (
+          <button
+            type="button"
+            aria-label="Фильтры"
+            aria-expanded={filtersOpen}
+            onClick={() => setFiltersOpen((v) => !v)}
+            className={cn(
+              'relative flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full px-2 text-[#222226]/45 transition',
+              filtersOpen || activeFilterCount
+                ? 'bg-white text-[#222226] shadow-[0_1px_4px_rgba(34,34,38,0.08)]'
+                : 'hover:bg-white hover:text-[#222226]/70',
+            )}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            {activeFilterCount > 0 && (
+              <span className="ml-1 text-[11px] font-semibold leading-none">{activeFilterCount}</span>
+            )}
+          </button>
+        )}
+      </form>
+
+      {showFilters && filtersOpen && (
+        <div className="absolute right-0 top-12 z-40 w-[min(92vw,420px)] rounded-2xl border border-[#222226]/[0.08] bg-white p-3 shadow-[0_18px_42px_rgba(34,34,38,0.14)]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-medium text-[#222226]">Фильтры поиска</div>
+            {activeFilterCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilters({})}
+                className="rounded-full px-2 py-1 text-xs font-medium text-muted-foreground transition hover:bg-[#222226]/5 hover:text-[#222226]"
+              >
+                Сбросить
+              </button>
+            )}
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <label className="grid gap-1 text-[11px] font-medium text-muted-foreground">
+              Тип
+              <select
+                className="h-9 min-w-0 rounded-xl border border-[#222226]/[0.08] bg-[#f7f7f7] px-3 text-sm font-medium text-[#222226] outline-none transition focus:border-[#6269f3]"
+                value={filters.kind ?? ''}
+                onChange={(e) => setFilter('kind', e.target.value)}
+              >
+                <option value="">Любой</option>
+                <option value="pdf_text">PDF текст</option>
+                <option value="pdf_scan">PDF скан</option>
+                <option value="docx">DOCX</option>
+                <option value="xlsx">XLSX</option>
+                <option value="pptx">PPTX</option>
+                <option value="text">TXT</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-[11px] font-medium text-muted-foreground">
+              От
+              <input
+                type="date"
+                className="h-9 min-w-0 rounded-xl border border-[#222226]/[0.08] bg-[#f7f7f7] px-3 text-sm font-medium text-[#222226] outline-none transition focus:border-[#6269f3]"
+                value={filters.date_from ?? ''}
+                onChange={(e) => setFilter('date_from', e.target.value)}
+              />
+            </label>
+            <label className="grid gap-1 text-[11px] font-medium text-muted-foreground">
+              До
+              <input
+                type="date"
+                className="h-9 min-w-0 rounded-xl border border-[#222226]/[0.08] bg-[#f7f7f7] px-3 text-sm font-medium text-[#222226] outline-none transition focus:border-[#6269f3]"
+                value={filters.date_to ?? ''}
+                onChange={(e) => setFilter('date_to', e.target.value)}
+              />
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BarsIcon() {
+  return (
+    <span className="flex h-6 w-6 flex-col items-center justify-center gap-[3px]" aria-hidden="true">
+      <span className="h-[1.7px] w-4 rounded-full bg-[#424247]" />
+      <span className="h-[1.7px] w-4 rounded-full bg-[#424247]" />
+      <span className="h-[1.7px] w-4 rounded-full bg-[#424247]" />
+    </span>
   )
 }
 
@@ -71,11 +177,14 @@ function TabLink({ to, label }: { to: string; label: string }) {
 function RootLayout() {
   const [query, setQuery] = useState('')
   const [submitted, setSubmitted] = useState('')
+  const [filters, setFilters] = useState<DocFilters>({})
 
   const searchContext: LibrarySearchContextValue = {
     query,
     submitted,
+    filters,
     setQuery,
+    setFilters,
     submitSearch: (value = query) => setSubmitted(value.trim()),
     clearSearch: () => {
       setQuery('')
@@ -87,13 +196,13 @@ function RootLayout() {
     <LibrarySearchContext.Provider value={searchContext}>
       <div className="min-h-screen bg-white">
         <header className="sticky top-0 z-20 border-b border-[#222226]/[0.12] bg-white">
-          <div className="flex min-h-[57px] items-center justify-between gap-4 px-4 py-3 md:px-8">
+          <div className="flex min-h-[57px] items-center justify-between gap-2 px-3 py-3 md:gap-4 md:px-8">
             <button
               type="button"
               aria-label="Меню"
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#222226]/5 text-[#424247] transition hover:bg-[#222226]/10"
             >
-              <MenuIcon className="h-5 w-5" />
+              <BarsIcon />
             </button>
             <HeaderSearch />
             <ProfileButton />

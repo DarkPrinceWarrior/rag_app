@@ -44,7 +44,7 @@ const DIRECTION: Record<string, { label: string; cls: string }> = {
 const FORMAT_TONE: Record<string, { badge: string; surface: string }> = {
   DOCX: { badge: 'bg-blue-50 text-[#0a78ff]', surface: 'group-hover:bg-blue-50/60' },
   PDF: { badge: 'bg-red-50 text-[#ff160a]', surface: 'group-hover:bg-red-50/50' },
-  PPTX: { badge: 'bg-amber-50 text-[#ff9d0a]', surface: 'group-hover:bg-[#ef9a11]' },
+  PPTX: { badge: 'bg-amber-50 text-[#ff9d0a]', surface: 'group-hover:bg-amber-50/70' },
   XLSX: { badge: 'bg-emerald-50 text-[#008562]', surface: 'group-hover:bg-emerald-50/60' },
   TXT: { badge: 'bg-slate-100 text-slate-700', surface: 'group-hover:bg-slate-100' },
   IMAGE: { badge: 'bg-violet-50 text-violet-700', surface: 'group-hover:bg-violet-50/70' },
@@ -87,8 +87,8 @@ function formatFileCount(count: number) {
 
 function Library() {
   const qc = useQueryClient()
+  const { submitted, filters, clearSearch } = useLibrarySearch()
   const [folder, setFolder] = useState<string>('') // '' = все
-  const [filters, setFilters] = useState<DocFilters>({}) // поиск по метаданным (§4.7.3)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const docsQ = useQuery({
@@ -112,6 +112,11 @@ function Library() {
   })
   const allDocs = docsQ.data ?? []
   const docs = allDocs.filter((d) => !folder || d.folder_id === folder)
+  const searchTerm = submitted.trim().toLocaleLowerCase('ru-RU')
+  const searchActive = searchTerm.length >= 2
+  const visibleDocs = searchActive
+    ? docs.filter((d) => d.filename.toLocaleLowerCase('ru-RU').includes(searchTerm))
+    : docs
   const selectedFolder = foldersQ.data?.find((f) => f.id === folder)
   const statsDocs = hasFilters ? (statsDocsQ.data ?? allDocs) : allDocs
   const folderStats = new Map<string, { count: number; size: number }>()
@@ -137,10 +142,9 @@ function Library() {
         }}
       />
 
-      <FilterBar filters={filters} onChange={setFilters} />
-      <SearchResults folder={folder} filters={filters} />
       {upload.isError && <p className="mt-3 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
+      {!searchActive && (
       <section className="mt-8">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -188,75 +192,53 @@ function Library() {
           })}
         </div>
       </section>
+      )}
 
-      <section className="mt-12">
+      <section className={searchActive ? 'mt-8' : 'mt-12'}>
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Документы</h2>
-            {selectedFolder && (
+            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">
+              {searchActive ? `Документы: ${submitted}` : 'Документы'}
+            </h2>
+            {searchActive ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Карточки документов с совпадением в названии
+              </p>
+            ) : selectedFolder ? (
               <p className="mt-1 text-xs text-muted-foreground">Папка: {selectedFolder.name}</p>
-            )}
+            ) : null}
           </div>
-          <Button
-            variant="ghost"
-            className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
-            disabled={upload.isPending}
-            onClick={() => fileInput.current?.click()}
-          >
-            <CloudUpload className="h-4 w-4" />
-            {upload.isPending ? 'Загружаю…' : 'Загрузить ещё'}
-          </Button>
+          {searchActive ? (
+            <Button variant="ghost" className="h-10 rounded-2xl px-4" onClick={clearSearch}>
+              Сбросить поиск
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
+              disabled={upload.isPending}
+              onClick={() => fileInput.current?.click()}
+            >
+              <CloudUpload className="h-4 w-4" />
+              {upload.isPending ? 'Загружаю…' : 'Загрузить ещё'}
+            </Button>
+          )}
         </div>
 
         {docsQ.isLoading ? (
           <p className="mt-6 text-sm text-muted-foreground">Загрузка…</p>
-        ) : docs.length === 0 ? (
+        ) : visibleDocs.length === 0 ? (
           <p className="mt-6 rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
-            Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX/JPG/PNG/TXT.
+            {searchActive
+              ? 'По названию документа ничего не найдено. Совпадения в содержимом показаны ниже.'
+              : 'Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX/JPG/PNG/TXT.'}
           </p>
         ) : (
-          <DocList docs={docs} folders={foldersQ.data ?? []} />
+          <DocList docs={visibleDocs} folders={foldersQ.data ?? []} />
         )}
       </section>
-    </div>
-  )
-}
 
-function FilterBar({ filters, onChange }: { filters: DocFilters; onChange: (f: DocFilters) => void }) {
-  const set = (k: keyof DocFilters, v: string) => onChange({ ...filters, [k]: v || undefined })
-  const active = Object.values(filters).some(Boolean)
-  const inp = 'h-8 rounded-md border bg-card px-2 text-sm'
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
-      <span className="text-xs text-muted-foreground">Фильтры:</span>
-      <select className={inp} value={filters.kind ?? ''} onChange={(e) => set('kind', e.target.value)}>
-        <option value="">Тип: любой</option>
-        <option value="pdf_text">PDF (текст)</option>
-        <option value="pdf_scan">PDF (скан)</option>
-        <option value="docx">DOCX</option>
-        <option value="xlsx">XLSX</option>
-        <option value="pptx">PPTX</option>
-        <option value="text">TXT</option>
-      </select>
-      <input
-        type="date"
-        title="Дата загрузки от"
-        className={inp}
-        value={filters.date_from ?? ''}
-        onChange={(e) => set('date_from', e.target.value)}
-      />
-      <input
-        type="date"
-        title="Дата загрузки до"
-        className={inp}
-        value={filters.date_to ?? ''}
-        onChange={(e) => set('date_to', e.target.value)}
-      />
-      {active && (
-        <Button variant="ghost" size="sm" onClick={() => onChange({})}>
-          Сбросить
-        </Button>
-      )}
+      <SearchResults folder={folder} filters={filters} />
     </div>
   )
 }
@@ -280,7 +262,7 @@ function FolderCard({
     <article
       className={cn(
         'group relative flex w-[237px] shrink-0 flex-col gap-[11px] rounded-lg border bg-card p-1 pb-4 transition',
-        active ? 'border-[#ef9a11] shadow-[0_7px_14px_rgba(0,0,0,0.07)]' : 'border-[#e5e5e5] hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
+        active ? 'border-[#ef9a11]/60 shadow-[0_7px_14px_rgba(0,0,0,0.07)]' : 'border-[#e5e5e5] hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
       )}
     >
       {onDelete && (
@@ -300,7 +282,7 @@ function FolderCard({
         <div
           className={cn(
             'flex h-[137px] w-full items-center justify-center rounded-md transition-colors',
-            active ? 'bg-[#ef9a11]' : 'bg-[#222226]/[0.02] group-hover:bg-[#ef9a11]/10',
+            active ? 'bg-amber-50/80' : 'bg-[#222226]/[0.02] group-hover:bg-[#ef9a11]/10',
           )}
         >
           <FolderIllustration active={active} />
@@ -759,43 +741,43 @@ async function downloadFile(url: string) {
 }
 
 function SearchResults({ folder, filters }: { folder: string; filters: DocFilters }) {
-  const { submitted, clearSearch } = useLibrarySearch()
+  const { submitted } = useLibrarySearch()
   const searchQ = useQuery({
     queryKey: ['search', submitted, folder, filters],
     queryFn: () => api.search(submitted, { ...(folder ? { folder_id: folder } : {}), ...filters }),
     enabled: submitted.length >= 2,
   })
   if (submitted.length < 2) return null
+  const contentHits = (searchQ.data ?? []).filter((h) => h.match !== 'filename')
 
   return (
-    <div className="mt-4 rounded-lg border border-[#e5e5e5] bg-card p-3">
+    <div className="mt-8 rounded-lg border border-[#e5e5e5] bg-card p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-[#222226]">Результаты поиска: {submitted}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">По имени файла и содержимому документов</div>
+          <h3 className="truncate text-[18px] font-semibold leading-[1.35] text-[#222226]">
+            Совпадения в содержимом
+          </h3>
+          <div className="mt-0.5 text-xs text-muted-foreground">Фрагменты документов по запросу: {submitted}</div>
         </div>
-        <Button variant="ghost" size="sm" className="rounded-xl" onClick={clearSearch}>
-          Сбросить
-        </Button>
       </div>
       {searchQ.isLoading ? (
         <p className="mt-3 text-sm text-muted-foreground">Ищу…</p>
       ) : (
         searchQ.data && (
           <div className="mt-3 space-y-1.5">
-            {searchQ.data.length === 0 && <p className="text-sm text-muted-foreground">Ничего не найдено.</p>}
-          {searchQ.data.map((h, i) => (
+            {contentHits.length === 0 && <p className="text-sm text-muted-foreground">Совпадений внутри документов не найдено.</p>}
+          {contentHits.map((h, i) => (
             <Link
               key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
               to="/view/$id"
               params={{ id: h.document_id }}
               search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
-              className="block rounded-md border bg-card px-3 py-2 text-sm hover:bg-accent"
+              className="block rounded-md border border-[#e5e5e5] bg-card px-3 py-2 text-sm transition hover:bg-[#222226]/[0.03]"
             >
               <div className="flex justify-between gap-2">
                 <span className="truncate font-medium">{h.filename}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {h.match === 'filename' ? 'имя файла' : h.heading_path}
+                  {h.heading_path || (h.page_start != null ? `стр. ${h.page_start + 1}` : 'фрагмент')}
                 </span>
               </div>
               {h.snippet && <div className="mt-0.5 line-clamp-2 text-muted-foreground">{h.snippet}</div>}

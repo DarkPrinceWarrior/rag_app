@@ -1,9 +1,12 @@
 import { createContext, useContext } from 'react'
+import type { DocFilters } from '@/lib/api'
 
 export type LibrarySearchContextValue = {
   query: string
   submitted: string
+  filters: DocFilters
   setQuery: (value: string) => void
+  setFilters: (value: DocFilters) => void
   submitSearch: (value?: string) => void
   clearSearch: () => void
 }
