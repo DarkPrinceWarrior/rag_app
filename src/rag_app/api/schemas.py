@@ -37,18 +37,19 @@ class DocumentOut(BaseModel):
     # метаданные (ТЗ §4.7.2/§4.7.3): тип источника + объект строительства
     source_type: str = "file"
     project_object: str | None = None
-    # Короткий текст первых сегментов документа для превью карточки библиотеки.
-    preview_text: str | None = None
+    # PNG первой страницы для карточки библиотеки: рендерится из PDF/view_orig.
+    preview_url: str | None = None
     created_at: datetime
 
     @classmethod
-    def from_doc(cls, doc: Document, review_count: int = 0, preview_text: str | None = None) -> DocumentOut:
+    def from_doc(cls, doc: Document, review_count: int = 0) -> DocumentOut:
         out = cls.model_validate(doc)
         out.review_count = review_count
-        out.preview_text = preview_text
         out.has_view_orig = bool(doc.s3_key_view_orig)
         out.has_view_ru = bool(doc.s3_key_view_ru)
         out.has_view = out.has_view_orig and out.has_view_ru
+        if out.has_view_orig or (doc.content_type == "application/pdf") or doc.filename.lower().endswith(".pdf"):
+            out.preview_url = f"/api/documents/{doc.id}/preview.png"
         out.exports = [
             kind
             for kind, attr in (

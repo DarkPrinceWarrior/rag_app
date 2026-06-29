@@ -33,30 +33,37 @@ def _owner_filter(stmt, user: User):
     return stmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
 
 
-_PREVIEW_SEGMENT_LIMIT = 32
-_PREVIEW_TEXT_LIMIT = 520
+_PREVIEW_RENDER_WIDTH = 900
 
 
-def _compact_text(value: str) -> str:
-    return " ".join((value or "").split())
+def _preview_source(doc: Document) -> tuple[str, str] | None:
+    """PDF-источник для точного превью первой страницы."""
+    if doc.s3_key_view_orig:
+        return settings.bucket_exports, doc.s3_key_view_orig
+    if doc.content_type == "application/pdf" or doc.filename.lower().endswith(".pdf"):
+        return settings.bucket_originals, doc.s3_key_original
+    return None
 
 
-def _preview_text(segments: list[Segment]) -> str | None:
-    candidates = [s for s in segments if _compact_text(s.source_text)]
-    page_zero = [s for s in candidates if s.page_idx == 0]
-    chosen = page_zero or candidates
-    parts: list[str] = []
-    total = 0
-    for s in chosen:
-        text = _compact_text(s.source_text)
-        if not text:
-            continue
-        parts.append(text)
-        total += len(text)
-        if total >= _PREVIEW_TEXT_LIMIT:
-            break
-    preview = " ".join(parts).strip()
-    return preview[:_PREVIEW_TEXT_LIMIT] if preview else None
+def _render_pdf_preview_png(pdf_bytes: bytes) -> bytes:
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    try:
+        if len(pdf) == 0:
+            raise ValueError("empty PDF")
+        page = pdf[0]
+        try:
+            width = max(float(page.get_width()), 1.0)
+            scale = min(max(_PREVIEW_RENDER_WIDTH / width, 1.0), 2.5)
+            image = page.render(scale=scale, draw_annots=True).to_pil().convert("RGB")
+        finally:
+            page.close()
+    finally:
+        pdf.close()
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 # ТЗ §4.2: PDF (текст/скан), OOXML, изображения документов (JPG/PNG → OCR-ветка),
 # plain-текст (TXT). Изображения оборачиваются в 1-страничный PDF на загрузке.
@@ -160,22 +167,6 @@ async def list_documents(
             .scalars()
             .all()
         )
-        doc_ids = [d.id for d in docs]
-        preview_segments: dict[uuid.UUID, list[Segment]] = {doc_id: [] for doc_id in doc_ids}
-        if doc_ids:
-            rows = (
-                (
-                    await session.execute(
-                        select(Segment)
-                        .where(Segment.document_id.in_(doc_ids), Segment.idx < _PREVIEW_SEGMENT_LIMIT)
-                        .order_by(Segment.document_id, Segment.idx)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for segment in rows:
-                preview_segments.setdefault(segment.document_id, []).append(segment)
         reviews = dict(
             (
                 await session.execute(
@@ -185,10 +176,7 @@ async def list_documents(
                 )
             ).all()
         )
-    return [
-        DocumentOut.from_doc(d, reviews.get(d.id, 0), _preview_text(preview_segments.get(d.id, [])))
-        for d in docs
-    ]
+    return [DocumentOut.from_doc(d, reviews.get(d.id, 0)) for d in docs]
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)
@@ -202,18 +190,7 @@ async def get_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
                 .where(Segment.document_id == doc_id, Segment.needs_review)
             )
         ).scalar_one()
-        preview_segments = (
-            (
-                await session.execute(
-                    select(Segment)
-                    .where(Segment.document_id == doc_id, Segment.idx < _PREVIEW_SEGMENT_LIMIT)
-                    .order_by(Segment.idx)
-                )
-            )
-            .scalars()
-            .all()
-        )
-    return DocumentOut.from_doc(doc, review_count, _preview_text(preview_segments))
+    return DocumentOut.from_doc(doc, review_count)
 
 
 @router.post("/{doc_id}/retry", response_model=DocumentOut)
@@ -361,6 +338,43 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> Response:
             headers={**base, "Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(chunk))},
         )
     return Response(content=data, media_type=media, headers={**base, "Content-Length": str(total)})
+
+
+@router.get("/{doc_id}/preview.png")
+async def document_preview(request: Request, doc_id: uuid.UUID) -> Response:
+    doc = await _get_or_404(request, doc_id)
+    source = _preview_source(doc)
+    if source is None:
+        raise HTTPException(404, "PDF-превью ещё не готово")
+
+    cache_key = f"{doc_id}/preview/page-1.png"
+    storage = request.app.state.storage
+    try:
+        data = await storage.get_bytes(settings.bucket_artifacts, cache_key)
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception:
+        pass
+
+    bucket, key = source
+    try:
+        pdf_bytes = await storage.get_bytes(bucket, key)
+        data = await asyncio.to_thread(_render_pdf_preview_png, pdf_bytes)
+    except Exception as exc:
+        raise HTTPException(404, "не удалось подготовить превью первой страницы") from exc
+
+    try:
+        await storage.put_bytes(settings.bucket_artifacts, cache_key, data, "image/png")
+    except Exception:
+        pass
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # --- Доп. переводы документа (ТЗ §4.3): RU→EN / RU→ZH по запросу --------------

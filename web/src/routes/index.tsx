@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -7,7 +7,6 @@ import {
   Download,
   FolderInput,
   Languages,
-  MessageCircle,
   MoreVertical,
   PlusCircle,
   Trash2,
@@ -623,19 +622,14 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
         </div>
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-4">
-          {d.status === 'done' ? (
-            <Link to="/chat" search={{ doc: d.id }}>
-              <Button variant="ghost" size="sm" className="h-8 rounded-xl px-2.5">
-                <MessageCircle className="h-4 w-4" />
-                Чат
-              </Button>
-            </Link>
-          ) : d.status === 'error' ? (
+          {d.status === 'error' ? (
             <Button variant="ghost" size="sm" className="h-8 rounded-xl px-2.5" onClick={() => void api.retry(d.id)}>
               Повторить
             </Button>
-          ) : (
+          ) : d.status !== 'done' ? (
             <span className="text-xs text-muted-foreground">Обработка…</span>
+          ) : (
+            <span />
           )}
           {!canOpen && d.status === 'done' && (
             <span className="text-[11px] text-muted-foreground">превью готовится</span>
@@ -655,9 +649,9 @@ function DocumentPreview({
   tone: { badge: string; surface: string }
   canOpen: boolean
 }) {
-  const previewText = (d.preview_text ?? '').trim()
-  const lead = previewText.slice(0, 96)
-  const rest = previewText.slice(96)
+  const [previewUnavailable, setPreviewUnavailable] = useState(false)
+  const previewUrl = d.preview_url && !previewUnavailable ? d.preview_url : null
+  const handlePreviewUnavailable = useCallback(() => setPreviewUnavailable(true), [])
   const preview = (
     <div
       className={cn(
@@ -666,30 +660,14 @@ function DocumentPreview({
       )}
     >
       <div className="relative h-[219px] w-[213px] rounded-[6px] border border-[#e3e5ea] bg-white shadow-[0_10px_24px_rgba(30,42,62,0.08)]">
-        {previewText ? (
-          <div className="absolute inset-x-5 bottom-5 top-5 overflow-hidden text-[6.5px] font-medium leading-[1.55] text-[#222226]/70 [word-break:break-word]">
-            <p className="mb-2 border-b border-[#dfe3ea] pb-1.5 font-semibold text-[#222226]/85">
-              {lead}
-            </p>
-            <p>{rest}</p>
-          </div>
+        {previewUrl ? (
+          <AuthenticatedPreviewImage
+            src={previewUrl}
+            alt=""
+            onUnavailable={handlePreviewUnavailable}
+          />
         ) : (
-          <>
-            <div className="absolute left-5 right-5 top-6 h-3 rounded bg-[#222226]/10" />
-            <div className="absolute left-5 right-8 top-12 h-2 rounded bg-[#222226]/[0.07]" />
-            <div className="absolute left-5 right-16 top-[72px] h-2 rounded bg-[#222226]/[0.07]" />
-            <div className="absolute left-5 top-24 h-[54px] w-[74px] rounded border border-[#e3e5ea] bg-gradient-to-br from-[#f4f8ff] to-[#dfe8f5]" />
-            <div className="absolute left-[110px] right-5 top-24 space-y-2">
-              <div className="h-2 rounded bg-[#222226]/[0.08]" />
-              <div className="h-2 rounded bg-[#222226]/[0.08]" />
-              <div className="h-2 w-2/3 rounded bg-[#222226]/[0.08]" />
-            </div>
-            <div className="absolute bottom-8 left-5 right-5 grid grid-cols-3 gap-2">
-              <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
-              <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
-              <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
-            </div>
-          </>
+          <DocumentPreviewPlaceholder />
         )}
       </div>
       {!canOpen && (
@@ -706,6 +684,63 @@ function DocumentPreview({
     <Link to="/view/$id" params={{ id: d.id }} aria-label={`Открыть ${d.filename}`} className="block">
       {preview}
     </Link>
+  )
+}
+
+function AuthenticatedPreviewImage({
+  src,
+  alt,
+  onUnavailable,
+}: {
+  src: string
+  alt: string
+  onUnavailable: () => void
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let obj: string | null = null
+    let cancelled = false
+    setUrl(null)
+    authFetch(src)
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+      .then((blob) => {
+        if (cancelled) return
+        obj = URL.createObjectURL(blob)
+        setUrl(obj)
+      })
+      .catch(() => {
+        if (!cancelled) onUnavailable()
+      })
+    return () => {
+      cancelled = true
+      if (obj) URL.revokeObjectURL(obj)
+    }
+  }, [src, onUnavailable])
+
+  if (!url) {
+    return <DocumentPreviewPlaceholder pulse />
+  }
+  return <img src={url} alt={alt} className="absolute inset-0 h-full w-full object-contain" />
+}
+
+function DocumentPreviewPlaceholder({ pulse = false }: { pulse?: boolean }) {
+  return (
+    <>
+      <div className={cn('absolute left-5 right-5 top-6 h-3 rounded bg-[#222226]/10', pulse && 'animate-pulse')} />
+      <div className={cn('absolute left-5 right-8 top-12 h-2 rounded bg-[#222226]/[0.07]', pulse && 'animate-pulse')} />
+      <div className={cn('absolute left-5 right-16 top-[72px] h-2 rounded bg-[#222226]/[0.07]', pulse && 'animate-pulse')} />
+      <div className="absolute left-5 top-24 h-[54px] w-[74px] rounded border border-[#e3e5ea] bg-gradient-to-br from-[#f4f8ff] to-[#dfe8f5]" />
+      <div className="absolute left-[110px] right-5 top-24 space-y-2">
+        <div className={cn('h-2 rounded bg-[#222226]/[0.08]', pulse && 'animate-pulse')} />
+        <div className={cn('h-2 rounded bg-[#222226]/[0.08]', pulse && 'animate-pulse')} />
+        <div className={cn('h-2 w-2/3 rounded bg-[#222226]/[0.08]', pulse && 'animate-pulse')} />
+      </div>
+      <div className="absolute bottom-8 left-5 right-5 grid grid-cols-3 gap-2">
+        <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+        <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+        <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+      </div>
+    </>
   )
 }
 
