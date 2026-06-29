@@ -24,6 +24,7 @@ import {
 } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
+import { useLibrarySearch } from '@/lib/librarySearch'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui/menu'
@@ -137,8 +138,8 @@ function Library() {
         }}
       />
 
-      <SearchPanel folder={folder} filters={filters} />
       <FilterBar filters={filters} onChange={setFilters} />
+      <SearchResults folder={folder} filters={filters} />
       {upload.isError && <p className="mt-3 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
       <section className="mt-8">
@@ -654,6 +655,9 @@ function DocumentPreview({
   tone: { badge: string; surface: string }
   canOpen: boolean
 }) {
+  const previewText = (d.preview_text ?? '').trim()
+  const lead = previewText.slice(0, 96)
+  const rest = previewText.slice(96)
   const preview = (
     <div
       className={cn(
@@ -662,20 +666,31 @@ function DocumentPreview({
       )}
     >
       <div className="relative h-[219px] w-[213px] rounded-[6px] border border-[#e3e5ea] bg-white shadow-[0_10px_24px_rgba(30,42,62,0.08)]">
-        <div className="absolute left-5 right-5 top-6 h-3 rounded bg-[#222226]/10" />
-        <div className="absolute left-5 right-8 top-12 h-2 rounded bg-[#222226]/[0.07]" />
-        <div className="absolute left-5 right-16 top-[72px] h-2 rounded bg-[#222226]/[0.07]" />
-        <div className="absolute left-5 top-24 h-[54px] w-[74px] rounded border border-[#e3e5ea] bg-gradient-to-br from-[#f4f8ff] to-[#dfe8f5]" />
-        <div className="absolute left-[110px] right-5 top-24 space-y-2">
-          <div className="h-2 rounded bg-[#222226]/[0.08]" />
-          <div className="h-2 rounded bg-[#222226]/[0.08]" />
-          <div className="h-2 w-2/3 rounded bg-[#222226]/[0.08]" />
-        </div>
-        <div className="absolute bottom-8 left-5 right-5 grid grid-cols-3 gap-2">
-          <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
-          <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
-          <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
-        </div>
+        {previewText ? (
+          <div className="absolute inset-x-5 bottom-5 top-5 overflow-hidden text-[6.5px] font-medium leading-[1.55] text-[#222226]/70 [word-break:break-word]">
+            <p className="mb-2 border-b border-[#dfe3ea] pb-1.5 font-semibold text-[#222226]/85">
+              {lead}
+            </p>
+            <p>{rest}</p>
+          </div>
+        ) : (
+          <>
+            <div className="absolute left-5 right-5 top-6 h-3 rounded bg-[#222226]/10" />
+            <div className="absolute left-5 right-8 top-12 h-2 rounded bg-[#222226]/[0.07]" />
+            <div className="absolute left-5 right-16 top-[72px] h-2 rounded bg-[#222226]/[0.07]" />
+            <div className="absolute left-5 top-24 h-[54px] w-[74px] rounded border border-[#e3e5ea] bg-gradient-to-br from-[#f4f8ff] to-[#dfe8f5]" />
+            <div className="absolute left-[110px] right-5 top-24 space-y-2">
+              <div className="h-2 rounded bg-[#222226]/[0.08]" />
+              <div className="h-2 rounded bg-[#222226]/[0.08]" />
+              <div className="h-2 w-2/3 rounded bg-[#222226]/[0.08]" />
+            </div>
+            <div className="absolute bottom-8 left-5 right-5 grid grid-cols-3 gap-2">
+              <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+              <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+              <div className="h-12 rounded border border-[#e3e5ea] bg-[#222226]/[0.025]" />
+            </div>
+          </>
+        )}
       </div>
       {!canOpen && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/45 text-xs font-medium text-muted-foreground">
@@ -708,30 +723,32 @@ async function downloadFile(url: string) {
   URL.revokeObjectURL(a.href)
 }
 
-function SearchPanel({ folder, filters }: { folder: string; filters: DocFilters }) {
-  const [q, setQ] = useState('')
-  const [submitted, setSubmitted] = useState('')
+function SearchResults({ folder, filters }: { folder: string; filters: DocFilters }) {
+  const { submitted, clearSearch } = useLibrarySearch()
   const searchQ = useQuery({
     queryKey: ['search', submitted, folder, filters],
     queryFn: () => api.search(submitted, { ...(folder ? { folder_id: folder } : {}), ...filters }),
     enabled: submitted.length >= 2,
   })
+  if (submitted.length < 2) return null
+
   return (
-    <div className="mt-4">
-      <div className="flex gap-2">
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && setSubmitted(q.trim())}
-          placeholder="Поиск по библиотеке: по содержанию и имени файла…"
-        />
-        <Button onClick={() => setSubmitted(q.trim())} disabled={q.trim().length < 2}>
-          Найти
+    <div className="mt-4 rounded-lg border border-[#e5e5e5] bg-card p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-[#222226]">Результаты поиска: {submitted}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">По имени файла и содержимому документов</div>
+        </div>
+        <Button variant="ghost" size="sm" className="rounded-xl" onClick={clearSearch}>
+          Сбросить
         </Button>
       </div>
-      {searchQ.data && (
-        <div className="mt-2 space-y-1.5">
-          {searchQ.data.length === 0 && <p className="text-sm text-muted-foreground">Ничего не найдено.</p>}
+      {searchQ.isLoading ? (
+        <p className="mt-3 text-sm text-muted-foreground">Ищу…</p>
+      ) : (
+        searchQ.data && (
+          <div className="mt-3 space-y-1.5">
+            {searchQ.data.length === 0 && <p className="text-sm text-muted-foreground">Ничего не найдено.</p>}
           {searchQ.data.map((h, i) => (
             <Link
               key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
@@ -743,13 +760,14 @@ function SearchPanel({ folder, filters }: { folder: string; filters: DocFilters 
               <div className="flex justify-between gap-2">
                 <span className="truncate font-medium">{h.filename}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {h.match === 'filename' ? '🔎 имя файла' : h.heading_path}
+                  {h.match === 'filename' ? 'имя файла' : h.heading_path}
                 </span>
               </div>
               {h.snippet && <div className="mt-0.5 line-clamp-2 text-muted-foreground">{h.snippet}</div>}
             </Link>
           ))}
-        </div>
+          </div>
+        )
       )}
     </div>
   )

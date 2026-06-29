@@ -36,6 +36,7 @@ export interface Document {
   source_lang?: string | null // язык-источник, определён автоматически (ru|en|zh|auto); цель всегда ru
   source_type?: string // file | web (ТЗ §4.7.2)
   project_object?: string | null // объект строительства (ТЗ §4.7.2/§4.7.3)
+  preview_text?: string | null
   created_at: string
 }
 

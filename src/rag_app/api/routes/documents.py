@@ -32,6 +32,32 @@ def _owner_filter(stmt, user: User):
         return stmt
     return stmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
 
+
+_PREVIEW_SEGMENT_LIMIT = 32
+_PREVIEW_TEXT_LIMIT = 520
+
+
+def _compact_text(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+def _preview_text(segments: list[Segment]) -> str | None:
+    candidates = [s for s in segments if _compact_text(s.source_text)]
+    page_zero = [s for s in candidates if s.page_idx == 0]
+    chosen = page_zero or candidates
+    parts: list[str] = []
+    total = 0
+    for s in chosen:
+        text = _compact_text(s.source_text)
+        if not text:
+            continue
+        parts.append(text)
+        total += len(text)
+        if total >= _PREVIEW_TEXT_LIMIT:
+            break
+    preview = " ".join(parts).strip()
+    return preview[:_PREVIEW_TEXT_LIMIT] if preview else None
+
 # ТЗ §4.2: PDF (текст/скан), OOXML, изображения документов (JPG/PNG → OCR-ветка),
 # plain-текст (TXT). Изображения оборачиваются в 1-страничный PDF на загрузке.
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".jpg", ".jpeg", ".png", ".txt"}
@@ -134,6 +160,22 @@ async def list_documents(
             .scalars()
             .all()
         )
+        doc_ids = [d.id for d in docs]
+        preview_segments: dict[uuid.UUID, list[Segment]] = {doc_id: [] for doc_id in doc_ids}
+        if doc_ids:
+            rows = (
+                (
+                    await session.execute(
+                        select(Segment)
+                        .where(Segment.document_id.in_(doc_ids), Segment.idx < _PREVIEW_SEGMENT_LIMIT)
+                        .order_by(Segment.document_id, Segment.idx)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for segment in rows:
+                preview_segments.setdefault(segment.document_id, []).append(segment)
         reviews = dict(
             (
                 await session.execute(
@@ -143,7 +185,10 @@ async def list_documents(
                 )
             ).all()
         )
-    return [DocumentOut.from_doc(d, reviews.get(d.id, 0)) for d in docs]
+    return [
+        DocumentOut.from_doc(d, reviews.get(d.id, 0), _preview_text(preview_segments.get(d.id, [])))
+        for d in docs
+    ]
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)
@@ -157,7 +202,18 @@ async def get_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
                 .where(Segment.document_id == doc_id, Segment.needs_review)
             )
         ).scalar_one()
-    return DocumentOut.from_doc(doc, review_count)
+        preview_segments = (
+            (
+                await session.execute(
+                    select(Segment)
+                    .where(Segment.document_id == doc_id, Segment.idx < _PREVIEW_SEGMENT_LIMIT)
+                    .order_by(Segment.idx)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return DocumentOut.from_doc(doc, review_count, _preview_text(preview_segments))
 
 
 @router.post("/{doc_id}/retry", response_model=DocumentOut)
