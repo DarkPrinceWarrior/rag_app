@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X, AlertTriangle, Info, CheckCircle2, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 
 /** Базовая модалка: затемнённый бэкдроп, центр, закрытие по Esc и клику вне. */
 export function Modal({
@@ -39,11 +40,11 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
-        className={
-          'w-full max-w-md rounded-xl border bg-card shadow-2xl ' +
-          'animate-in fade-in zoom-in-95 duration-150 ' +
-          className
-        }
+        className={cn(
+          'w-full max-w-md rounded-xl border bg-card shadow-2xl',
+          'animate-in fade-in zoom-in-95 duration-150',
+          className,
+        )}
       >
         {children}
       </div>

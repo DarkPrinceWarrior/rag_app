@@ -5,10 +5,12 @@ import {
   Check,
   CloudUpload,
   Download,
+  FileText,
   FolderInput,
   Languages,
   MoreVertical,
   PlusCircle,
+  Search,
   Trash2,
   X,
 } from 'lucide-react'
@@ -25,9 +27,8 @@ import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 import { useLibrarySearch } from '@/lib/librarySearch'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui/menu'
-import { ConfirmDialog } from '@/components/ui/modal'
+import { ConfirmDialog, Modal } from '@/components/ui/modal'
 import { StatusBadge } from '@/components/StatusBadge'
 
 export const Route = createFileRoute('/')({ component: Library })
@@ -83,6 +84,18 @@ function formatFileCount(count: number) {
   const mod10 = count % 10
   const mod100 = count % 100
   const word = mod10 === 1 && mod100 !== 11 ? 'файл' : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? 'файла' : 'файлов'
+  return `${count} ${word}`
+}
+
+function formatDocCount(count: number) {
+  const mod10 = count % 10
+  const mod100 = count % 100
+  const word =
+    mod10 === 1 && mod100 !== 11
+      ? 'документ'
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? 'документа'
+        : 'документов'
   return `${count} ${word}`
 }
 
@@ -174,7 +187,13 @@ function Library() {
               </button>
             )}
           </div>
-          <NewFolder onCreated={() => qc.invalidateQueries({ queryKey: ['folders'] })} />
+          <NewFolder
+            docs={allDocs}
+            onCreated={() => {
+              qc.invalidateQueries({ queryKey: ['folders'] })
+              qc.invalidateQueries({ queryKey: ['documents'] })
+            }}
+          />
         </div>
         <div className="mt-6 flex gap-2 overflow-x-auto pb-2">
           {foldersQ.isLoading && <p className="py-10 text-sm text-muted-foreground">Загрузка папок…</p>}
@@ -376,19 +395,10 @@ function FolderIllustration({ active }: { active: boolean }) {
   )
 }
 
-function NewFolder({ onCreated }: { onCreated: () => void }) {
+function NewFolder({ docs, onCreated }: { docs: Document[]; onCreated: () => void }) {
   const [open, setOpen] = useState(false)
-  const [name, setName] = useState('')
-  const create = useMutation({
-    mutationFn: () => api.createFolder(name.trim()),
-    onSuccess: () => {
-      setName('')
-      setOpen(false)
-      onCreated()
-    },
-  })
-  if (!open)
-    return (
+  return (
+    <>
       <Button
         variant="ghost"
         className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
@@ -397,26 +407,191 @@ function NewFolder({ onCreated }: { onCreated: () => void }) {
         <PlusCircle className="h-4 w-4" />
         Создать папку
       </Button>
-    )
+      <CreateFolderModal open={open} onClose={() => setOpen(false)} docs={docs} onCreated={onCreated} />
+    </>
+  )
+}
+
+// Модалка создания папки (Figma node 54:3374): имя + выбор документов сразу
+// при создании. Бэкенд не принимает документы при создании папки — на клиенте
+// создаём папку, затем перемещаем выбранные документы (moveDocument).
+function CreateFolderModal({
+  open,
+  onClose,
+  docs,
+  onCreated,
+}: {
+  open: boolean
+  onClose: () => void
+  docs: Document[]
+  onCreated: () => void
+}) {
+  const [name, setName] = useState('')
+  const [docSearch, setDocSearch] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  const reset = () => {
+    setName('')
+    setDocSearch('')
+    setSelected(new Set())
+  }
+
+  const create = useMutation({
+    mutationFn: async () => {
+      const folder = await api.createFolder(name.trim())
+      await Promise.all([...selected].map((id) => api.moveDocument(id, folder.id)))
+      return folder
+    },
+    onSuccess: () => {
+      reset()
+      onCreated()
+      onClose()
+    },
+  })
+
+  const handleClose = () => {
+    if (create.isPending) return
+    reset()
+    onClose()
+  }
+
+  const toggle = (id: string) =>
+    setSelected((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const term = docSearch.trim().toLocaleLowerCase('ru-RU')
+  const visibleDocs = term ? docs.filter((d) => d.filename.toLocaleLowerCase('ru-RU').includes(term)) : docs
+
   return (
-    <span className="flex items-center gap-1 rounded-2xl bg-[#222226]/5 p-1">
-      <Input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && name.trim()) create.mutate()
-          if (e.key === 'Escape') setOpen(false)
-        }}
-        // увели курсор, ничего не введя — поле сворачивается (задержка, чтобы успел клик по «ок»)
-        onBlur={() => setTimeout(() => !name.trim() && setOpen(false), 120)}
-        placeholder="название"
-        className="h-8 w-40 rounded-xl border-0 bg-white"
-      />
-      <Button size="sm" className="rounded-xl" disabled={!name.trim()} onClick={() => create.mutate()}>
-        ок
-      </Button>
-    </span>
+    <Modal
+      open={open}
+      onClose={handleClose}
+      labelledBy="create-folder-title"
+      className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border-[#e5e5e5] p-0"
+    >
+      <div className="flex shrink-0 items-center justify-between border-b border-[#e5e5e5] px-8 py-6">
+        <h2 id="create-folder-title" className="text-base font-semibold leading-[1.5] text-[#222226]">
+          Создать папку
+        </h2>
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="Закрыть"
+          className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#222226]/5 text-[#424247] transition hover:bg-[#222226]/10"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-8">
+        <div>
+          <label className="text-[11.11px] font-medium leading-[1.5] tracking-[-0.0889px] text-[#c1c1c1]">
+            Название папки
+          </label>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && name.trim() && !create.isPending) create.mutate()
+            }}
+            placeholder="Название папки..."
+            className="mt-1 w-full border-0 border-b border-[#e5e5e5] pb-4 text-[28px] font-medium leading-[1.3] tracking-[-0.4645px] text-[#222226] outline-none placeholder:text-[#222226]/22"
+          />
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
+          <h3 className="text-base font-semibold leading-[1.5] text-[#222226]">
+            Добавить документы в папку
+          </h3>
+          <div className="flex shrink-0 items-center gap-2.5 rounded-[32px] bg-[#f3f3f3] px-4 py-3">
+            <Search className="h-5 w-5 shrink-0 text-[#222226]/40" />
+            <input
+              value={docSearch}
+              onChange={(e) => setDocSearch(e.target.value)}
+              placeholder="Поиск документов"
+              className="w-full border-0 bg-transparent text-sm font-medium text-[#222226] outline-none placeholder:text-[#222226]/22"
+            />
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-[#e5e5e5]">
+            {visibleDocs.length === 0 && (
+              <div className="p-4 text-center text-sm text-muted-foreground">Документы не найдены</div>
+            )}
+            {visibleDocs.map((d) => {
+              const checked = selected.has(d.id)
+              return (
+                <label
+                  key={d.id}
+                  className={cn(
+                    'flex cursor-pointer items-center gap-3 border-b border-[#e5e5e5] p-4 last:border-b-0',
+                    checked ? 'bg-[#392dc1]/[0.06]' : 'bg-white hover:bg-[#222226]/[0.02]',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                      checked ? 'bg-[#4b4ce6]' : 'bg-[#f3f3f3]',
+                    )}
+                  >
+                    <FileText className={cn('h-4 w-4', checked ? 'text-white' : 'text-[#c1c1c1]')} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[14.3px] font-medium leading-[1.5] text-[#222226]">
+                      {d.filename}
+                    </span>
+                    <span className="block text-[11.11px] font-medium leading-[1.5] text-[#c1c1c1]">
+                      {formatDate(d.created_at)}
+                    </span>
+                  </span>
+                  <input type="checkbox" checked={checked} onChange={() => toggle(d.id)} className="sr-only" />
+                  <span
+                    className={cn(
+                      'flex h-5 w-5 shrink-0 items-center justify-center rounded border',
+                      checked ? 'border-[#4b4ce6] bg-[#4b4ce6]' : 'border-[#e5e5e5] bg-white',
+                    )}
+                  >
+                    {checked && <Check className="h-3 w-3 text-white" />}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+
+        {create.isError && (
+          <p className="text-xs text-destructive">Ошибка создания папки: {String(create.error)}</p>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center justify-between gap-4 border-t border-[#e5e5e5] px-8 py-6">
+        <p className="text-[14.3px] font-medium leading-[1.5] text-[#222226]">
+          {selected.size > 0 ? `Выбрано: ${formatDocCount(selected.size)}` : ''}
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={handleClose}
+            disabled={create.isPending}
+            className="rounded-2xl bg-[#222226]/5 px-6 py-3 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10 disabled:opacity-50"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={() => create.mutate()}
+            disabled={!name.trim() || create.isPending}
+            className="rounded-2xl bg-[#4b4ce6] px-6 py-3 text-base font-semibold text-[#ebf1ff] transition hover:opacity-90 disabled:opacity-50"
+          >
+            {create.isPending ? 'Создаю…' : 'Создать папку'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
