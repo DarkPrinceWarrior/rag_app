@@ -67,6 +67,9 @@ class SegmentOut(BaseModel):
 
 class SegmentPatch(BaseModel):
     translated_text: str
+    # ручной флаг «Требует проверки» (отдельный экран правки, Figma 44:775):
+    # если не передан — правка текста снимает флаг автоматически, как раньше.
+    needs_review: bool | None = None
 
 
 @router.get("/documents/{doc_id}/segments", response_model=list[SegmentOut])
@@ -126,7 +129,7 @@ async def patch_segment(request: Request, segment_id: uuid.UUID, body: SegmentPa
                 )
             )
         seg.translated_text = body.translated_text
-        seg.needs_review = False  # ручная правка снимает флаг валидации
+        seg.needs_review = body.needs_review if body.needs_review is not None else False
         await session.commit()
         await session.refresh(seg)
     await audit(

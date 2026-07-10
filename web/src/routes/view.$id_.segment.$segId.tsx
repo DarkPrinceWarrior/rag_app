@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Check } from 'lucide-react'
 import { api } from '@/lib/api'
-import { DocAssistant } from '@/components/DocAssistant'
-import { DocRead, PaneHeader, EditBar } from './view.$id'
+import { Markdown } from '@/components/Markdown'
+import { cn } from '@/lib/utils'
+import { PaneHeader } from './view.$id'
 
-// Отдельный экран правки сегмента (Figma 44:1037, взамен правки на месте
-// внутри выделенной области): тот же двухколоночный «текст»-режим, но целевой
-// сегмент всегда выделен/редактируется, остальные — контекст (размыт).
-// Глоссарий и метка на скролле из макета не переносим — этих фич нет.
+// Отдельный экран правки сегмента (Figma 44:775/44:1072, взамен правки на
+// месте внутри выделенной области): только два блока — оригинал и перевод,
+// без остального документа, без прокрутки и без ИИ-консультанта. Перевод
+// редактируется сразу («свободное редактирование» — своей текстовой зоны
+// «выделить, чтобы редактировать» не нужно). «Требует проверки» — ручной
+// флаг (не только автоматический от числовой валидации).
 export const Route = createFileRoute('/view/$id_/segment/$segId')({
   component: SegmentEditor,
 })
@@ -17,13 +20,11 @@ export const Route = createFileRoute('/view/$id_/segment/$segId')({
 function SegmentEditor() {
   const { id, segId } = Route.useParams()
   const navigate = Route.useNavigate()
-  const [pendingText, setPendingText] = useState('')
-  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState('')
+  const [needsReview, setNeedsReview] = useState(false)
+  const [initialized, setInitialized] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [assistantOpen, setAssistantOpen] = useState(false)
-  const sourceColRef = useRef<HTMLDivElement>(null)
-  const translatedColRef = useRef<HTMLDivElement>(null)
+  const [error, setError] = useState('')
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -31,38 +32,27 @@ function SegmentEditor() {
   const target = segs.find((s) => s.id === segId)
 
   useEffect(() => {
-    for (const ref of [sourceColRef, translatedColRef]) {
-      ref.current?.querySelector(`[data-seg="${segId}"]`)?.scrollIntoView({ block: 'center' })
+    if (target && !initialized) {
+      setText(target.translated_text ?? '')
+      setNeedsReview(target.needs_review)
+      setInitialized(true)
     }
-  }, [segId, segs.length])
+  }, [target, initialized])
 
-  function startEdit() {
-    if (!target) return
-    setPendingText(target.translated_text ?? '')
-    setEditing(true)
+  function goBack() {
+    navigate({ to: '/view/$id', params: { id } })
   }
-  function cancelEdit() {
-    setEditing(false)
-    setPendingText('')
-  }
-  async function saveEdit() {
-    if (!target) return
-    if (pendingText === (target.translated_text ?? '')) {
-      setEditing(false)
-      return
-    }
+
+  async function save() {
     setSaving(true)
-    setMsg('Сохранение…')
+    setError('')
     try {
-      await api.patchSegment(segId, pendingText)
-      setMsg('Сохранено')
-      navigate({ to: '/view/$id', params: { id } })
-      return
+      await api.patchSegment(segId, text, needsReview)
+      goBack()
     } catch {
-      setMsg('Ошибка сохранения')
+      setError('Ошибка сохранения')
+      setSaving(false)
     }
-    setSaving(false)
-    setTimeout(() => setMsg(''), 2000)
   }
 
   if (segsQ.isLoading || docQ.isLoading)
@@ -80,7 +70,7 @@ function SegmentEditor() {
 
   return (
     <div>
-      <div className="sticky top-[49px] z-[5] flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
+      <div className="flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
         <Link
           to="/view/$id"
           params={{ id }}
@@ -89,51 +79,79 @@ function SegmentEditor() {
           <ArrowLeft className="h-4 w-4" />
           {docQ.data?.filename}
         </Link>
-        <span className="ml-auto text-xs text-primary">{msg}</span>
+        {error && <span className="ml-auto text-xs text-destructive">{error}</span>}
       </div>
-      <div className="flex h-[calc(100vh-137px)]">
-        <div className="w-1/2 border-r">
-          <div ref={sourceColRef} className="h-full overflow-y-auto">
-            <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
-            <article className="mx-auto max-w-3xl px-6 py-4">
-              <DocRead segs={segs} field="source" citedId={null} selectedId={segId} onSelectSeg={() => {}} />
-            </article>
+
+      <div className="flex flex-wrap items-start justify-center gap-6 px-6 py-10 md:px-[168px]">
+        <div className="w-full max-w-[548px]">
+          <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
+          <div className="mt-2 rounded-lg bg-[#222226]/[0.02] p-3">
+            <Markdown content={target.source_text} className="text-[14.3px] leading-relaxed" />
           </div>
         </div>
-        <div className="w-1/2">
-          <div ref={translatedColRef} className="h-full overflow-y-auto">
-            <PaneHeader label="Перевод" lang="ru" />
-            <article className="mx-auto max-w-3xl px-6 py-4">
-              <DocRead
-                segs={segs}
-                field="translated"
-                citedId={null}
-                editable
-                selectedId={segId}
-                onSelectSeg={() => {}}
-                editingId={editing ? segId : null}
-                pendingText={pendingText}
-                onPendingTextChange={setPendingText}
-                onStartEdit={startEdit}
-              />
-            </article>
+
+        <div className="w-full max-w-[548px]">
+          <PaneHeader label="Перевод" lang="ru" />
+          <div className="mt-2 flex flex-col gap-4 rounded-lg border border-[#4b4ce6] bg-[#392dc1]/[0.06] p-3">
+            {needsReview && (
+              <span className="inline-flex w-fit items-center rounded-full bg-[#952d2d]/10 px-2 py-1 text-[11px] font-medium text-[#c43232]">
+                Требует проверки
+              </span>
+            )}
+            <textarea
+              autoFocus
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={Math.max(3, Math.ceil(text.length / 60))}
+              className="w-full resize-none whitespace-pre-wrap bg-transparent text-[14.3px] leading-relaxed outline-none"
+            />
+          </div>
+
+          <div className="mt-4 flex flex-col gap-4">
+            <button
+              type="button"
+              onClick={() => setNeedsReview((v) => !v)}
+              className={cn(
+                'flex w-fit items-center gap-2 rounded-lg px-4 py-3 text-[16px] font-medium transition',
+                needsReview
+                  ? 'bg-[#952d2d]/10 text-[#c43232]'
+                  : 'bg-[#222226]/[0.02] text-[#424247] hover:bg-[#222226]/[0.05]',
+              )}
+            >
+              <span
+                className={cn(
+                  'flex h-5 w-5 shrink-0 items-center justify-center rounded border',
+                  needsReview ? 'border-[#c43232] bg-[#c43232]' : 'border-[#e5e5e5] bg-white',
+                )}
+              >
+                {needsReview && <Check className="h-3 w-3 text-white" />}
+              </span>
+              Требует проверки
+            </button>
+
+            <div className="h-px bg-[#e5e5e5]" />
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={goBack}
+                disabled={saving}
+                className="flex-1 rounded-2xl bg-[#222226]/5 px-6 py-3 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10 disabled:opacity-50"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => void save()}
+                disabled={saving}
+                className="flex-1 rounded-2xl bg-[#4b4ce6] px-6 py-3 text-base font-semibold text-[#ebf1ff] transition hover:opacity-90 disabled:opacity-50"
+              >
+                {saving ? 'Сохраняю…' : 'Сохранить и назад'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
-      <EditBar
-        editing={editing}
-        saving={saving}
-        onCancel={cancelEdit}
-        onSave={() => void saveEdit()}
-        assistantOpen={assistantOpen}
-        onToggleAssistant={() => setAssistantOpen((o) => !o)}
-      />
-      <DocAssistant
-        docId={id}
-        filename={docQ.data?.filename}
-        open={assistantOpen}
-        onOpenChange={setAssistantOpen}
-      />
     </div>
   )
 }
