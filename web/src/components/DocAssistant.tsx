@@ -31,13 +31,22 @@ export function DocAssistant({
   page,
   pageText,
   filename,
+  open: openProp,
+  onOpenChange,
 }: {
   docId: string
   page?: number
   pageText?: string // текст открытой страницы (оригинал/перевод, включая таблицы)
   filename?: string
+  // Управляемый режим (кнопка «Открыть» в нижнем баре вьювера, ТЗ §4.7.2):
+  // когда open передан, свой плавающий лаунчер не рисуем — открытием управляет родитель.
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const controlled = openProp !== undefined
+  const [openState, setOpenState] = useState(false)
+  const open = controlled ? openProp : openState
+  const setOpen = controlled ? (onOpenChange ?? (() => {})) : setOpenState
   const [messages, setMessages] = useState<AMsg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -101,7 +110,7 @@ export function DocAssistant({
   }
 
   if (!open)
-    return (
+    return controlled ? null : (
       <button
         onClick={() => setOpen(true)}
         title="Ассистент по документу"

@@ -5,7 +5,7 @@ import { api, downloadUrl, EXPORT_LABELS, SEGMENTS_LIMIT, type Segment, type Seg
 import { Button } from '@/components/ui/button'
 import { Menu, MenuItem, MenuLabel } from '@/components/ui/menu'
 import { ConfirmDialog } from '@/components/ui/modal'
-import { Download, MoreVertical, Maximize2 } from 'lucide-react'
+import { Download, MoreVertical, Maximize2, Pencil, MessageCircle } from 'lucide-react'
 import { PdfPane, type Highlight, type Region } from '@/components/PdfPane'
 import { DocAssistant } from '@/components/DocAssistant'
 import { XlsxView } from '@/components/XlsxView'
@@ -13,6 +13,7 @@ import { PptxView } from '@/components/PptxView'
 import { Markdown } from '@/components/Markdown'
 import { authFetch } from '@/lib/auth'
 import { cleanMath } from '@/lib/cleanMath'
+import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/view/$id')({
   validateSearch: (s: Record<string, unknown>): { seg?: string; page?: number } => ({
@@ -52,7 +53,6 @@ function Viewer() {
   const [active, setActive] = useState<Highlight | null>(null)
   // текущая страница (общая для оригинала слева и перевода справа)
   const [page, setPage] = useState(1)
-  const [numPages, setNumPages] = useState(0)
   // «документ (PDF)» / docx «как в Microsoft» — переведённый PDF с другой
   // пагинацией: НЕ синхронизируем с оригиналом, а ходим кросс-навигацией по клику.
   const [docPage, setDocPage] = useState(1) // правая панель pdf_text (reflow)
@@ -62,6 +62,15 @@ function Viewer() {
   const [rightHi, setRightHi] = useState<Highlight | null>(null)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
+  // «текст»-режим (Figma 41:1317): выделение сегмента гасит остальные, редактирование
+  // перевода — явным циклом Редактировать → Сохранить/Вернуть (а не по blur).
+  const [selectedSegId, setSelectedSegId] = useState<string | null>(null)
+  const [editingSegId, setEditingSegId] = useState<string | null>(null)
+  const [pendingText, setPendingText] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [assistantOpen, setAssistantOpen] = useState(false)
+  const sourceColRef = useRef<HTMLDivElement>(null)
+  const translatedColRef = useRef<HTMLDivElement>(null)
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -409,6 +418,52 @@ function Viewer() {
     return best != null ? best + 1 : null
   }
 
+  // --- «текст»-режим (Figma 41:1317): выделение сегмента с обеих сторон сразу,
+  // редактирование — явным Редактировать → Сохранить/Вернуть (не по blur). ---
+  function scrollSegIntoView(segId: string) {
+    for (const ref of [sourceColRef, translatedColRef]) {
+      const el = ref.current?.querySelector(`[data-seg="${segId}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }
+  function selectSeg(segId: string) {
+    if (editingSegId && editingSegId !== segId) return // сначала завершить текущую правку
+    setSelectedSegId((cur) => {
+      const next = cur === segId ? null : segId
+      if (next) setTimeout(() => scrollSegIntoView(next), 0)
+      return next
+    })
+  }
+  function startEdit(s: Segment) {
+    setEditingSegId(s.id)
+    setPendingText(s.translated_text ?? '')
+  }
+  function cancelEdit() {
+    setEditingSegId(null)
+    setPendingText('')
+  }
+  async function saveEdit() {
+    if (!editingSegId) return
+    const seg = segs.find((s) => s.id === editingSegId)
+    if (!seg) return
+    if (pendingText === (seg.translated_text ?? '')) {
+      setEditingSegId(null)
+      return
+    }
+    setSavingEdit(true)
+    setMsg('Сохранение…')
+    try {
+      await api.patchSegment(editingSegId, pendingText)
+      await segsQ.refetch()
+      setMsg('Сохранено')
+    } catch {
+      setMsg('Ошибка сохранения')
+    }
+    setSavingEdit(false)
+    setEditingSegId(null)
+    setTimeout(() => setMsg(''), 2000)
+  }
+
   // PDF: слева оригинал, справа перевод; кросс-навигация по клику (страницы не синхронны).
   if (isPdf) {
     const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
@@ -416,69 +471,102 @@ function Viewer() {
       .map(segPlainText)
       .filter((t) => t.trim())
       .join('\n')
+    const maxPage = segs.length ? Math.max(...segs.map((s) => s.page_idx ?? 0)) + 1 : 1
+    const textMode = !hasTransPdf || rightText
     return (
       <div>
         {header}
-        <div className="flex h-[calc(100vh-97px)]">
-          <div className="w-1/2 border-r">
-            <PdfPane
-              docId={id}
-              page={page}
-              fitWidth
-              highlight={leftHi || active}
-              onPageChange={setPage}
-              onNumPages={setNumPages}
-              regions={hasTransPdf && !rightText ? regionsFor('left', page) : undefined}
-              onRegionClick={(sid) => crossToRight(sid, setDocPage)}
-            />
-          </div>
-          <div className="flex w-1/2 flex-col">
-            {hasTransPdf && !rightText ? (
-              // «документ (PDF)» — reflow-PDF перевода. Своя пагинация (не синхронна с
-              // оригиналом); связь — кросс-навигацией по клику (regions + highlight).
-              <PdfPane
-                docId={id}
-                urlKind="pdf"
-                label="перевод · документ — кликните фрагмент, чтобы найти его в оригинале"
-                fitWidth
-                page={docPage}
-                highlight={rightHi}
-                onPageChange={setDocPage}
-                regions={regionsFor('right', docPage)}
-                onRegionClick={crossToLeft}
-              />
-            ) : (
-              <>
-                <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                    ←
-                  </Button>
-                  <span className="text-muted-foreground">
-                    стр. {page} / {numPages || '…'}
-                  </span>
-                  <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
-                    →
-                  </Button>
+        <div className="flex h-[calc(100vh-97px)] flex-col">
+          {textMode && (
+            <div className="flex items-center gap-2 border-b bg-card px-4 py-1.5 text-sm">
+              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                ←
+              </Button>
+              <span className="text-muted-foreground">
+                стр. {page} / {maxPage}
+              </span>
+              <Button variant="ghost" size="sm" disabled={page >= maxPage} onClick={() => setPage(page + 1)}>
+                →
+              </Button>
+            </div>
+          )}
+          <div className="flex flex-1 overflow-hidden">
+            <div className="w-1/2 border-r">
+              {textMode ? (
+                <div ref={sourceColRef} className="h-full overflow-y-auto">
+                  <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
+                  <article className="mx-auto max-w-3xl px-6 py-4">
+                    <DocRead segs={pageSegs} field="source" citedId={cited} selectedId={selectedSegId} onSelectSeg={selectSeg} />
+                  </article>
                 </div>
-                <div className="flex-1 overflow-auto">
-                  <article className="mx-auto max-w-3xl px-6 py-5">
+              ) : (
+                <PdfPane
+                  docId={id}
+                  page={page}
+                  fitWidth
+                  highlight={leftHi || active}
+                  onPageChange={setPage}                  regions={hasTransPdf ? regionsFor('left', page) : undefined}
+                  onRegionClick={(sid) => crossToRight(sid, setDocPage)}
+                />
+              )}
+            </div>
+            <div className="flex w-1/2 flex-col">
+              {textMode ? (
+                <div ref={translatedColRef} className="h-full overflow-y-auto">
+                  <PaneHeader label="Перевод" lang="ru" />
+                  <article className="mx-auto max-w-3xl px-6 py-4">
                     <DocRead
                       segs={pageSegs}
+                      field="translated"
                       citedId={cited}
                       editable
-                      onSaved={setMsg}
-                      onPick={(s) => {
-                        const h = highlightOf(s)
-                        if (h) setActive(h)
-                      }}
+                      selectedId={selectedSegId}
+                      onSelectSeg={selectSeg}
+                      editingId={editingSegId}
+                      pendingText={pendingText}
+                      onPendingTextChange={setPendingText}
+                      onStartEdit={startEdit}
                     />
                   </article>
                 </div>
-              </>
-            )}
+              ) : (
+                // «документ (PDF)» — reflow-PDF перевода. Своя пагинация (не синхронна с
+                // оригиналом); связь — кросс-навигацией по клику (regions + highlight).
+                <PdfPane
+                  docId={id}
+                  urlKind="pdf"
+                  label="перевод · документ — кликните фрагмент, чтобы найти его в оригинале"
+                  fitWidth
+                  page={docPage}
+                  highlight={rightHi}
+                  onPageChange={setDocPage}
+                  regions={regionsFor('right', docPage)}
+                  onRegionClick={crossToLeft}
+                />
+              )}
+            </div>
           </div>
         </div>
-        <DocAssistant docId={id} page={page} pageText={pageText} filename={docQ.data?.filename} />
+        {textMode && (
+          <EditBar
+            editing={!!editingSegId}
+            saving={savingEdit}
+            onCancel={cancelEdit}
+            onSave={() => void saveEdit()}
+            assistantOpen={assistantOpen}
+            onToggleAssistant={() => setAssistantOpen((o) => !o)}
+          />
+        )}
+        <DocAssistant
+          docId={id}
+          page={page}
+          pageText={pageText}
+          filename={docQ.data?.filename}
+          // Вне «текст»-режима триггер открытия — свой плавающий лаунчер
+          // DocAssistant (нижнего бара с «Открыть» здесь нет).
+          open={textMode ? assistantOpen : undefined}
+          onOpenChange={textMode ? setAssistantOpen : undefined}
+        />
       </div>
     )
   }
@@ -489,75 +577,114 @@ function Viewer() {
   // оригинала) — поэтому правый «текст» листается СИНХРОННО с левым, как у PDF.
   if (hasViewOrig && docQ.data?.kind === 'docx') {
     const pageSegs = segs.filter((s) => (s.page_idx ?? 0) === page - 1)
+    const maxPage = segs.length ? Math.max(...segs.map((s) => s.page_idx ?? 0)) + 1 : 1
+    const textMode = rightText
     return (
       <div>
         {header}
-        <div className="flex h-[calc(100vh-97px)]">
-          <div className="w-1/2 border-r">
-            <PdfPane
-              docId={id}
-              urlKind="view_orig"
-              label="оригинал"
-              fitWidth
-              page={page}
-              highlight={leftHi}
-              onPageChange={setPage}
-              onNumPages={setNumPages}
-              regions={!rightText ? regionsFor('left', page) : undefined}
-              onRegionClick={(sid) => crossToRight(sid, setRuPage)}
-            />
-          </div>
-          <div className="flex w-1/2 flex-col">
-            {/* Тумблер «текст | как в Microsoft» — в шапке. «Как в Microsoft» = view_ru
-                со СВОЕЙ пагинацией (ruPage, не синхронна с оригиналом — объём после
-                перевода другой); связь — кросс-навигацией по клику. */}
-            {!rightText ? (
-              hasViewRu ? (
-                <PdfPane
-                  docId={id}
-                  urlKind="view_ru"
-                  label="перевод — кликните фрагмент, чтобы найти его в оригинале"
-                  fitWidth
-                  page={ruPage}
-                  highlight={rightHi}
-                  onPageChange={setRuPage}
-                  regions={regionsFor('right', ruPage)}
-                  onRegionClick={crossToLeft}
-                />
-              ) : (
-                <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
-              )
-            ) : (
-              <>
-                <div className="flex items-center gap-2 border-b bg-card px-2 py-1.5 text-sm">
-                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-                    ←
-                  </Button>
-                  <span className="text-muted-foreground">
-                    стр. {page} / {numPages || '…'}
-                  </span>
-                  <Button variant="ghost" size="sm" disabled={page >= numPages} onClick={() => setPage(page + 1)}>
-                    →
-                  </Button>
-                </div>
-                <div className="flex-1 overflow-auto">
-                  <article className="mx-auto max-w-3xl px-6 py-5">
+        <div className="flex h-[calc(100vh-97px)] flex-col">
+          {textMode && (
+            <div className="flex items-center gap-2 border-b bg-card px-4 py-1.5 text-sm">
+              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                ←
+              </Button>
+              <span className="text-muted-foreground">
+                стр. {page} / {maxPage}
+              </span>
+              <Button variant="ghost" size="sm" disabled={page >= maxPage} onClick={() => setPage(page + 1)}>
+                →
+              </Button>
+            </div>
+          )}
+          <div className="flex flex-1 overflow-hidden">
+            <div className="w-1/2 border-r">
+              {textMode ? (
+                <div ref={sourceColRef} className="h-full overflow-y-auto">
+                  <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
+                  <article className="mx-auto max-w-3xl px-6 py-4">
                     {pageSegs.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
+                      <p className="text-sm text-muted-foreground">На этой странице нет текста.</p>
                     ) : (
-                      <DocRead segs={pageSegs} citedId={cited} editable onSaved={setMsg} />
+                      <DocRead segs={pageSegs} field="source" citedId={cited} selectedId={selectedSegId} onSelectSeg={selectSeg} />
                     )}
                   </article>
                 </div>
-              </>
-            )}
+              ) : (
+                <PdfPane
+                  docId={id}
+                  urlKind="view_orig"
+                  label="оригинал"
+                  fitWidth
+                  page={page}
+                  highlight={leftHi}
+                  onPageChange={setPage}                  regions={regionsFor('left', page)}
+                  onRegionClick={(sid) => crossToRight(sid, setRuPage)}
+                />
+              )}
+            </div>
+            <div className="flex w-1/2 flex-col">
+              {/* Тумблер «текст | как в Microsoft» — в шапке. «Как в Microsoft» = view_ru
+                  со СВОЕЙ пагинацией (ruPage, не синхронна с оригиналом — объём после
+                  перевода другой); связь — кросс-навигацией по клику. */}
+              {!textMode ? (
+                hasViewRu ? (
+                  <PdfPane
+                    docId={id}
+                    urlKind="view_ru"
+                    label="перевод — кликните фрагмент, чтобы найти его в оригинале"
+                    fitWidth
+                    page={ruPage}
+                    highlight={rightHi}
+                    onPageChange={setRuPage}
+                    regions={regionsFor('right', ruPage)}
+                    onRegionClick={crossToLeft}
+                  />
+                ) : (
+                  <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
+                )
+              ) : (
+                <div ref={translatedColRef} className="h-full overflow-y-auto">
+                  <PaneHeader label="Перевод" lang="ru" />
+                  <article className="mx-auto max-w-3xl px-6 py-4">
+                    {pageSegs.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">На этой странице нет текста для перевода.</p>
+                    ) : (
+                      <DocRead
+                        segs={pageSegs}
+                        field="translated"
+                        citedId={cited}
+                        editable
+                        selectedId={selectedSegId}
+                        onSelectSeg={selectSeg}
+                        editingId={editingSegId}
+                        pendingText={pendingText}
+                        onPendingTextChange={setPendingText}
+                        onStartEdit={startEdit}
+                      />
+                    )}
+                  </article>
+                </div>
+              )}
+            </div>
           </div>
         </div>
+        {textMode && (
+          <EditBar
+            editing={!!editingSegId}
+            saving={savingEdit}
+            onCancel={cancelEdit}
+            onSave={() => void saveEdit()}
+            assistantOpen={assistantOpen}
+            onToggleAssistant={() => setAssistantOpen((o) => !o)}
+          />
+        )}
         <DocAssistant
           docId={id}
           page={page}
           pageText={pageSegs.map(segPlainText).filter((t) => t.trim()).join('\n')}
           filename={docQ.data?.filename}
+          open={textMode ? assistantOpen : undefined}
+          onOpenChange={textMode ? setAssistantOpen : undefined}
         />
       </div>
     )
@@ -605,7 +732,6 @@ function Viewer() {
               page={page}
               highlight={null}
               onPageChange={setPage}
-              onNumPages={setNumPages}
             />
           </div>
           <div className="w-1/2">
@@ -840,28 +966,51 @@ function mdHardBreaks(md: string): string {
   return md.replace(/([^\n])\n(?!\n)/g, '$1  \n')
 }
 
+// Рамка выделения/затемнения сегмента (Figma 41:1317): пока что-то выделено,
+// остальные сегменты гаснут (opacity-30); выделенный подсвечивается —
+// нейтрально для оригинала, синим для перевода (там же появляется «Редактировать»).
+function segBoxCls(field: Field, selectedId: string | null | undefined, segId: string, cited: boolean): string {
+  const isSelected = selectedId === segId
+  const isDimmed = selectedId != null && !isSelected
+  return cn(
+    'rounded-lg transition-opacity cursor-pointer',
+    isDimmed && 'opacity-30',
+    cited && CITE_CLS,
+    isSelected && (field === 'source' ? 'bg-[#222226]/[0.02] border border-[#222226]/[0.22] p-3' : 'bg-[#392dc1]/[0.06] border border-[#4b4ce6] p-3'),
+  )
+}
+
 function DocRead({
   segs,
   citedId,
-  onPick,
   plain = false,
   editable = false,
-  onSaved,
+  field = 'translated',
+  selectedId = null,
+  onSelectSeg,
+  editingId = null,
+  pendingText = '',
+  onPendingTextChange,
+  onStartEdit,
 }: {
   segs: Segment[]
   citedId: string | null
-  onPick?: (s: Segment) => void
   plain?: boolean // DOCX: абзацы как обычный текст (без Markdown/формул), быстро
-  editable?: boolean // правка перевода прямо в тексте + история правок (§4.7.2)
-  onSaved?: (m: string) => void
+  editable?: boolean // правка перевода: кнопка «Редактировать» + история (§4.7.2)
+  field?: Field // 'source' — колонка оригинала (без правки), 'translated' — перевод
+  selectedId?: string | null
+  onSelectSeg?: (segId: string) => void
+  editingId?: string | null
+  pendingText?: string
+  onPendingTextChange?: (t: string) => void
+  onStartEdit?: (s: Segment) => void
 }) {
   const nodes: ReactNode[] = []
   let i = 0
   while (i < segs.length) {
     const s = segs[i]
-    const cited = citedId === s.id
-    const ring = cited ? ' ' + CITE_CLS : ''
-    const pick = () => onPick?.(s)
+    const pick = () => onSelectSeg?.(s.id)
+    const boxCls = (segId: string) => segBoxCls(field, selectedId, segId, citedId === segId)
 
     // DOCX-таблица: ячейки лежат подряд как сегменты с location.t — собираем
     // обратно в таблицу (грид по r/c, несколько абзацев в ячейке склеиваем).
@@ -878,11 +1027,11 @@ function DocRead({
       for (const c of cells) {
         const r = c.location?.r ?? 0
         const col = c.location?.c ?? 0
-        const txt = textOf(c, 'translated') || textOf(c, 'source')
+        const txt = textOf(c, field) || textOf(c, field === 'source' ? 'translated' : 'source')
         grid[r][col] = grid[r][col] ? grid[r][col] + '\n' + txt : txt
       }
       nodes.push(
-        <div key={`t-${cells[0].id}`} className="my-3 overflow-x-auto">
+        <div key={`t-${cells[0].id}`} data-seg={cells[0].id} onClick={() => pickAt(cells[0])} className={cn('my-3 overflow-x-auto', boxCls(cells[0].id))}>
           <table className="border-collapse text-sm">
             <tbody>
               {grid.map((row, ri) => (
@@ -902,22 +1051,17 @@ function DocRead({
     }
 
     // буллет-списки — группируем подряд идущие пункты
-    if (isListItem(s.kind, textOf(s, 'translated'))) {
+    if (isListItem(s.kind, textOf(s, field))) {
       const items: Segment[] = []
-      while (i < segs.length && isListItem(segs[i].kind, textOf(segs[i], 'translated'))) {
+      while (i < segs.length && isListItem(segs[i].kind, textOf(segs[i], field))) {
         items.push(segs[i])
         i++
       }
       nodes.push(
         <ul key={`l-${items[0].id}`} className="my-2 list-disc space-y-1 pl-6">
           {items.map((it) => (
-            <li
-              key={it.id}
-              data-seg={it.id}
-              onClick={() => onPick?.(it)}
-              className={citedId === it.id ? CITE_CLS : ''}
-            >
-              <Markdown content={textOf(it, 'translated').replace(BULLET_RE, '')} />
+            <li key={it.id} data-seg={it.id} onClick={() => onSelectSeg?.(it.id)} className={boxCls(it.id)}>
+              <Markdown content={textOf(it, field).replace(BULLET_RE, '')} />
             </li>
           ))}
         </ul>,
@@ -927,7 +1071,7 @@ function DocRead({
 
     if (s.kind === 'equation') {
       nodes.push(
-        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3 overflow-x-auto' + ring}>
+        <div key={s.id} data-seg={s.id} onClick={pick} className={cn('my-3 overflow-x-auto', boxCls(s.id))}>
           <Markdown content={eqMarkdown(s)} />
         </div>,
       )
@@ -940,10 +1084,10 @@ function DocRead({
       // ячейку): сохраняем 2-столбцовую структуру (номер | текст), но внутри col
       // расставляем переносы по маркерам пунктов. Настоящие таблицы (короткие
       // ячейки) идут штатным TableBlock.
-      const trows = s.table_cells_ru ?? s.table_cells ?? []
+      const trows = (field === 'source' ? s.table_cells : s.table_cells_ru ?? s.table_cells) ?? []
       const clauseTable = trows.flat().some((c) => (c?.text || '').length > 200)
       nodes.push(
-        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3 overflow-x-auto' + ring}>
+        <div key={s.id} data-seg={s.id} onClick={pick} className={cn('my-3 overflow-x-auto', boxCls(s.id))}>
           {clauseTable ? (
             // table-fixed + w-full: длинная (1500+ симв.) колонка описания иначе
             // распирает таблицу шире страницы и текст красится за рамку. break-words
@@ -973,7 +1117,7 @@ function DocRead({
               </tbody>
             </table>
           ) : (
-            <TableBlock s={s} field="translated" editable={false} />
+            <TableBlock s={s} field={field} editable={false} />
           )}
         </div>,
       )
@@ -982,7 +1126,7 @@ function DocRead({
     }
 
     if (s.kind === 'image') {
-      const cap = textOf(s, 'translated') || textOf(s, 'source')
+      const cap = textOf(s, field) || textOf(s, field === 'source' ? 'translated' : 'source')
       // Описание скана/картинки от VL (Qwen-VL) приходит готовым Markdown —
       // заголовки, таблица, списки. Рендерим его как Markdown (таблица = таблица),
       // а не сплошной плоской подписью по центру. Короткие реальные подписи
@@ -990,7 +1134,7 @@ function DocRead({
       const richCap = cap.length > 200 || /(^|\n)\s*#{1,6}\s|\n\s*\||\n-{3,}/.test(cap)
       if (s.image_url || cap.trim())
         nodes.push(
-          <figure key={s.id} data-seg={s.id} onClick={pick} className={'my-4' + ring}>
+          <figure key={s.id} data-seg={s.id} onClick={pick} className={cn('my-4', boxCls(s.id))}>
             {s.image_url && <AuthImage src={s.image_url} alt="" />}
             {cap.trim() &&
               (richCap ? (
@@ -1006,18 +1150,30 @@ function DocRead({
       continue
     }
 
+    const canEditHere = editable && field === 'translated'
+
     if (s.kind === 'heading') {
       const lvl = Math.min(Math.max(s.heading_level ?? 2, 1), 4)
-      const htext = textOf(s, 'translated') || textOf(s, 'source')
+      const htext = textOf(s, field) || textOf(s, field === 'source' ? 'translated' : 'source')
       nodes.push(
-        editable ? (
-          <div key={s.id} data-seg={s.id} onClick={pick} className={headingClass(lvl) + ring}>
-            <Editable value={htext} segId={s.id} className="" editable onSaved={onSaved} />
-          </div>
+        canEditHere ? (
+          <TranslatedBlock
+            key={s.id}
+            s={s}
+            body={htext}
+            typo={headingClass(lvl)}
+            markdown={false}
+            selected={selectedId === s.id}
+            editing={editingId === s.id}
+            pendingText={pendingText}
+            onSelect={() => onSelectSeg?.(s.id)}
+            onStartEdit={() => onStartEdit?.(s)}
+            onPendingTextChange={(t) => onPendingTextChange?.(t)}
+          />
         ) : (
           createElement(
             `h${lvl}`,
-            { key: s.id, 'data-seg': s.id, onClick: pick, className: headingClass(lvl) + ring },
+            { key: s.id, 'data-seg': s.id, onClick: pick, className: cn(headingClass(lvl), boxCls(s.id)) },
             htext,
           )
         ),
@@ -1026,22 +1182,31 @@ function DocRead({
       continue
     }
 
-    // абзац: при editable — правка + история (§4.7.2); иначе DOCX plain / PDF Markdown
-    const body = textOf(s, 'translated') || textOf(s, 'source')
+    // абзац: при canEditHere — Редактировать + история (§4.7.2); иначе DOCX plain / PDF Markdown
+    const body = textOf(s, field) || textOf(s, field === 'source' ? 'translated' : 'source')
     nodes.push(
-      editable ? (
-        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
-          <Editable value={body} segId={s.id} className="text-[15px] leading-relaxed" editable onSaved={onSaved} />
-        </div>
+      canEditHere ? (
+        <TranslatedBlock
+          key={s.id}
+          s={s}
+          body={body}
+          typo="text-[15px] leading-relaxed"
+          selected={selectedId === s.id}
+          editing={editingId === s.id}
+          pendingText={pendingText}
+          onSelect={() => onSelectSeg?.(s.id)}
+          onStartEdit={() => onStartEdit?.(s)}
+          onPendingTextChange={(t) => onPendingTextChange?.(t)}
+        />
       ) : plain ? (
-        <p key={s.id} data-seg={s.id} onClick={pick} className={'my-2 whitespace-pre-line text-[15px] leading-relaxed' + ring}>
+        <p key={s.id} data-seg={s.id} onClick={pick} className={cn('my-2 whitespace-pre-line text-[15px] leading-relaxed', boxCls(s.id))}>
           {body}
         </p>
       ) : (
         // my-3 даёт отступ МЕЖДУ абзацами: внутренний <p> Markdown обнуляется
         // его же правилом first/last-child (один абзац = и первый, и последний),
         // поэтому пробел держим на обёртке — иначе абзацы слипаются в «стену».
-        <div key={s.id} data-seg={s.id} onClick={pick} className={'my-3' + ring}>
+        <div key={s.id} data-seg={s.id} onClick={pick} className={cn('my-3', boxCls(s.id))}>
           <Markdown content={mdHardBreaks(body)} className="text-[15px] leading-relaxed" />
         </div>
       ),
@@ -1049,6 +1214,192 @@ function DocRead({
     i++
   }
   return <>{nodes}</>
+
+  function pickAt(seg: Segment) {
+    onSelectSeg?.(seg.id)
+  }
+}
+
+// Абзац/заголовок перевода в «текст»-режиме (Figma 41:1317): статичный текст,
+// при выделении — кнопка «Редактировать» и история; при правке — textarea,
+// сохранение/отмена — кнопками нижнего бара (не по blur).
+function TranslatedBlock({
+  s,
+  body,
+  typo,
+  markdown = true,
+  selected,
+  editing,
+  pendingText,
+  onSelect,
+  onStartEdit,
+  onPendingTextChange,
+}: {
+  s: Segment
+  body: string
+  typo: string
+  markdown?: boolean
+  selected: boolean
+  editing: boolean
+  pendingText: string
+  onSelect: () => void
+  onStartEdit: () => void
+  onPendingTextChange: (t: string) => void
+}) {
+  const [history, setHistory] = useState<SegmentVersion[] | null>(null)
+  async function openHistory() {
+    try {
+      setHistory(await api.listSegmentVersions(s.id))
+    } catch {
+      // история — не критично, просто не открылась
+    }
+  }
+  return (
+    <div
+      data-seg={s.id}
+      onClick={editing ? undefined : onSelect}
+      className={cn(
+        'relative my-2 rounded-lg transition-opacity',
+        selected ? 'cursor-default bg-[#392dc1]/[0.06] border border-[#4b4ce6] p-3' : 'cursor-pointer border border-transparent p-3 hover:border-border',
+      )}
+    >
+      {s.needs_review && <ReviewBadge />}
+      {editing ? (
+        <textarea
+          autoFocus
+          value={pendingText}
+          onChange={(e) => onPendingTextChange(e.target.value)}
+          rows={Math.max(2, Math.ceil(pendingText.length / 70))}
+          className={cn('w-full resize-none whitespace-pre-wrap bg-transparent outline-none', typo)}
+        />
+      ) : markdown ? (
+        <Markdown content={mdHardBreaks(body)} className={typo} />
+      ) : (
+        <div className={typo}>{body}</div>
+      )}
+      {selected && !editing && (
+        <button
+          type="button"
+          title="Редактировать перевод"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.stopPropagation()
+            onStartEdit()
+          }}
+          className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-[#4b4ce6] text-white shadow transition hover:opacity-90"
+        >
+          <Pencil className="h-4 w-4" />
+        </button>
+      )}
+      {selected && (
+        <button
+          type="button"
+          title="История правок перевода"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.stopPropagation()
+            void openHistory()
+          }}
+          className="absolute -bottom-2.5 right-11 z-10 flex items-center gap-0.5 rounded border bg-card px-1 py-0.5 text-[10px] leading-none text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
+        >
+          <Maximize2 className="h-2.5 w-2.5" />
+          история
+        </button>
+      )}
+      {history && (
+        <div onClick={(e) => e.stopPropagation()} className="absolute bottom-5 right-0 z-30 max-h-72 w-80 overflow-auto rounded-md border bg-card p-2 text-xs shadow-lg">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="font-medium">История правок ({history.length})</span>
+            <button onClick={() => setHistory(null)} className="text-muted-foreground hover:text-foreground">
+              ✕
+            </button>
+          </div>
+          {history.length === 0 && <div className="text-muted-foreground">Правок ещё не было.</div>}
+          {history.map((h) => (
+            <div key={h.id} className="border-t py-1">
+              <div className="text-muted-foreground">
+                {h.editor} · {new Date(h.created_at).toLocaleString('ru')}
+              </div>
+              <div className="line-through opacity-60">{(h.old_text ?? '').slice(0, 140)}</div>
+              <div className="text-emerald-700">{(h.new_text ?? '').slice(0, 140)}</div>
+              <button
+                onClick={() => {
+                  onStartEdit()
+                  onPendingTextChange(h.old_text ?? '')
+                  setHistory(null)
+                }}
+                className="mt-0.5 text-primary hover:underline"
+              >
+                восстановить прежний текст
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Заголовок колонки в «текст»-режиме: «Оригинал RU» / «Перевод EN» (Figma 41:1317).
+function PaneHeader({ label, lang }: { label: string; lang?: string | null }) {
+  return (
+    <div className="sticky top-0 z-[1] flex items-baseline gap-2 bg-card/95 px-6 pb-2 pt-4 text-base font-semibold backdrop-blur">
+      <span className="text-foreground">{label}</span>
+      {lang && lang !== 'auto' && <span className="uppercase text-muted-foreground/70">{lang}</span>}
+    </div>
+  )
+}
+
+// Нижний плавающий бар «текст»-режима (Figma 41:1317): Вернуть/Сохранить активны
+// только во время правки сегмента; ИИ-консультант открывает DocAssistant сбоку.
+function EditBar({
+  editing,
+  saving,
+  onCancel,
+  onSave,
+  assistantOpen,
+  onToggleAssistant,
+}: {
+  editing: boolean
+  saving: boolean
+  onCancel: () => void
+  onSave: () => void
+  assistantOpen: boolean
+  onToggleAssistant: () => void
+}) {
+  return (
+    <div className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-4 rounded-3xl border bg-card p-2 shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={!editing || saving}
+        className="w-[120px] rounded-2xl bg-[#392dc1]/[0.06] px-4 py-2 text-sm font-semibold text-[#4138cd] transition hover:bg-[#392dc1]/10 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Вернуть
+      </button>
+      <span className="h-5 w-px bg-border" />
+      <div className="flex items-center gap-2 px-1">
+        <MessageCircle className="h-5 w-5 text-primary" />
+        <span className="text-sm font-semibold">ИИ-консультант</span>
+        <button
+          type="button"
+          onClick={onToggleAssistant}
+          className="rounded-2xl bg-[#222226]/5 px-4 py-2 text-sm font-semibold text-[#424247] transition hover:bg-[#222226]/10"
+        >
+          {assistantOpen ? 'Свернуть' : 'Открыть'}
+        </button>
+      </div>
+      <span className="h-5 w-px bg-border" />
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={!editing || saving}
+        className="w-[120px] rounded-2xl bg-[#4b4ce6] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {saving ? 'Сохраняю…' : 'Сохранить'}
+      </button>
+    </div>
+  )
 }
 
 function PageSep({ n }: { n: number }) {
