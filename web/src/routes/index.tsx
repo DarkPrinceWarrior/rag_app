@@ -98,7 +98,7 @@ function Library() {
   }
 
   return (
-    <div className="mx-auto max-w-[1136px] px-4 pb-14 pt-8">
+    <div className="px-4 pb-14 pt-8 md:px-[168px]">
       {!searchActive && !folder && (
       <section className="mt-8">
         <div className="flex items-center justify-between gap-4">
@@ -285,8 +285,8 @@ function FolderCard({
   return (
     <article
       className={cn(
-        'group relative flex w-[237px] shrink-0 flex-col gap-[11px] rounded-lg border bg-card p-1 pb-4 transition',
-        active ? 'border-[#ef9a11]/60 shadow-[0_7px_14px_rgba(0,0,0,0.07)]' : 'border-[#e5e5e5] hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
+        'group relative flex w-[237px] shrink-0 flex-col gap-[11px] rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 transition hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
+        active && 'shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
       )}
     >
       {onDelete && (
@@ -306,7 +306,7 @@ function FolderCard({
         <div
           className={cn(
             'flex h-[137px] w-full items-center justify-center rounded-md transition-colors',
-            active ? 'bg-amber-50/80' : 'bg-[#222226]/[0.02] group-hover:bg-[#ef9a11]/10',
+            active ? 'bg-[#392dc1]/[0.06]' : 'bg-[#222226]/[0.02] group-hover:bg-[#392dc1]/[0.06]',
           )}
         >
           <FolderIllustration active={active} />

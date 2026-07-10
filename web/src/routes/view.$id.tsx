@@ -48,6 +48,7 @@ function highlightOf(s: Segment): Highlight | null {
 function Viewer() {
   const { id } = Route.useParams()
   const { seg, page: pageParam } = Route.useSearch()
+  const navigate = Route.useNavigate()
   const [msg, setMsg] = useState('')
   const [cited, setCited] = useState<string | null>(null)
   const [active, setActive] = useState<Highlight | null>(null)
@@ -62,12 +63,10 @@ function Viewer() {
   const [rightHi, setRightHi] = useState<Highlight | null>(null)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
-  // «текст»-режим (Figma 41:1317): выделение сегмента гасит остальные, редактирование
-  // перевода — явным циклом Редактировать → Сохранить/Вернуть (а не по blur).
+  // «текст»-режим (Figma 41:1317): выделение сегмента гасит остальные (для
+  // сравнения/навигации); сама правка перевода — на отдельном экране сегмента
+  // (/view/$id/segment/$segId), сюда её больше не открываем инлайн.
   const [selectedSegId, setSelectedSegId] = useState<string | null>(null)
-  const [editingSegId, setEditingSegId] = useState<string | null>(null)
-  const [pendingText, setPendingText] = useState('')
-  const [savingEdit, setSavingEdit] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const sourceColRef = useRef<HTMLDivElement>(null)
   const translatedColRef = useRef<HTMLDivElement>(null)
@@ -418,8 +417,8 @@ function Viewer() {
     return best != null ? best + 1 : null
   }
 
-  // --- «текст»-режим (Figma 41:1317): выделение сегмента с обеих сторон сразу,
-  // редактирование — явным Редактировать → Сохранить/Вернуть (не по blur). ---
+  // --- «текст»-режим (Figma 41:1317): выделение сегмента с обеих сторон сразу
+  // (для сравнения/навигации); правка перевода — на отдельном экране сегмента. ---
   function scrollSegIntoView(segId: string) {
     for (const ref of [sourceColRef, translatedColRef]) {
       const el = ref.current?.querySelector(`[data-seg="${segId}"]`)
@@ -427,41 +426,14 @@ function Viewer() {
     }
   }
   function selectSeg(segId: string) {
-    if (editingSegId && editingSegId !== segId) return // сначала завершить текущую правку
     setSelectedSegId((cur) => {
       const next = cur === segId ? null : segId
       if (next) setTimeout(() => scrollSegIntoView(next), 0)
       return next
     })
   }
-  function startEdit(s: Segment) {
-    setEditingSegId(s.id)
-    setPendingText(s.translated_text ?? '')
-  }
-  function cancelEdit() {
-    setEditingSegId(null)
-    setPendingText('')
-  }
-  async function saveEdit() {
-    if (!editingSegId) return
-    const seg = segs.find((s) => s.id === editingSegId)
-    if (!seg) return
-    if (pendingText === (seg.translated_text ?? '')) {
-      setEditingSegId(null)
-      return
-    }
-    setSavingEdit(true)
-    setMsg('Сохранение…')
-    try {
-      await api.patchSegment(editingSegId, pendingText)
-      await segsQ.refetch()
-      setMsg('Сохранено')
-    } catch {
-      setMsg('Ошибка сохранения')
-    }
-    setSavingEdit(false)
-    setEditingSegId(null)
-    setTimeout(() => setMsg(''), 2000)
+  function goToEditSegment(s: Segment) {
+    navigate({ to: '/view/$id/segment/$segId', params: { id, segId: s.id } })
   }
 
   // PDF: слева оригинал, справа перевод; кросс-навигация по клику (страницы не синхронны).
@@ -522,10 +494,7 @@ function Viewer() {
                       editable
                       selectedId={selectedSegId}
                       onSelectSeg={selectSeg}
-                      editingId={editingSegId}
-                      pendingText={pendingText}
-                      onPendingTextChange={setPendingText}
-                      onStartEdit={startEdit}
+                      onStartEdit={goToEditSegment}
                     />
                   </article>
                 </div>
@@ -549,10 +518,11 @@ function Viewer() {
         </div>
         {textMode && (
           <EditBar
-            editing={!!editingSegId}
-            saving={savingEdit}
-            onCancel={cancelEdit}
-            onSave={() => void saveEdit()}
+            editing={false}
+            saving={false}
+            onCancel={() => {}}
+            onSave={() => {}}
+            showSaveCancel={false}
             assistantOpen={assistantOpen}
             onToggleAssistant={() => setAssistantOpen((o) => !o)}
           />
@@ -656,10 +626,7 @@ function Viewer() {
                         editable
                         selectedId={selectedSegId}
                         onSelectSeg={selectSeg}
-                        editingId={editingSegId}
-                        pendingText={pendingText}
-                        onPendingTextChange={setPendingText}
-                        onStartEdit={startEdit}
+                        onStartEdit={goToEditSegment}
                       />
                     )}
                   </article>
@@ -670,10 +637,11 @@ function Viewer() {
         </div>
         {textMode && (
           <EditBar
-            editing={!!editingSegId}
-            saving={savingEdit}
-            onCancel={cancelEdit}
-            onSave={() => void saveEdit()}
+            editing={false}
+            saving={false}
+            onCancel={() => {}}
+            onSave={() => {}}
+            showSaveCancel={false}
             assistantOpen={assistantOpen}
             onToggleAssistant={() => setAssistantOpen((o) => !o)}
           />
@@ -799,7 +767,7 @@ function isListItem(kind: string, text: string): boolean {
 const textOf = (s: Segment, field: Field): string =>
   ((field === 'source' ? s.source_text : s.translated_text) ?? '')
 
-type Field = 'source' | 'translated'
+export type Field = 'source' | 'translated'
 
 // Текст сегмента для контекста ассистента: таблицы — строками через « | »,
 // остальное — перевод (или оригинал), с очисткой LaTeX-разметки.
@@ -980,7 +948,7 @@ function segBoxCls(field: Field, selectedId: string | null | undefined, segId: s
   )
 }
 
-function DocRead({
+export function DocRead({
   segs,
   citedId,
   plain = false,
@@ -1164,9 +1132,9 @@ function DocRead({
             typo={headingClass(lvl)}
             markdown={false}
             selected={selectedId === s.id}
+            dimmed={selectedId != null && selectedId !== s.id}
             editing={editingId === s.id}
             pendingText={pendingText}
-            onSelect={() => onSelectSeg?.(s.id)}
             onStartEdit={() => onStartEdit?.(s)}
             onPendingTextChange={(t) => onPendingTextChange?.(t)}
           />
@@ -1192,9 +1160,9 @@ function DocRead({
           body={body}
           typo="text-[15px] leading-relaxed"
           selected={selectedId === s.id}
+          dimmed={selectedId != null && selectedId !== s.id}
           editing={editingId === s.id}
           pendingText={pendingText}
-          onSelect={() => onSelectSeg?.(s.id)}
           onStartEdit={() => onStartEdit?.(s)}
           onPendingTextChange={(t) => onPendingTextChange?.(t)}
         />
@@ -1221,17 +1189,18 @@ function DocRead({
 }
 
 // Абзац/заголовок перевода в «текст»-режиме (Figma 41:1317): статичный текст,
-// при выделении — кнопка «Редактировать» и история; при правке — textarea,
-// сохранение/отмена — кнопками нижнего бара (не по blur).
+// при наведении (не по клику — правка дизайнера) — кнопка «Редактировать» и
+// история; клик по абзацу выделяет его и гасит остальные (для сравнения);
+// правка — textarea, сохранение/отмена — кнопками нижнего бара (не по blur).
 function TranslatedBlock({
   s,
   body,
   typo,
   markdown = true,
   selected,
+  dimmed = false,
   editing,
   pendingText,
-  onSelect,
   onStartEdit,
   onPendingTextChange,
 }: {
@@ -1240,13 +1209,15 @@ function TranslatedBlock({
   typo: string
   markdown?: boolean
   selected: boolean
+  dimmed?: boolean
   editing: boolean
   pendingText: string
-  onSelect: () => void
   onStartEdit: () => void
   onPendingTextChange: (t: string) => void
 }) {
   const [history, setHistory] = useState<SegmentVersion[] | null>(null)
+  const [hovered, setHovered] = useState(false)
+  const showControls = (selected || hovered) && !editing
   async function openHistory() {
     try {
       setHistory(await api.listSegmentVersions(s.id))
@@ -1257,10 +1228,12 @@ function TranslatedBlock({
   return (
     <div
       data-seg={s.id}
-      onClick={editing ? undefined : onSelect}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       className={cn(
         'relative my-2 rounded-lg transition-opacity',
-        selected ? 'cursor-default bg-[#392dc1]/[0.06] border border-[#4b4ce6] p-3' : 'cursor-pointer border border-transparent p-3 hover:border-border',
+        dimmed && 'opacity-30',
+        selected ? 'bg-[#392dc1]/[0.06] border border-[#4b4ce6] p-3' : 'border border-transparent p-3',
       )}
     >
       {s.needs_review && <ReviewBadge />}
@@ -1277,7 +1250,7 @@ function TranslatedBlock({
       ) : (
         <div className={typo}>{body}</div>
       )}
-      {selected && !editing && (
+      {showControls && (
         <button
           type="button"
           title="Редактировать перевод"
@@ -1291,7 +1264,7 @@ function TranslatedBlock({
           <Pencil className="h-4 w-4" />
         </button>
       )}
-      {selected && (
+      {showControls && (
         <button
           type="button"
           title="История правок перевода"
@@ -1341,7 +1314,7 @@ function TranslatedBlock({
 }
 
 // Заголовок колонки в «текст»-режиме: «Оригинал RU» / «Перевод EN» (Figma 41:1317).
-function PaneHeader({ label, lang }: { label: string; lang?: string | null }) {
+export function PaneHeader({ label, lang }: { label: string; lang?: string | null }) {
   return (
     <div className="sticky top-0 z-[1] flex items-baseline gap-2 bg-card/95 px-6 pb-2 pt-4 text-base font-semibold backdrop-blur">
       <span className="text-foreground">{label}</span>
@@ -1352,13 +1325,16 @@ function PaneHeader({ label, lang }: { label: string; lang?: string | null }) {
 
 // Нижний плавающий бар «текст»-режима (Figma 41:1317): Вернуть/Сохранить активны
 // только во время правки сегмента; ИИ-консультант открывает DocAssistant сбоку.
-function EditBar({
+// showSaveCancel=false — только тумблер ассистента (обычная страница документа
+// больше не редактирует инлайн: правка теперь на отдельном экране сегмента).
+export function EditBar({
   editing,
   saving,
   onCancel,
   onSave,
   assistantOpen,
   onToggleAssistant,
+  showSaveCancel = true,
 }: {
   editing: boolean
   saving: boolean
@@ -1366,18 +1342,23 @@ function EditBar({
   onSave: () => void
   assistantOpen: boolean
   onToggleAssistant: () => void
+  showSaveCancel?: boolean
 }) {
   return (
     <div className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-4 rounded-3xl border bg-card p-2 shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
-      <button
-        type="button"
-        onClick={onCancel}
-        disabled={!editing || saving}
-        className="w-[120px] rounded-2xl bg-[#392dc1]/[0.06] px-4 py-2 text-sm font-semibold text-[#4138cd] transition hover:bg-[#392dc1]/10 disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        Вернуть
-      </button>
-      <span className="h-5 w-px bg-border" />
+      {showSaveCancel && (
+        <>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={!editing || saving}
+            className="w-[120px] rounded-2xl bg-[#392dc1]/[0.06] px-4 py-2 text-sm font-semibold text-[#4138cd] transition hover:bg-[#392dc1]/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Вернуть
+          </button>
+          <span className="h-5 w-px bg-border" />
+        </>
+      )}
       <div className="flex items-center gap-2 px-1">
         <MessageCircle className="h-5 w-5 text-primary" />
         <span className="text-sm font-semibold">ИИ-консультант</span>
@@ -1389,15 +1370,19 @@ function EditBar({
           {assistantOpen ? 'Свернуть' : 'Открыть'}
         </button>
       </div>
-      <span className="h-5 w-px bg-border" />
-      <button
-        type="button"
-        onClick={onSave}
-        disabled={!editing || saving}
-        className="w-[120px] rounded-2xl bg-[#4b4ce6] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        {saving ? 'Сохраняю…' : 'Сохранить'}
-      </button>
+      {showSaveCancel && (
+        <>
+          <span className="h-5 w-px bg-border" />
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={!editing || saving}
+            className="w-[120px] rounded-2xl bg-[#4b4ce6] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {saving ? 'Сохраняю…' : 'Сохранить'}
+          </button>
+        </>
+      )}
     </div>
   )
 }
@@ -1493,10 +1478,12 @@ function ListItem({
   )
 }
 
+// Метка «Требует проверки» (Figma 44:1072): сегмент не сошёлся при числовой
+// валидации после перевода — ручная правка её снимает (segments.py).
 function ReviewBadge() {
   return (
-    <span className="ml-2 align-middle rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800">
-      проверить числа
+    <span className="mb-2 inline-flex items-center rounded-full bg-[#952d2d]/10 px-2 py-1 text-[11px] font-medium text-[#c43232]">
+      Требует проверки
     </span>
   )
 }

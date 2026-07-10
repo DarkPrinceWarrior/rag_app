@@ -337,7 +337,7 @@ function ProcessingView({
             disabled={!allSettled && cancelPending}
             className="flex-1 rounded-2xl bg-[#222226]/5 px-4 py-2 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10 disabled:opacity-50"
           >
-            {!allSettled && cancelPending ? 'Отменяю…' : 'Отмена'}
+            {allSettled ? 'На главную' : cancelPending ? 'Отменяю…' : 'Отмена'}
           </button>
         </div>
       </div>
