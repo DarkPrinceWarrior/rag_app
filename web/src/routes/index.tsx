@@ -9,6 +9,7 @@ import {
   FolderInput,
   Languages,
   MoreVertical,
+  Pencil,
   PlusCircle,
   Search,
   Trash2,
@@ -104,6 +105,7 @@ function Library() {
   const { submitted, filters, clearSearch } = useLibrarySearch()
   const [folder, setFolder] = useState<string>('') // '' = все
   const [folderToDelete, setFolderToDelete] = useState<Folder | null>(null)
+  const [editFolderOpen, setEditFolderOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const docsQ = useQuery({
@@ -172,21 +174,10 @@ function Library() {
 
       {upload.isError && <p className="mt-3 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
 
-      {!searchActive && (
+      {!searchActive && !folder && (
       <section className="mt-8">
         <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Папки</h2>
-            {folder && (
-              <button
-                type="button"
-                onClick={() => setFolder('')}
-                className="rounded-full bg-[#222226]/5 px-3 py-1 text-xs font-medium text-muted-foreground transition hover:bg-[#222226]/10 hover:text-foreground"
-              >
-                Все документы
-              </button>
-            )}
-          </div>
+          <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Папки</h2>
           <NewFolder
             docs={allDocs}
             onCreated={() => {
@@ -212,12 +203,38 @@ function Library() {
                 count={stats?.count ?? f.documents}
                 size={stats?.size ?? 0}
                 onClick={() => setFolder((current) => (current === f.id ? '' : f.id))}
-                onDelete={() => setFolderToDelete(f)}
               />
             )
           })}
         </div>
       </section>
+      )}
+
+      {/* Внутри папки (Figma 54:1618): хлебная крошка вместо строки папок */}
+      {!searchActive && folder && selectedFolder && (
+        <section className="mt-8">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-2 whitespace-nowrap text-[23px] font-semibold leading-[1.3]">
+              <button
+                type="button"
+                onClick={() => setFolder('')}
+                className="text-[#222226]/[0.22] transition hover:text-[#222226]/50"
+              >
+                Папки
+              </button>
+              <span className="text-[#222226]/[0.22]">/</span>
+              <span className="text-[#222226]">{selectedFolder.name}</span>
+            </div>
+            <Button
+              variant="ghost"
+              className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
+              onClick={() => setEditFolderOpen(true)}
+            >
+              <Pencil className="h-4 w-4" />
+              Редактировать папку
+            </Button>
+          </div>
+        </section>
       )}
 
       {searchActive && visibleFolders.length > 0 && (
@@ -242,7 +259,6 @@ function Library() {
                     setFolder(f.id)
                     clearSearch()
                   }}
-                  onDelete={() => setFolderToDelete(f)}
                 />
               )
             })}
@@ -250,36 +266,36 @@ function Library() {
         </section>
       )}
 
-      <section className={searchActive ? 'mt-8' : 'mt-12'}>
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">
-              {searchActive ? `Документы: ${submitted}` : 'Документы'}
-            </h2>
+      <section className={searchActive || folder ? 'mt-8' : 'mt-12'}>
+        {(searchActive || !folder) && (
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">
+                {searchActive ? `Документы: ${submitted}` : 'Документы'}
+              </h2>
+              {searchActive && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Карточки документов с совпадением в названии
+                </p>
+              )}
+            </div>
             {searchActive ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Карточки документов с совпадением в названии
-              </p>
-            ) : selectedFolder ? (
-              <p className="mt-1 text-xs text-muted-foreground">Папка: {selectedFolder.name}</p>
-            ) : null}
+              <Button variant="ghost" className="h-10 rounded-2xl px-4" onClick={clearSearch}>
+                Сбросить поиск
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
+                disabled={upload.isPending}
+                onClick={() => fileInput.current?.click()}
+              >
+                <CloudUpload className="h-4 w-4" />
+                {upload.isPending ? 'Загружаю…' : 'Загрузить ещё'}
+              </Button>
+            )}
           </div>
-          {searchActive ? (
-            <Button variant="ghost" className="h-10 rounded-2xl px-4" onClick={clearSearch}>
-              Сбросить поиск
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
-              disabled={upload.isPending}
-              onClick={() => fileInput.current?.click()}
-            >
-              <CloudUpload className="h-4 w-4" />
-              {upload.isPending ? 'Загружаю…' : 'Загрузить ещё'}
-            </Button>
-          )}
-        </div>
+        )}
 
         {docsQ.isLoading ? (
           <p className="mt-6 text-sm text-muted-foreground">Загрузка…</p>
@@ -295,6 +311,20 @@ function Library() {
       </section>
 
       <SearchResults folder={folder} filters={filters} />
+      <FolderModal
+        open={editFolderOpen}
+        onClose={() => setEditFolderOpen(false)}
+        docs={allDocs}
+        folder={selectedFolder ?? null}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ['folders'] })
+          qc.invalidateQueries({ queryKey: ['documents'] })
+        }}
+        onRequestDelete={(f) => {
+          setEditFolderOpen(false)
+          setFolderToDelete(f)
+        }}
+      />
       <ConfirmDialog
         open={!!folderToDelete}
         onClose={() => !deleteFolder.isPending && setFolderToDelete(null)}
@@ -407,51 +437,71 @@ function NewFolder({ docs, onCreated }: { docs: Document[]; onCreated: () => voi
         <PlusCircle className="h-4 w-4" />
         Создать папку
       </Button>
-      <CreateFolderModal open={open} onClose={() => setOpen(false)} docs={docs} onCreated={onCreated} />
+      <FolderModal open={open} onClose={() => setOpen(false)} docs={docs} folder={null} onSaved={onCreated} />
     </>
   )
 }
 
-// Модалка создания папки (Figma node 54:3374): имя + выбор документов сразу
-// при создании. Бэкенд не принимает документы при создании папки — на клиенте
-// создаём папку, затем перемещаем выбранные документы (moveDocument).
-function CreateFolderModal({
+// Модалка создания/редактирования папки (Figma 54:3374 create / 54:3750 edit):
+// имя + выбор документов. Бэкенд не принимает документы при создании папки —
+// на клиенте создаём/переименовываем папку, затем перемещаем документы
+// (moveDocument) по разнице с исходным набором.
+function FolderModal({
   open,
   onClose,
   docs,
-  onCreated,
+  folder,
+  onSaved,
+  onRequestDelete,
 }: {
   open: boolean
   onClose: () => void
   docs: Document[]
-  onCreated: () => void
+  folder: Folder | null
+  onSaved: () => void
+  onRequestDelete?: (folder: Folder) => void
 }) {
+  const isEdit = folder != null
   const [name, setName] = useState('')
   const [docSearch, setDocSearch] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [initialSelected, setInitialSelected] = useState<Set<string>>(new Set())
 
-  const reset = () => {
-    setName('')
+  // Пере-заполняем поля при каждом открытии: создание — пусто, редактирование —
+  // текущее имя папки + документы, которые уже в ней лежат.
+  useEffect(() => {
+    if (!open) return
     setDocSearch('')
-    setSelected(new Set())
-  }
+    const current = folder ? new Set(docs.filter((d) => d.folder_id === folder.id).map((d) => d.id)) : new Set<string>()
+    setName(folder?.name ?? '')
+    setSelected(current)
+    setInitialSelected(current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, folder?.id])
 
-  const create = useMutation({
+  const save = useMutation({
     mutationFn: async () => {
-      const folder = await api.createFolder(name.trim())
-      await Promise.all([...selected].map((id) => api.moveDocument(id, folder.id)))
-      return folder
+      if (folder) {
+        if (name.trim() !== folder.name) await api.renameFolder(folder.id, name.trim())
+        const added = [...selected].filter((id) => !initialSelected.has(id))
+        const removed = [...initialSelected].filter((id) => !selected.has(id))
+        await Promise.all([
+          ...added.map((id) => api.moveDocument(id, folder.id)),
+          ...removed.map((id) => api.moveDocument(id, null)),
+        ])
+        return
+      }
+      const created = await api.createFolder(name.trim())
+      await Promise.all([...selected].map((id) => api.moveDocument(id, created.id)))
     },
     onSuccess: () => {
-      reset()
-      onCreated()
+      onSaved()
       onClose()
     },
   })
 
   const handleClose = () => {
-    if (create.isPending) return
-    reset()
+    if (save.isPending) return
     onClose()
   }
 
@@ -465,26 +515,43 @@ function CreateFolderModal({
 
   const term = docSearch.trim().toLocaleLowerCase('ru-RU')
   const visibleDocs = term ? docs.filter((d) => d.filename.toLocaleLowerCase('ru-RU').includes(term)) : docs
+  const addedCount = [...selected].filter((id) => !initialSelected.has(id)).length
+  const removedCount = [...initialSelected].filter((id) => !selected.has(id)).length
 
   return (
     <Modal
       open={open}
       onClose={handleClose}
-      labelledBy="create-folder-title"
+      labelledBy="folder-modal-title"
       className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] border-[#e5e5e5] p-0"
     >
       <div className="flex shrink-0 items-center justify-between border-b border-[#e5e5e5] px-8 py-6">
-        <h2 id="create-folder-title" className="text-base font-semibold leading-[1.5] text-[#222226]">
-          Создать папку
+        <h2 id="folder-modal-title" className="text-base font-semibold leading-[1.5] text-[#222226]">
+          {isEdit ? 'Редактирование папки' : 'Создать папку'}
         </h2>
-        <button
-          type="button"
-          onClick={handleClose}
-          aria-label="Закрыть"
-          className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#222226]/5 text-[#424247] transition hover:bg-[#222226]/10"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <div className="flex shrink-0 items-center gap-4">
+          {isEdit && folder && (
+            <button
+              type="button"
+              onClick={() => {
+                onRequestDelete?.(folder)
+                handleClose()
+              }}
+              className="flex items-center gap-2 rounded-2xl bg-[#952d2d]/10 px-4 py-2 text-base font-semibold text-[#c43232] transition hover:bg-[#952d2d]/15"
+            >
+              <Trash2 className="h-5 w-5" />
+              Удалить папку
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleClose}
+            aria-label="Закрыть"
+            className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#222226]/5 text-[#424247] transition hover:bg-[#222226]/10"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-8">
@@ -497,7 +564,7 @@ function CreateFolderModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && name.trim() && !create.isPending) create.mutate()
+              if (e.key === 'Enter' && name.trim() && !save.isPending) save.mutate()
             }}
             placeholder="Название папки..."
             className="mt-1 w-full border-0 border-b border-[#e5e5e5] pb-4 text-[28px] font-medium leading-[1.3] tracking-[-0.4645px] text-[#222226] outline-none placeholder:text-[#222226]/22"
@@ -563,31 +630,44 @@ function CreateFolderModal({
           </div>
         </div>
 
-        {create.isError && (
-          <p className="text-xs text-destructive">Ошибка создания папки: {String(create.error)}</p>
+        {save.isError && (
+          <p className="text-xs text-destructive">Ошибка сохранения папки: {String(save.error)}</p>
         )}
       </div>
 
       <div className="flex shrink-0 items-center justify-between gap-4 border-t border-[#e5e5e5] px-8 py-6">
-        <p className="text-[14.3px] font-medium leading-[1.5] text-[#222226]">
-          {selected.size > 0 ? `Выбрано: ${formatDocCount(selected.size)}` : ''}
-        </p>
+        {isEdit ? (
+          <div className="text-[14.3px] font-medium leading-[1.5] text-[#222226]">
+            <p>
+              <span className="text-[#222226]/50">Добавлено: </span>
+              {formatDocCount(addedCount)}
+            </p>
+            <p>
+              <span className="text-[#222226]/50">Удалено: </span>
+              {formatDocCount(removedCount)}
+            </p>
+          </div>
+        ) : (
+          <p className="text-[14.3px] font-medium leading-[1.5] text-[#222226]">
+            {selected.size > 0 ? `Выбрано: ${formatDocCount(selected.size)}` : ''}
+          </p>
+        )}
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
             onClick={handleClose}
-            disabled={create.isPending}
+            disabled={save.isPending}
             className="rounded-2xl bg-[#222226]/5 px-6 py-3 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10 disabled:opacity-50"
           >
             Отмена
           </button>
           <button
             type="button"
-            onClick={() => create.mutate()}
-            disabled={!name.trim() || create.isPending}
+            onClick={() => save.mutate()}
+            disabled={!name.trim() || save.isPending}
             className="rounded-2xl bg-[#4b4ce6] px-6 py-3 text-base font-semibold text-[#ebf1ff] transition hover:opacity-90 disabled:opacity-50"
           >
-            {create.isPending ? 'Создаю…' : 'Создать папку'}
+            {save.isPending ? 'Сохраняю…' : isEdit ? 'Сохранить' : 'Создать папку'}
           </button>
         </div>
       </div>

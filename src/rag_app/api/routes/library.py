@@ -58,6 +58,21 @@ async def create_folder(request: Request, body: FolderIn) -> dict:
         return {"id": str(folder.id), "name": folder.name}
 
 
+@router.patch("/folders/{folder_id}")
+async def rename_folder(request: Request, folder_id: uuid.UUID, body: FolderIn) -> dict:
+    user: User = request.state.user
+    name = body.name.strip()
+    async with request.app.state.sessionmaker() as db:
+        folder = await db.get(Folder, folder_id)
+        if folder is None or (
+            not user.is_admin and folder.owner_sub is not None and folder.owner_sub != user.sub
+        ):
+            raise HTTPException(404, "папка не найдена")
+        folder.name = name
+        await db.commit()
+        return {"id": str(folder.id), "name": folder.name}
+
+
 class DocumentFolderIn(BaseModel):
     folder_id: uuid.UUID | None
 

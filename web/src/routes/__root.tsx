@@ -191,16 +191,6 @@ function FilterKindPicker({ value, onChange }: { value: string; onChange: (value
   )
 }
 
-function BarsIcon() {
-  return (
-    <span className="flex h-6 w-6 flex-col items-center justify-center gap-[3px]" aria-hidden="true">
-      <span className="h-[1.7px] w-4 rounded-full bg-[#424247]" />
-      <span className="h-[1.7px] w-4 rounded-full bg-[#424247]" />
-      <span className="h-[1.7px] w-4 rounded-full bg-[#424247]" />
-    </span>
-  )
-}
-
 function ProfileButton() {
   const user = currentUser()
   const path = useRouterState({ select: (s) => s.location.pathname })
@@ -263,13 +253,7 @@ function RootLayout() {
       <div className="min-h-screen bg-white">
         <header className="sticky top-0 z-20 border-b border-[#222226]/[0.12] bg-white">
           <div className="flex min-h-[57px] items-center justify-between gap-2 px-3 py-3 md:gap-4 md:px-8">
-            <button
-              type="button"
-              aria-label="Меню"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#222226]/5 text-[#424247] transition hover:bg-[#222226]/10"
-            >
-              <BarsIcon />
-            </button>
+            <div className="h-10 w-10 shrink-0" aria-hidden="true" />
             <HeaderSearch />
             <ProfileButton />
           </div>

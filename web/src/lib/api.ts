@@ -272,6 +272,7 @@ export const api = {
 
   listFolders: () => jget<Folder[]>('/api/folders'),
   createFolder: (name: string) => jsend<Folder>('/api/folders', 'POST', { name }),
+  renameFolder: (id: string, name: string) => jsend<Folder>(`/api/folders/${id}`, 'PATCH', { name }),
   deleteFolder: (id: string) => jdel(`/api/folders/${id}`),
   moveDocument: (id: string, folder_id: string | null) =>
     jsend<{ status: string }>(`/api/documents/${id}/folder`, 'PATCH', { folder_id }),
