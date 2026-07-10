@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -9,6 +9,7 @@ import {
   Folder as FolderIcon,
   Loader2,
   Table as TableIcon,
+  Timer,
   Trash2,
   X,
 } from 'lucide-react'
@@ -331,12 +332,10 @@ function Chat() {
             busy={busy}
             autoFocus={!started}
             placeholder={started ? 'Спросите ещё что-нибудь или соберите таблицу…' : 'Введите запрос'}
+            temporary={temporary}
+            setTemporary={setTemporary}
+            showTempToggle={!sid}
           />
-          {!sid && (
-            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-              <TempToggle temporary={temporary} setTemporary={setTemporary} />
-            </div>
-          )}
         </div>
       </div>
 
@@ -537,6 +536,8 @@ function SourcePanel({ citation, onClose }: { citation: Citation; onClose: () =>
   )
 }
 
+const COMPOSER_MAX_H = 160 // px
+
 /** Поле ввода: многострочное, Enter — отправка, Shift+Enter — перенос.
  *  Доп. действие «Таблица» — извлечь структурированную таблицу из источников. */
 function Composer({
@@ -547,6 +548,9 @@ function Composer({
   busy,
   placeholder,
   autoFocus,
+  temporary,
+  setTemporary,
+  showTempToggle,
 }: {
   value: string
   setValue: (v: string) => void
@@ -555,34 +559,90 @@ function Composer({
   busy: boolean
   placeholder: string
   autoFocus?: boolean
+  temporary: boolean
+  setTemporary: (v: boolean) => void
+  showTempToggle: boolean
 }) {
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const [thumb, setThumb] = useState<{ top: number; height: number } | null>(null)
+
+  // Авто-рост textarea (до COMPOSER_MAX_H) + свой тонкий скроллбар вместо
+  // нативного — нативный уродливо смотрится в узком однострочном поле
+  // (Figma 54:2519: трек 4px + плавающий thumb вместо browser-scrollbar).
+  const sync = () => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`
+    const { scrollTop, scrollHeight, clientHeight } = el
+    if (scrollHeight <= clientHeight + 1) {
+      setThumb(null)
+      return
+    }
+    const h = Math.max((clientHeight / scrollHeight) * 100, 15)
+    const t = (scrollTop / (scrollHeight - clientHeight)) * (100 - h)
+    setThumb({ top: t, height: h })
+  }
+  useLayoutEffect(sync, [value])
+
   return (
     <div className="flex flex-col gap-3 rounded-[16px] border border-[#e5e5e5] bg-white px-4 pb-3.5 pt-4 shadow-sm transition focus-within:border-[#6269f3]/40">
-      <textarea
-        autoFocus={autoFocus}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            onSend()
-          }
-        }}
-        rows={1}
-        placeholder={placeholder}
-        className="max-h-40 min-h-[24px] w-full resize-none bg-transparent text-[16px] font-medium leading-[1.5] tracking-[-0.16px] text-[#222226] outline-none placeholder:text-[#222226]/22"
-      />
+      <div className="flex items-start gap-2">
+        <textarea
+          ref={taRef}
+          autoFocus={autoFocus}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onScroll={sync}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              onSend()
+            }
+          }}
+          rows={1}
+          placeholder={placeholder}
+          style={{ maxHeight: COMPOSER_MAX_H }}
+          className="min-h-[24px] w-full flex-1 resize-none overflow-y-auto bg-transparent text-[16px] font-medium leading-[1.5] tracking-[-0.16px] text-[#222226] outline-none placeholder:text-[#222226]/22 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        />
+        {thumb && (
+          <div className="relative w-1 shrink-0 self-stretch rounded-full bg-[#222226]/[0.12]">
+            <div
+              className="absolute left-0 w-1 rounded-full bg-[#424247]"
+              style={{ top: `${thumb.top}%`, height: `${thumb.height}%` }}
+            />
+          </div>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={onTable}
-          disabled={busy || !value.trim()}
-          title="Собрать структурированную таблицу из найденных фрагментов (с экспортом в XLSX)"
-          className="flex items-center gap-1.5 rounded-lg bg-[#222226]/[0.02] px-3 py-1.5 text-[13px] font-medium text-[#222226]/70 transition hover:bg-[#222226]/[0.05] disabled:opacity-40"
-        >
-          <TableIcon className="h-4 w-4" />
-          Таблица
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onTable}
+            disabled={busy || !value.trim()}
+            title="Собрать структурированную таблицу из найденных фрагментов (с экспортом в XLSX)"
+            className="flex items-center gap-1.5 rounded-lg bg-[#222226]/[0.02] px-3 py-1.5 text-[13px] font-medium text-[#222226]/70 transition hover:bg-[#222226]/[0.05] disabled:opacity-40"
+          >
+            <TableIcon className="h-4 w-4" />
+            Таблица
+          </button>
+          {showTempToggle && (
+            <button
+              type="button"
+              onClick={() => setTemporary(!temporary)}
+              title="Не сохранять и не использовать долговременную память в этом чате"
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition',
+                temporary
+                  ? 'bg-[#4b4ce6]/10 text-[#222226]'
+                  : 'bg-[#222226]/[0.02] text-[#222226]/70 hover:bg-[#222226]/[0.05]',
+              )}
+            >
+              <Timer className="h-4 w-4" />
+              Временный чат
+            </button>
+          )}
+        </div>
         <button
           type="button"
           onClick={onSend}
@@ -594,24 +654,6 @@ function Composer({
         </button>
       </div>
     </div>
-  )
-}
-
-function TempToggle({
-  temporary,
-  setTemporary,
-}: {
-  temporary: boolean
-  setTemporary: (v: boolean) => void
-}) {
-  return (
-    <label
-      className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-[#e5e5e5] bg-white px-3 py-1.5 text-xs text-[#222226]/60"
-      title="Не сохранять и не использовать долговременную память в этом чате"
-    >
-      <input type="checkbox" checked={temporary} onChange={(e) => setTemporary(e.target.checked)} />
-      Временный чат
-    </label>
   )
 }
 
