@@ -261,7 +261,7 @@ function RootLayout() {
             <div className="flex items-center gap-1.5">
               <TabLink to="/" label="Документы" />
               <TabLink to="/upload" label="Загрузка" />
-              <TabLink to="/chat" label="Чат" />
+              <TabLink to="/chat" label="ИИ-консультант" />
             </div>
           </nav>
         </header>

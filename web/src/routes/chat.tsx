@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Trash2, FileText, X, Table as TableIcon, ChevronDown, Download, Folder as FolderIcon } from 'lucide-react'
+import {
+  ArrowUp,
+  Check,
+  Download,
+  Eye,
+  Folder as FolderIcon,
+  Loader2,
+  Table as TableIcon,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { api, type ChatSession, type Citation, type Document, type Folder, type ExtractTable } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
@@ -52,6 +62,7 @@ function Chat() {
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
   const [scope, setScope] = useState<Scope>(doc ? { kind: 'docs', docIds: [doc] } : { kind: 'all' })
+  const [sideTab, setSideTab] = useState<'docs' | 'sessions'>('docs')
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -226,112 +237,244 @@ function Chat() {
   const started = messages.length > 0
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-49px)] max-w-5xl gap-3 px-4">
-      {/* Сайдбар истории чатов */}
-      <aside className="hidden w-60 shrink-0 flex-col py-3 md:flex">
-        <Button variant="outline" size="sm" className="mb-2" onClick={newChat} disabled={busy}>
-          + Новый чат
-        </Button>
-        <div className="flex-1 space-y-0.5 overflow-auto pr-1">
-          {sessionsQ.data?.length === 0 && (
-            <p className="px-1 pt-2 text-xs text-muted-foreground">История пуста</p>
-          )}
-          {sessionsQ.data?.map((s) => (
-            <div
-              key={s.id}
-              className={cn(
-                'group flex items-center rounded-md',
-                s.id === sid ? 'bg-accent' : 'hover:bg-accent/60',
-              )}
-            >
-              <button
-                onClick={() => openSession(s)}
-                title={s.title}
-                className={cn(
-                  'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs',
-                  s.id === sid ? 'font-medium text-accent-foreground' : 'text-muted-foreground',
-                )}
-              >
-                {s.title}
-              </button>
-              <button
-                onClick={(e) => deleteSession(s, e)}
-                title="Удалить чат"
-                className="mr-1 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-background hover:text-destructive group-hover:opacity-70 hover:!opacity-100"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
+    <div className="mx-auto flex h-[calc(100vh-97px)] max-w-[1136px] gap-6 px-4 py-8">
+      {/* Сайдбар: переключатель «Документы» (область чата) / «Мои чаты» (история) */}
+      <aside className="hidden h-full w-[320px] shrink-0 flex-col gap-5 rounded-[24px] bg-[#222226]/[0.02] p-6 md:flex">
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setSideTab('docs')}
+            className={cn(
+              'text-[16px] font-semibold leading-[1.5] tracking-[-0.16px] transition',
+              sideTab === 'docs' ? 'text-[#222226]' : 'text-[#222226]/50 hover:text-[#222226]/70',
+            )}
+          >
+            Документы
+          </button>
+          <span className="h-4 w-px shrink-0 bg-[#e5e5e5]" />
+          <button
+            type="button"
+            onClick={() => setSideTab('sessions')}
+            className={cn(
+              'text-[16px] font-semibold leading-[1.5] tracking-[-0.16px] transition',
+              sideTab === 'sessions' ? 'text-[#222226]' : 'text-[#222226]/50 hover:text-[#222226]/70',
+            )}
+          >
+            Мои чаты
+          </button>
         </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {sideTab === 'docs' ? (
+            <DocPicker scope={scope} onChange={onScopeChange} docs={docsQ.data ?? []} folders={foldersQ.data ?? []} />
+          ) : (
+            <SessionList
+              sessions={sessionsQ.data ?? []}
+              activeSid={sid}
+              onOpen={openSession}
+              onDelete={deleteSession}
+              onNewChat={newChat}
+              busy={busy}
+            />
+          )}
+        </div>
+
+        {sideTab === 'docs' && (
+          <button
+            type="button"
+            onClick={() => onScopeChange({ kind: 'all' })}
+            disabled={scope.kind === 'all'}
+            className="flex shrink-0 items-center justify-center rounded-2xl bg-[#222226]/5 px-6 py-3 text-[16px] font-semibold text-[#424247] transition hover:bg-[#222226]/10 disabled:opacity-40"
+          >
+            Очистить выбор
+          </button>
+        )}
       </aside>
 
       {/* Колонка чата */}
       <div className="flex min-w-0 flex-1 flex-col">
         {!started ? (
-          /* Пустой чат: ввод по центру, как в Claude/ChatGPT */
-          <div className="flex flex-1 flex-col items-center justify-center px-2 pb-12">
-            <h2 className="text-xl font-semibold">Чат с документами</h2>
-            <p className="mb-5 mt-1 text-sm text-muted-foreground">
+          <div className="flex flex-1 flex-col items-center justify-center px-2 pb-12 text-center">
+            <h2 className="text-xl font-semibold text-[#222226]">Чат с документами</h2>
+            <p className="mb-5 mt-1 text-sm text-[#222226]/50">
               Задайте вопрос или извлеките таблицу — со ссылками на источники.
             </p>
-            <div className="w-full max-w-2xl">
-              <Composer
-                value={input}
-                setValue={setInput}
-                onSend={send}
-                onTable={runTable}
-                busy={busy}
-                autoFocus
-                placeholder="Например: сравни требования к испытаниям и сведи в таблицу"
-              />
-              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                <ScopePicker scope={scope} onChange={onScopeChange} docs={docsQ.data ?? []} folders={foldersQ.data ?? []} />
-                <TempToggle temporary={temporary} setTemporary={setTemporary} />
-              </div>
-            </div>
           </div>
         ) : (
           <>
-            <div className="flex flex-wrap items-center gap-2 py-3">
-              <ScopePicker scope={scope} onChange={onScopeChange} docs={docsQ.data ?? []} folders={foldersQ.data ?? []} />
-              {/* «Временный» выбирается только при старте нового чата */}
-              {!sid && <TempToggle temporary={temporary} setTemporary={setTemporary} />}
-              {sid && (
-                <div className="ml-auto flex items-center gap-1.5">
-                  <span className="text-xs text-muted-foreground">Сохранить:</span>
-                  <Button variant="outline" size="sm" onClick={() => exportChat('md')}>
-                    MD
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => exportChat('docx')}>
-                    DOCX
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            <div className="flex-1 space-y-3 overflow-auto pb-4">
+            {sid && (
+              <div className="flex shrink-0 items-center justify-end gap-1.5 pb-3 text-xs text-muted-foreground">
+                Сохранить:
+                <Button variant="ghost" size="sm" onClick={() => exportChat('md')}>
+                  MD
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => exportChat('docx')}>
+                  DOCX
+                </Button>
+              </div>
+            )}
+            <div className="flex-1 space-y-4 overflow-auto pb-4">
               {messages.map((m, i) => (
                 <Bubble key={i} m={m} onCite={setSource} activeCite={source} />
               ))}
               <div ref={bottomRef} />
             </div>
-
-            <div className="border-t pt-3 pb-6">
-              <Composer
-                value={input}
-                setValue={setInput}
-                onSend={send}
-                onTable={runTable}
-                busy={busy}
-                placeholder="Спросите ещё что-нибудь или соберите таблицу…"
-              />
-            </div>
           </>
         )}
+
+        <div className="shrink-0 pt-3">
+          <Composer
+            value={input}
+            setValue={setInput}
+            onSend={send}
+            onTable={runTable}
+            busy={busy}
+            autoFocus={!started}
+            placeholder={started ? 'Спросите ещё что-нибудь или соберите таблицу…' : 'Введите запрос'}
+          />
+          {!sid && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <TempToggle temporary={temporary} setTemporary={setTemporary} />
+            </div>
+          )}
+        </div>
       </div>
 
       {source && <SourcePanel citation={source} onClose={() => setSource(null)} />}
+    </div>
+  )
+}
+
+/** Область чата (сайдбар, вкладка «Документы»): папки (быстрый выбор всей папки)
+ *  + плоский чек-лист документов (мультивыбор), в духе Figma 54:2342. */
+function DocPicker({
+  scope,
+  onChange,
+  docs,
+  folders,
+}: {
+  scope: Scope
+  onChange: (s: Scope) => void
+  docs: Document[]
+  folders: Folder[]
+}) {
+  const checked = (id: string) => scope.kind === 'docs' && scope.docIds.includes(id)
+  function toggleDoc(id: string) {
+    const cur = scope.kind === 'docs' ? scope.docIds : []
+    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]
+    onChange(next.length ? { kind: 'docs', docIds: next } : { kind: 'all' })
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {folders.length > 0 && (
+        <div className="flex flex-col gap-0.5">
+          <div className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-[#c1c1c1]">Папки</div>
+          {folders.map((f) => {
+            const active = scope.kind === 'folder' && scope.folderId === f.id
+            return (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => onChange(active ? { kind: 'all' } : { kind: 'folder', folderId: f.id })}
+                className={cn(
+                  'flex items-center gap-2 rounded-lg px-1 py-1.5 text-left text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] transition',
+                  active ? 'text-[#222226]' : 'text-[#222226]/70 hover:bg-[#222226]/[0.04]',
+                )}
+              >
+                <FolderIcon className={cn('h-4 w-4 shrink-0', active ? 'text-[#4b4ce6]' : 'text-[#222226]/35')} />
+                <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                <span className="shrink-0 text-[11px] text-[#c1c1c1]">{f.documents}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {docs.length === 0 && <p className="px-1 text-[13px] text-[#c1c1c1]">Нет готовых документов</p>}
+        {docs.map((d) => (
+          <label key={d.id} className="flex cursor-pointer items-center gap-2.5">
+            <span
+              className={cn(
+                'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition',
+                checked(d.id) ? 'border-[#4b4ce6] bg-[#4b4ce6]' : 'border-[#e5e5e5] bg-white',
+              )}
+            >
+              {checked(d.id) && <Check className="h-3 w-3 text-white" />}
+            </span>
+            <input
+              type="checkbox"
+              checked={checked(d.id)}
+              onChange={() => toggleDoc(d.id)}
+              className="sr-only"
+            />
+            <span
+              className="min-w-0 flex-1 truncate text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] text-[#222226]"
+              title={d.filename}
+            >
+              {d.filename}
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Сайдбар, вкладка «Мои чаты»: история сессий + создание нового чата. */
+function SessionList({
+  sessions,
+  activeSid,
+  onOpen,
+  onDelete,
+  onNewChat,
+  busy,
+}: {
+  sessions: ChatSession[]
+  activeSid: string | null
+  onOpen: (s: ChatSession) => void
+  onDelete: (s: ChatSession, e: React.MouseEvent) => void
+  onNewChat: () => void
+  busy: boolean
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Button variant="outline" size="sm" onClick={onNewChat} disabled={busy}>
+        + Новый чат
+      </Button>
+      <div className="flex flex-col gap-0.5">
+        {sessions.length === 0 && <p className="px-1 pt-2 text-[13px] text-[#c1c1c1]">История пуста</p>}
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            className={cn(
+              'group flex items-center rounded-lg',
+              s.id === activeSid ? 'bg-[#4b4ce6]/10' : 'hover:bg-[#222226]/[0.04]',
+            )}
+          >
+            <button
+              type="button"
+              onClick={() => onOpen(s)}
+              title={s.title}
+              className={cn(
+                'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-[13px]',
+                s.id === activeSid ? 'font-medium text-[#222226]' : 'text-[#222226]/60',
+              )}
+            >
+              {s.title}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => onDelete(s, e)}
+              title="Удалить чат"
+              className="mr-1 shrink-0 rounded p-1 text-[#c1c1c1] opacity-0 transition hover:bg-white hover:text-destructive group-hover:opacity-70 hover:!opacity-100"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -414,7 +557,7 @@ function Composer({
   autoFocus?: boolean
 }) {
   return (
-    <div className="flex items-end gap-2 rounded-xl border bg-card p-2 shadow-sm transition focus-within:ring-2 focus-within:ring-ring">
+    <div className="flex flex-col gap-3 rounded-[16px] border border-[#e5e5e5] bg-white px-4 pb-3.5 pt-4 shadow-sm transition focus-within:border-[#6269f3]/40">
       <textarea
         autoFocus={autoFocus}
         value={value}
@@ -427,137 +570,29 @@ function Composer({
         }}
         rows={1}
         placeholder={placeholder}
-        className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
+        className="max-h-40 min-h-[24px] w-full resize-none bg-transparent text-[16px] font-medium leading-[1.5] tracking-[-0.16px] text-[#222226] outline-none placeholder:text-[#222226]/22"
       />
-      <Button
-        variant="outline"
-        onClick={onTable}
-        disabled={busy || !value.trim()}
-        title="Собрать структурированную таблицу из найденных фрагментов (с экспортом в XLSX)"
-      >
-        <TableIcon className="h-4 w-4" />
-        Таблица
-      </Button>
-      <Button onClick={onSend} disabled={busy || !value.trim()}>
-        {busy ? '…' : 'Спросить'}
-      </Button>
-    </div>
-  )
-}
-
-/** Выбор области чата: вся библиотека / папка / произвольный набор документов. */
-function ScopePicker({
-  scope,
-  onChange,
-  docs,
-  folders,
-}: {
-  scope: Scope
-  onChange: (s: Scope) => void
-  docs: Document[]
-  folders: Folder[]
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
-
-  const label =
-    scope.kind === 'folder'
-      ? `Папка: ${folders.find((f) => f.id === scope.folderId)?.name ?? '…'}`
-      : scope.kind === 'docs'
-        ? scope.docIds.length === 1
-          ? (docs.find((d) => d.id === scope.docIds[0])?.filename ?? '1 документ')
-          : `Выбрано документов: ${scope.docIds.length}`
-        : 'Вся библиотека'
-
-  const checked = (id: string) => scope.kind === 'docs' && scope.docIds.includes(id)
-  function toggleDoc(id: string) {
-    const cur = scope.kind === 'docs' ? scope.docIds : []
-    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]
-    onChange(next.length ? { kind: 'docs', docIds: next } : { kind: 'all' })
-  }
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-[280px] items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-sm transition-colors hover:bg-accent"
-        title="Область поиска для чата и таблиц"
-      >
-        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-left">{label}</span>
-        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-40 mt-1 max-h-[62vh] w-[330px] overflow-auto rounded-lg border bg-card p-1.5 shadow-2xl">
-          <button
-            onClick={() => {
-              onChange({ kind: 'all' })
-              setOpen(false)
-            }}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent',
-              scope.kind === 'all' && 'bg-accent font-medium',
-            )}
-          >
-            <FileText className="h-4 w-4 text-muted-foreground" />
-            Вся библиотека
-          </button>
-
-          {folders.length > 0 && (
-            <>
-              <div className="px-2 pb-0.5 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Папки
-              </div>
-              {folders.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => {
-                    onChange({ kind: 'folder', folderId: f.id })
-                    setOpen(false)
-                  }}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent',
-                    scope.kind === 'folder' && scope.folderId === f.id && 'bg-accent font-medium',
-                  )}
-                >
-                  <FolderIcon className="h-4 w-4 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{f.documents}</span>
-                </button>
-              ))}
-            </>
-          )}
-
-          <div className="px-2 pb-0.5 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Документы (можно несколько)
-          </div>
-          {docs.length === 0 && <div className="px-2 py-1 text-xs text-muted-foreground">Нет готовых документов</div>}
-          {docs.map((d) => (
-            <label
-              key={d.id}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
-            >
-              <input
-                type="checkbox"
-                checked={checked(d.id)}
-                onChange={() => toggleDoc(d.id)}
-                className="h-3.5 w-3.5 shrink-0"
-              />
-              <span className="min-w-0 flex-1 truncate" title={d.filename}>
-                {d.filename}
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={onTable}
+          disabled={busy || !value.trim()}
+          title="Собрать структурированную таблицу из найденных фрагментов (с экспортом в XLSX)"
+          className="flex items-center gap-1.5 rounded-lg bg-[#222226]/[0.02] px-3 py-1.5 text-[13px] font-medium text-[#222226]/70 transition hover:bg-[#222226]/[0.05] disabled:opacity-40"
+        >
+          <TableIcon className="h-4 w-4" />
+          Таблица
+        </button>
+        <button
+          type="button"
+          onClick={onSend}
+          disabled={busy || !value.trim()}
+          title="Отправить"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#222226]/5 text-[#222226] transition hover:bg-[#222226]/10 disabled:opacity-40"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+        </button>
+      </div>
     </div>
   )
 }
@@ -571,7 +606,7 @@ function TempToggle({
 }) {
   return (
     <label
-      className="flex cursor-pointer items-center gap-1.5 rounded-lg border bg-card px-3 py-1.5 text-xs text-muted-foreground"
+      className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-[#e5e5e5] bg-white px-3 py-1.5 text-xs text-[#222226]/60"
       title="Не сохранять и не использовать долговременную память в этом чате"
     >
       <input type="checkbox" checked={temporary} onChange={(e) => setTemporary(e.target.checked)} />
@@ -646,14 +681,16 @@ function Bubble({
 }) {
   if (m.role === 'user')
     return (
-      <div className="ml-auto max-w-[80%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
-        {m.content}
+      <div className="ml-auto max-w-[85%] rounded-2xl bg-[#222226]/[0.04] px-4 py-2">
+        <p className="text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] text-[#222226]">
+          {m.content}
+        </p>
       </div>
     )
   return (
     <div className="max-w-[90%]">
       {m.trace.length > 0 && (
-        <div className="mb-1 border-l-2 border-border pl-2 text-xs text-muted-foreground">
+        <div className="mb-1.5 space-y-0.5 border-l-2 border-[#e5e5e5] pl-2.5 text-[12px] text-[#222226]/45">
           {m.trace.map((t, i) => (
             <div key={i}>{t}</div>
           ))}
@@ -664,24 +701,25 @@ function Bubble({
       ) : m.table && m.table.rows.length > 0 ? (
         <TableCard t={m.table} />
       ) : (
-        <div className="rounded-lg bg-card px-3 py-2 shadow-sm">
+        <div className="text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] text-[#222226]">
           <Markdown content={m.content || '…'} />
         </div>
       )}
       {m.citations.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {dedupeCitations(m.citations).map((c) => (
             <button
               key={c.n}
               onClick={() => onCite(c)}
               title={c.heading_path}
               className={cn(
-                'rounded-md border px-2 py-0.5 text-xs transition-colors hover:bg-accent',
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition',
                 activeCite?.n === c.n && activeCite?.document_id === c.document_id
-                  ? 'border-primary bg-accent text-accent-foreground'
-                  : 'bg-accent/40 text-accent-foreground',
+                  ? 'bg-[#4b4ce6]/10 text-[#222226]'
+                  : 'bg-[#222226]/[0.02] text-[#222226]/70 hover:bg-[#222226]/[0.05]',
               )}
             >
+              <Eye className="h-3.5 w-3.5" />
               [{c.n}] {c.filename}
               {c.page_start != null ? ` · стр. ${c.page_start + 1}` : ''}
             </button>
