@@ -74,19 +74,6 @@ export interface TranslationInfo {
   error: string | null
 }
 
-export interface SearchHit {
-  chunk_id: string
-  document_id: string
-  filename: string
-  heading_path: string
-  kind: string
-  page_start: number | null
-  page_end: number | null
-  snippet: string
-  score: number
-  match?: 'filename' | 'content'
-}
-
 export interface Segment {
   id: string
   idx: number
@@ -285,24 +272,6 @@ export const api = {
       'POST',
       { target_lang },
     ),
-
-  search: (
-    q: string,
-    opts: {
-      document_id?: string
-      folder_id?: string
-      kind?: string
-      date_from?: string
-      date_to?: string
-    } = {},
-  ) => {
-    const p = new URLSearchParams({ q })
-    for (const k of ['document_id', 'folder_id', 'kind', 'date_from', 'date_to'] as const) {
-      const v = opts[k]
-      if (v) p.set(k, v)
-    }
-    return jget<SearchHit[]>(`/api/search?${p}`)
-  },
 
   listSessions: () => jget<ChatSession[]>('/api/chat/sessions'),
   getSessionMessages: (id: string) =>

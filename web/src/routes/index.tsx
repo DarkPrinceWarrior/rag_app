@@ -22,7 +22,6 @@ import {
   translationDownloadUrl,
   type Document,
   type Folder,
-  type DocFilters,
 } from '@/lib/api'
 import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
@@ -227,7 +226,7 @@ function Library() {
         ) : visibleDocs.length === 0 ? (
           <p className="mt-6 rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
             {searchActive
-              ? 'По названию документа ничего не найдено. Совпадения в содержимом показаны ниже.'
+              ? 'По названию документа ничего не найдено.'
               : 'Пока нет документов. Загрузите PDF/DOCX/XLSX/PPTX/JPG/PNG/TXT.'}
           </p>
         ) : (
@@ -235,7 +234,6 @@ function Library() {
         )}
       </section>
 
-      <SearchResults folder={folder} filters={filters} />
       <FolderModal
         open={editFolderOpen}
         onClose={() => setEditFolderOpen(false)}
@@ -988,69 +986,4 @@ async function downloadFile(url: string) {
   a.download = name
   a.click()
   URL.revokeObjectURL(a.href)
-}
-
-function SearchResults({ folder, filters }: { folder: string; filters: DocFilters }) {
-  const { submitted } = useLibrarySearch()
-  const searchQ = useQuery({
-    queryKey: ['search', submitted, folder, filters],
-    queryFn: () => api.search(submitted, { ...(folder ? { folder_id: folder } : {}), ...filters }),
-    enabled: submitted.length >= 2,
-  })
-  if (submitted.length < 2) return null
-  const contentHits = (searchQ.data ?? []).filter((h) => h.match !== 'filename')
-
-  return (
-    <section className="mt-10 min-w-0">
-      <div className="min-w-0">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="truncate text-[23px] font-semibold leading-[1.3] text-[#222226]">
-              Совпадения в содержимом
-            </h2>
-            <div className="mt-0.5 text-xs text-muted-foreground">Фрагменты документов по запросу: {submitted}</div>
-          </div>
-        </div>
-        {searchQ.isLoading ? (
-          <p className="mt-6 text-sm text-muted-foreground">Ищу…</p>
-        ) : (
-          searchQ.data && (
-            <div className="mt-6 grid min-w-0 gap-2">
-              {contentHits.length === 0 && (
-                <p className="rounded-lg border border-dashed bg-card px-5 py-8 text-sm text-muted-foreground">
-                  Совпадений внутри документов не найдено.
-                </p>
-              )}
-              {contentHits.map((h, i) => (
-                <Link
-                  key={`${h.document_id}-${h.chunk_id || `f${i}`}`}
-                  to="/view/$id"
-                  params={{ id: h.document_id }}
-                  search={{ page: h.page_start != null ? h.page_start + 1 : undefined }}
-                  className="group block min-w-0 overflow-hidden rounded-lg border border-[#e5e5e5] bg-card px-4 py-3 text-sm shadow-sm transition hover:border-[#6269f3]/35 hover:bg-[#222226]/[0.02] hover:shadow-[0_7px_14px_rgba(0,0,0,0.05)]"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate font-medium leading-[1.45] text-[#222226]">{h.filename}</div>
-                      {h.heading_path && (
-                        <div className="mt-0.5 truncate text-xs text-muted-foreground">{h.heading_path}</div>
-                      )}
-                    </div>
-                    <span className="shrink-0 rounded-full bg-[#222226]/5 px-2 py-1 text-[11px] font-medium leading-none text-muted-foreground">
-                      {h.page_start != null ? `стр. ${h.page_start + 1}` : 'фрагмент'}
-                    </span>
-                  </div>
-                  {h.snippet && (
-                    <div className="mt-2 line-clamp-2 break-words border-l-2 border-[#6269f3]/25 pl-3 leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
-                      {h.snippet}
-                    </div>
-                  )}
-                </Link>
-              ))}
-            </div>
-          )
-        )}
-      </div>
-    </section>
-  )
 }
