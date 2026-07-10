@@ -8,7 +8,7 @@ from pathlib import Path
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
@@ -81,7 +81,11 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 
 @router.post("", response_model=DocumentOut, status_code=201)
-async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
+async def upload_document(
+    request: Request,
+    file: UploadFile,
+    parser_backend: str | None = Form(None),
+) -> DocumentOut:
     # Направление перевода НЕ выбирается вручную (ТЗ §4.3, домен ru/en/zh):
     # язык-источник определяется автоматически по тексту на этапе перевода,
     # цель — всегда русский (русский документ не переводится). "auto" —
@@ -92,6 +96,10 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
     if ext not in ALLOWED_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
         raise HTTPException(415, f"поддерживаются {allowed}, получено: {ext or 'без расширения'}")
+    # Парсер выбирается на загрузке (страница «Загрузка»): null → дефолт из
+    # settings.pdf_parser_backend (см. _parser_backend в workers/tasks.py).
+    if parser_backend is not None and parser_backend not in _PARSER_BACKENDS:
+        raise HTTPException(422, f"parser_backend должен быть один из: {', '.join(sorted(_PARSER_BACKENDS))}")
 
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
@@ -129,6 +137,7 @@ async def upload_document(request: Request, file: UploadFile) -> DocumentOut:
             s3_key_original=s3_key,
             source_lang=source_lang,
             target_lang=target_lang,
+            parser_backend=parser_backend,
         )
         session.add(doc)
         await session.commit()

@@ -260,6 +260,7 @@ function RootLayout() {
           <nav className="flex h-[72px] items-end overflow-x-auto border-t border-[#222226]/[0.04] px-4 pt-8 md:px-[168px]">
             <div className="flex items-center gap-1.5">
               <TabLink to="/" label="Документы" />
+              <TabLink to="/upload" label="Загрузка" />
               <TabLink to="/chat" label="Чат" />
             </div>
           </nav>

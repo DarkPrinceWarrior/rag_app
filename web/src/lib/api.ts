@@ -336,11 +336,13 @@ export const api = {
     scope: { document_id?: string | null; folder_id?: string; document_ids?: string[] } = {},
   ) => jsend<ExtractTable>('/api/extract/table', 'POST', { query, ...scope }),
 
-  async uploadDocument(file: File): Promise<Document> {
+  async uploadDocument(file: File, parserBackend?: string): Promise<Document> {
     // Направление перевода не выбирается: язык-источник определяется
-    // автоматически, цель всегда русский (ТЗ §4.3).
+    // автоматически, цель всегда русский (ТЗ §4.3). parserBackend — движок
+    // парсинга pdf_text, выбирается на странице «Загрузка» (страница /upload).
     const fd = new FormData()
     fd.append('file', file)
+    if (parserBackend) fd.append('parser_backend', parserBackend)
     const r = await authFetch('/api/documents', { method: 'POST', body: fd })
     if (!r.ok) throw new Error(`${r.status}: ${(await r.json().catch(() => ({}))).detail ?? r.statusText}`)
     return r.json()

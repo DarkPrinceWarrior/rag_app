@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -27,6 +27,16 @@ import {
 import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 import { useLibrarySearch } from '@/lib/librarySearch'
+import {
+  DIRECTION,
+  FORMAT_TONE,
+  documentFormat,
+  formatBytes,
+  formatDate,
+  formatDocCount,
+  formatFileCount,
+  inProgress,
+} from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from '@/components/ui/menu'
 import { ConfirmDialog, Modal } from '@/components/ui/modal'
@@ -34,79 +44,13 @@ import { StatusBadge } from '@/components/StatusBadge'
 
 export const Route = createFileRoute('/')({ component: Library })
 
-const inProgress = (d: Document) => !['done', 'error'].includes(d.status)
-
-// Бейдж направления перевода: источник определён автоматически, цель всегда RU.
-// Русский документ не переводится; "auto" — язык ещё не определён (до перевода).
-const DIRECTION: Record<string, { label: string; cls: string }> = {
-  en: { label: 'EN → RU', cls: 'bg-blue-50 text-blue-700' },
-  zh: { label: 'ZH → RU', cls: 'bg-rose-50 text-rose-700' },
-  ru: { label: 'RU · без перевода', cls: 'bg-muted text-muted-foreground' },
-}
-
-const FORMAT_TONE: Record<string, { badge: string; surface: string }> = {
-  DOCX: { badge: 'bg-blue-50 text-[#0a78ff]', surface: 'group-hover:bg-blue-50/60' },
-  PDF: { badge: 'bg-red-50 text-[#ff160a]', surface: 'group-hover:bg-red-50/50' },
-  PPTX: { badge: 'bg-amber-50 text-[#ff9d0a]', surface: 'group-hover:bg-amber-50/70' },
-  XLSX: { badge: 'bg-emerald-50 text-[#008562]', surface: 'group-hover:bg-emerald-50/60' },
-  TXT: { badge: 'bg-slate-100 text-slate-700', surface: 'group-hover:bg-slate-100' },
-  IMAGE: { badge: 'bg-violet-50 text-violet-700', surface: 'group-hover:bg-violet-50/70' },
-}
-
-function documentFormat(d: Document) {
-  const ext = /\.([a-z0-9]+)$/i.exec(d.filename)?.[1]?.toUpperCase()
-  if (ext === 'JPG' || ext === 'JPEG' || ext === 'PNG') return 'IMAGE'
-  if (ext) return ext
-  if (d.kind.startsWith('pdf')) return 'PDF'
-  return d.kind.toUpperCase()
-}
-
-function formatBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 Б'
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']
-  let value = bytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${value.toLocaleString('ru-RU', {
-    maximumFractionDigits: value >= 10 || unit === 0 ? 0 : 1,
-  })} ${units[unit]}`
-}
-
-function formatDate(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return 'дата не указана'
-  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(date)
-}
-
-function formatFileCount(count: number) {
-  const mod10 = count % 10
-  const mod100 = count % 100
-  const word = mod10 === 1 && mod100 !== 11 ? 'файл' : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? 'файла' : 'файлов'
-  return `${count} ${word}`
-}
-
-function formatDocCount(count: number) {
-  const mod10 = count % 10
-  const mod100 = count % 100
-  const word =
-    mod10 === 1 && mod100 !== 11
-      ? 'документ'
-      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? 'документа'
-        : 'документов'
-  return `${count} ${word}`
-}
-
 function Library() {
   const qc = useQueryClient()
+  const navigate = Route.useNavigate()
   const { submitted, filters, clearSearch } = useLibrarySearch()
   const [folder, setFolder] = useState<string>('') // '' = все
   const [folderToDelete, setFolderToDelete] = useState<Folder | null>(null)
   const [editFolderOpen, setEditFolderOpen] = useState(false)
-  const fileInput = useRef<HTMLInputElement>(null)
 
   const docsQ = useQuery({
     queryKey: ['documents', filters],
@@ -115,10 +59,6 @@ function Library() {
   })
   const foldersQ = useQuery({ queryKey: ['folders'], queryFn: api.listFolders })
 
-  const upload = useMutation({
-    mutationFn: (file: File) => api.uploadDocument(file),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
-  })
   const deleteFolder = useMutation({
     mutationFn: (target: Folder) => api.deleteFolder(target.id),
     onSuccess: (_, target) => {
@@ -160,20 +100,6 @@ function Library() {
 
   return (
     <div className="mx-auto max-w-[1136px] px-4 pb-14 pt-8">
-      <input
-        ref={fileInput}
-        type="file"
-        hidden
-        accept=".pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.txt"
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) upload.mutate(file)
-          e.currentTarget.value = ''
-        }}
-      />
-
-      {upload.isError && <p className="mt-3 text-sm text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
-
       {!searchActive && !folder && (
       <section className="mt-8">
         <div className="flex items-center justify-between gap-4">
@@ -287,11 +213,10 @@ function Library() {
               <Button
                 variant="ghost"
                 className="h-10 rounded-2xl bg-[#222226]/5 px-4 text-[#424247] hover:bg-[#222226]/10"
-                disabled={upload.isPending}
-                onClick={() => fileInput.current?.click()}
+                onClick={() => navigate({ to: '/upload' })}
               >
                 <CloudUpload className="h-4 w-4" />
-                {upload.isPending ? 'Загружаю…' : 'Загрузить ещё'}
+                Загрузить ещё
               </Button>
             )}
           </div>
