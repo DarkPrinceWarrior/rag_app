@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Check } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Markdown } from '@/components/Markdown'
 import { cn } from '@/lib/utils'
@@ -70,18 +70,6 @@ function SegmentEditor() {
 
   return (
     <div>
-      <div className="flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
-        <Link
-          to="/view/$id"
-          params={{ id }}
-          className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          {docQ.data?.filename}
-        </Link>
-        {error && <span className="ml-auto text-xs text-destructive">{error}</span>}
-      </div>
-
       <div className="flex flex-wrap items-start justify-center gap-6 px-6 py-10 md:px-[168px]">
         <div className="w-full max-w-[548px]">
           <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
@@ -130,6 +118,8 @@ function SegmentEditor() {
             </button>
 
             <div className="h-px bg-[#e5e5e5]" />
+
+            {error && <p className="text-sm text-destructive">{error}</p>}
 
             <div className="flex gap-2">
               <button
