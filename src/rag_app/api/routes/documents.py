@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import mimetypes
 import uuid
 from datetime import date
@@ -22,6 +23,7 @@ from rag_app.db.models import Document, DocumentStatus, DocumentTranslation, Seg
 from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
 
 
@@ -816,6 +818,10 @@ async def delete_document(request: Request, doc_id: uuid.UUID) -> None:
     await storage.remove_object(settings.bucket_originals, doc.s3_key_original)
     if doc.s3_key_content_list:
         await storage.remove_object(settings.bucket_artifacts, doc.s3_key_content_list)
+    try:
+        await storage.remove_document_objects(settings.bucket_artifacts, doc_id)
+    except Exception:  # noqa: BLE001 — orphan cleanup не блокирует удаление документа
+        logger.exception("artifact prefix cleanup failed for document %s", doc_id)
     for attr, _media in _EXPORT_KINDS.values():
         key = getattr(doc, attr)
         if key:

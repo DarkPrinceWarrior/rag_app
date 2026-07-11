@@ -77,7 +77,7 @@ def _request(
     image_path: Path,
     schema: dict[str, Any],
     max_tokens: int,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[str, str | None]:
     image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
     response = client.post(
         endpoint.rstrip("/") + "/chat/completions",
@@ -105,10 +105,12 @@ def _request(
     )
     response.raise_for_status()
     payload = response.json()
-    content = payload["choices"][0]["message"]["content"]
+    choice = payload["choices"][0]
+    content = choice["message"]["content"]
     if not isinstance(content, str):
         raise ValueError("model response content must be a string")
-    return _parse_json_output(content), content
+    finish_reason = choice.get("finish_reason")
+    return content, finish_reason if isinstance(finish_reason, str) else None
 
 
 def main() -> None:
@@ -166,8 +168,9 @@ def main() -> None:
             print(f"{doc_id}: {args.name}", flush=True)
             started = time.monotonic()
             raw_output = ""
+            finish_reason = None
             try:
-                prediction, raw_output = _request(
+                raw_output, finish_reason = _request(
                     client,
                     endpoint=args.endpoint,
                     model=args.model,
@@ -175,6 +178,7 @@ def main() -> None:
                     schema=page["schema"],
                     max_tokens=args.max_tokens,
                 )
+                prediction = _parse_json_output(raw_output)
                 status = "ok"
                 error = None
             except Exception as exc:
@@ -192,6 +196,7 @@ def main() -> None:
                 "status": status,
                 "latency_s": latency_s,
                 "error": error,
+                "finish_reason": finish_reason,
             }
             summary_path.write_text(
                 json.dumps(summary, ensure_ascii=False, indent=2) + "\n",

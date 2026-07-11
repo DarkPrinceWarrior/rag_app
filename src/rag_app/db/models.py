@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pgvector.sqlalchemy import Vector
+from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -22,6 +22,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     String,
     Text,
@@ -213,6 +214,83 @@ class DocumentTranslation(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     s3_key_docx: Mapped[str | None] = mapped_column(String(1024), default=None)
     s3_key_source: Mapped[str | None] = mapped_column(String(1024), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DocumentStructuredArtifact(Base):
+    """Метаданные revision-safe sidecar; извлеченные значения лежат в private MinIO."""
+
+    __tablename__ = "document_structured_artifacts"
+    __table_args__ = (
+        CheckConstraint("parse_revision >= 0", name="ck_structured_artifact_revision"),
+        CheckConstraint("page_idx >= 0", name="ck_structured_artifact_page"),
+        CheckConstraint(
+            "artifact_type IN ('kie', 'chart', 'diagram')",
+            name="ck_structured_artifact_type",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'ready', 'error', 'superseded')",
+            name="ck_structured_artifact_status",
+        ),
+        CheckConstraint("schema_version >= 1", name="ck_structured_schema_version"),
+        CheckConstraint(
+            "request_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_structured_request_hash",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_structured_source_hash",
+        ),
+        CheckConstraint(
+            "content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_structured_content_hash",
+        ),
+        CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="ck_structured_size"),
+        CheckConstraint(
+            "status <> 'ready' OR (artifact_key IS NOT NULL"
+            " AND content_sha256 IS NOT NULL AND size_bytes IS NOT NULL)",
+            name="ck_structured_ready_payload",
+        ),
+        UniqueConstraint(
+            "document_id",
+            "parse_revision",
+            "page_idx",
+            "artifact_type",
+            "backend",
+            "request_hash",
+            name="uq_structured_artifact_request",
+        ),
+        Index(
+            "ix_structured_artifact_lookup",
+            "document_id",
+            "parse_revision",
+            "status",
+            "page_idx",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    parse_revision: Mapped[int] = mapped_column(Integer)
+    page_idx: Mapped[int] = mapped_column(Integer)
+    artifact_type: Mapped[str] = mapped_column(String(16))
+    backend: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    artifact_key: Mapped[str | None] = mapped_column(String(1024), unique=True, default=None)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), default=None)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

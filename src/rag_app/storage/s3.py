@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import uuid
 from pathlib import Path
 
 from minio import Minio
@@ -66,3 +67,20 @@ class Storage:
             await asyncio.to_thread(self.client.remove_object, bucket, key)
         except Exception:
             pass
+
+    async def remove_document_objects(self, bucket: str, document_id: uuid.UUID) -> int:
+        """Удалить только объекты под точным UUID-префиксом документа."""
+
+        prefix = f"{document_id}/"
+
+        def _remove() -> int:
+            removed = 0
+            for item in self.client.list_objects(bucket, prefix=prefix, recursive=True):
+                key = item.object_name
+                if not key or not key.startswith(prefix):
+                    raise RuntimeError("MinIO returned an object outside the requested prefix")
+                self.client.remove_object(bucket, key)
+                removed += 1
+            return removed
+
+        return await asyncio.to_thread(_remove)

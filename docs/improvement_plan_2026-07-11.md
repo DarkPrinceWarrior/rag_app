@@ -132,14 +132,14 @@ Production не используется как место первичного 
 
 | № | Пункт | Статус | Текущий результат |
 |---:|---|---|---|
-| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Pytest восстановлен: 91 passed; Ruff/mypy/ESLint/CI еще требуют доводки |
+| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Pytest восстановлен: 102 passed; Ruff/mypy/ESLint/CI еще требуют доводки |
 | 2 | Fail-closed RLS и тесты изоляции | не начат | Риск и критерии описаны |
 | 3 | Секреты, лицензии, Keycloak, резервное копирование и восстановление | исследование | Найдено обязательство атрибуции MinerU; нужна юридическая проверка и репетиция восстановления |
-| 4 | Эталонный набор документов и вопросов | **в работе** | Добавлены 9 ParseBench и 6 VAREX; на A100 собираются 150 наиболее сложных VAREX Nested/Table, проектируется лицензионно чистый набор на 200 страниц |
+| 4 | Эталонный набор документов и вопросов | **в работе** | На A100 проверены SHA 150 сложных VAREX; спроектирован публичный набор 234 входа/184 уникальных содержания, нужен закрытый доменный набор |
 | 5 | Автоматический выпускной шлюз качества моделей | не начат | Определены общие условия приемки |
 | 6 | A/B MinerU 3.4 | исследование | Подтвержден выпуск 3.4; сервер пока на 3.3.1 |
 | 7 | A/B MinerU-Popo и дерево документа | исследование | Подтверждены назначение и MIT-лицензия |
-| 8 | Оценка качества парсинга и управляемый fallback | **в работе** | Детерминированный классификатор и page-router подключены к shadow; Granite победил Qianfan в KIE A/B, model fallback пока выключен |
+| 8 | Оценка качества парсинга и управляемый fallback | **в работе** | Page-router работает в production shadow; на 150 сложных VAREX Granite 90,5% против Qianfan 15,8%, model sidecar пока выключен |
 | 9 | Настоящий BM25 | не начат | Кандидат: pg_textsearch; требуется доменный A/B |
 | 10 | Фильтрованный HNSW | не начат | Требуется проверка iterative scan в pgvector 0.8.2 |
 | 11 | Иерархический поиск | не начат | Архитектурная гипотеза описана |
@@ -891,12 +891,110 @@ P&ID, плохие RU/EN/ZH-сканы и downstream RAG-метрики.
 обрабатывается повторно. Локальная проверка: **91 passed**, профильные Ruff,
 mypy и `git diff --check` прошли.
 
+Shadow router развернут на SHA `dcbf300`; A100 также дал **91 passed**, Ruff и
+mypy без ошибок. Worker перезапущен при пустой очереди с
+`RAG_PARSER_PAGE_ROUTER_MODE=shadow`. Production canary на наиболее сложной
+Nested-форме VAREX классифицировал страницу как `form`, выбрал
+`structured_extraction` по причине `form_requires_schema_extraction` и записал
+ровно один selected route. Raw MinerU остался `score=0,0`, итог после нативного
+добора `score=0,9995`; основной pipeline дошел до `done`. Canary удален, очередь
+`0`, в библиотеке снова `9` документов, внутренний и внешний `/healthz` — `ok`.
+
 Архитектурный аудит следующей фазы принял отдельный контур
 `document_structured_artifacts`: metadata в Postgres, неизменяемый JSON в private
 MinIO, обязательная `parse_revision`, owner/RLS-проверка через `Document`,
 отдельная ARQ-очередь с параллелизмом 1 и lifecycle `off → shadow → canary`.
 Structured sidecar не будет храниться в `Segment.meta`, `Chunk` или
 `parse_quality` и не сможет задержать или сломать основной pipeline.
+
+### 6.10. Расширенный сложный корпус
+
+На A100 воспроизводимо скачаны 150 наиболее сложных страниц VAREX: 75 Nested и
+75 Table. Manifest содержит CDLA-Permissive-2.0, JSON Schema, эталон, исходные
+PDF/JPEG и SHA-256. Проверены все 300 файлов; расхождений хешей нет, общий размер
+124 МБ. Этот набор используется для устойчивой оценки KIE, а не заменяет другие
+типы документов.
+
+На всех 150 страницах выполнен прямой A/B Granite Vision 4.1-4B и Qianfan-OCR
+4B. Обе модели получили одинаковые изображения, JSON Schema, официальный
+user-prompt, `temperature=0`, JSON mode и лимит 8192 токена. Qianfan запускался
+с обязательным `fix_mistral_regex=true`; предупреждение неверной токенизации
+отсутствовало. Официальный VAREX scorer оценил 2936 полей:
+
+| Модель | Overall | Nested | Table | Полностью верно | Валидный JSON | Median | p95 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Granite Vision 4.1-4B | **90,5%** | **88,9%** | **91,7%** | **58/150** | 147/150 | **2,643 с** | **4,045 с** |
+| Qianfan-OCR 4B | 15,8% | 14,2% | 17,0% | 10/150 | 146/150 | 4,549 с | 9,003 с |
+
+Три Granite и четыре Qianfan ответа дошли до лимита или вернули незавершенный
+JSON; их первичные ошибки не скрывались retry и вошли в score. Среднее время с
+учетом обрывов: 3,877 с у Granite и 7,008 с у Qianfan, максимум 65,98 и 75,749 с.
+Результат шести страниц из §6.8 остается диагностикой экстремального края, но
+не используется как финальная оценка.
+
+Решение: Qianfan исключен из общего parser fallback, chart route и первого KIE
+sidecar; он остается только историческим компаратором. Первый кандидат
+structured extraction — Granite Vision 4.1. Его 90,5% на формах не разрешает
+автоматическое включение: остаются JSON failures, нет проверки RU/EN/ZH
+нефтегазовых форм, P&ID и downstream RAG. Перед shadow model job обязательны
+отдельная очередь, bounded schema splitting и закрытый доменный release gate.
+
+Для полного parser release gate спроектирован набор из 234 входов и 184
+уникальных исходных содержаний:
+
+| Корпус | Входы | Назначение | Лицензионный статус |
+|---|---:|---|---|
+| [PubTables-v2](https://huggingface.co/datasets/kensho/PubTables-v2), rev `aa575e7` | 36 | полные многостраничные таблицы | CDLA-Permissive-2.0 |
+| [VAREX](https://huggingface.co/datasets/ibm-research/VAREX), rev `2dfc338` | 60 | Flat/Nested/Table при 200 и 50 DPI | CDLA-Permissive-2.0 |
+| [ChartArena](https://github.com/pspdada/ChartArena), rev `472c39b` | 24 | EN/ZH charts, flowchart, mind map | данные research-only; manifest-only |
+| [PID2Graph](https://zenodo.org/records/14803338), DOI `14803338` | 24 | полные P&ID, символы и связность | CC BY-SA 4.0, GraphML требует проверки |
+| [AI2D-RST](https://github.com/thiippal/AI2D-RST), rev `76cf0f8` | 12 | научные диаграммы и связи | CC BY/CC BY-SA 4.0 |
+| [MWS Vision Bench](https://huggingface.co/datasets/MTSAIR/MWS-Vision-Bench), rev `b8d4737` | 30 | RU OCR/Markdown/grounding/KIE/VQA | MIT |
+| [MDPBench](https://github.com/Yuliang-Liu/MultimodalOCR/tree/main/MDPBench), rev `8b24ed5` | 24 | RU/EN/ZH digital/photo | лицензия данных неясна; manifest-only |
+| [Real5-OmniDocBench](https://huggingface.co/datasets/PaddlePaddle/Real5-OmniDocBench), rev `8a8ce98` | 24 | scan/warp/photo/light/skew | лицензия данных неясна; manifest-only |
+
+Отбор внутри каждого страта выполняется по сортировке
+`SHA256("docragenslate-ocr-v1\0" + dataset + "\0" + stratum + "\0" +
+canonical_id)`. Manifest фиксирует revision/DOI, canonical/group id, язык,
+сценарий, URL, лицензию, относительный путь, SHA-256 и selected hash.
+Многостраничные таблицы и P&ID оцениваются целиком, а не отдельными удобными
+кропами. Помимо официальных метрик сохраняются parse failure rate, p50/p95,
+pages/min и пиковая VRAM.
+
+ChartArena, PID2Graph, MDPBench и Real5 не помещаются в Git до юридической
+проверки. Публичный набор дополняет, но не заменяет закрытый release gate из
+20-30 реальных нефтегазовых документов RU/EN/ZH с таблицами, P&ID, печатями,
+исправлениями и плохими сканами.
+
+### 6.11. Revision-safe foundation structured sidecar
+
+Следующий expand-only слой реализован без запуска model jobs и без изменения
+канонического RAG:
+
+1. `structured_artifacts.py` задает строгий Pydantic discriminated union для
+   `kie`, `chart` и `diagram`. Ограничены строки, поля, серии, точки, узлы и
+   ребра; запрещены NaN/Inf, active HTML и встроенные `data:`/`file://` ресурсы.
+2. Каждый envelope содержит UUID документа/артефакта, `parse_revision`, физическую
+   страницу, SHA-256 источника, backend/model/prompt version и timezone-aware
+   время. Bbox валидируется в канонических пунктах внутри `page_size_pt`.
+3. JSON сериализуется детерминированно, ограничен 5 МиБ и получает content
+   SHA-256. MinIO key строится только из UUID, revision, page index и enum типа:
+   `{document_id}/sidecars/r{revision}/p{page}/{type}/{artifact_id}.json`.
+4. Миграция `0023` добавляет `document_structured_artifacts` с FK cascade,
+   статусами `queued/running/ready/error/superseded`, request/source/content
+   hash, summary без extracted values, уникальным idempotency key и lookup index.
+5. Таблица получает отдельную RLS policy через `documents.owner_sub` с `USING`
+   и `WITH CHECK`; app-level authorization остается обязательной, поскольку
+   production role пока имеет BYPASSRLS.
+6. Storage умеет удалять все artifacts документа только по точному UUID-префиксу.
+   DELETE API вызывает эту очистку best-effort, не затрагивает соседние UUID и не
+   блокирует каскадное удаление БД при сбое MinIO.
+
+Foundation пока не регистрирует ARQ-задачу, не создает строки/объекты и не имеет
+пользовательского API. Следующий допуск требует отдельной очереди с
+параллелизмом 1 и guarded publish `running → ready` только при совпадении текущей
+`parse_revision`. Локально: **102 passed**, профильные Ruff/mypy прошли,
+`alembic heads` показывает единственную head `0023`.
 
 ## 7. Этап P1: поиск и RAG
 
