@@ -95,6 +95,22 @@ def test_xlsx_skips_data_dump(tmp_path: Path) -> None:
     assert texts == ["Compound name", "Hydrostatic test", "Melting point, C"]
 
 
+def test_xlsx_keeps_meaningful_single_word_labels_and_sheet_title(tmp_path: Path) -> None:
+    src = tmp_path / "labels.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Process Data"
+    ws.append(["Valve", "Status", "Pressure", "PRESSURE"])
+    wb.save(str(src))
+
+    drafts = ooxml.extract_xlsx(src)
+    texts = {draft.source_text for draft in drafts}
+
+    assert texts == {"Process Data", "Valve", "Status", "Pressure", "PRESSURE"}
+    title = next(draft for draft in drafts if draft.source_text == "Process Data")
+    assert title.meta["sheet_title"] is True
+
+
 def test_pptx_roundtrip(tmp_path: Path) -> None:
     src = tmp_path / "src.pptx"
     prs = Presentation()

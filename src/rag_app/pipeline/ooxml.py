@@ -150,21 +150,17 @@ def inject_docx(src: Path, dst: Path, translations: dict[str, str]) -> int:
 # Слово = ≥2 подряд идущих буквы (латиница/кириллица). Чисто-числовой/кодовый
 # дамп (0.43, 130/130/300, DMFA, pH, Eo) слов в этом смысле не даёт «прозы».
 _WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{2,}")
+_DEFAULT_SHEET_TITLE_RE = re.compile(r"Sheet\d*", re.IGNORECASE)
 
 
 def _is_translatable_xlsx(v: str) -> bool:
     """Ячейка переводима, если в ней есть осмысленный текст (слово/фраза), а не
     голый код/число/идентификатор.
 
-    Условие: есть «буквенная» группа ≥2 символов И выполнено одно из:
-      - в строке есть пробел (фраза из нескольких токенов: «Lift method»), либо
-      - длина ≥12 («North Kudrinskoye»), либо
-      - буквы составляют ≥50% непробельных символов (одиночное слово-подпись:
-        «Operating», «Status», «Field:», «Normal», «Inflow», «Shutdown»).
-    Последнее правило ловит короткие однословные заголовки/статусы, которые
-    раньше терялись. Смешанные коды («42/713», «ES-0517», «01.05.2026») при этом
-    отсекаются — в них мало букв либо их нет вовсе. Объём по-прежнему ограничен
-    `xlsx_max_segments` + дедуп, поэтому крупные data-дампы не раздуваются."""
+    Фразы и длинные подписи переводятся сразу. Для одиночного токена отличаем
+    естественные слова от кодов: минимум четыре буквы; короткий ALL-CAPS — код,
+    а обычный регистр (`Valve`, `Status`) — подпись. ALL-CAPS длиной от семи
+    букв сохраняем как возможный заголовок (`PRESSURE`)."""
     s = v.strip()
     if not s or s.startswith("="):
         return False
@@ -172,9 +168,12 @@ def _is_translatable_xlsx(v: str) -> bool:
         return False
     if " " in s or len(s) >= 12:
         return True
-    letters = sum(c.isalpha() for c in s)
-    nonspace = sum(not c.isspace() for c in s) or 1
-    return letters / nonspace >= 0.5
+    token = s.strip(".,:;!?()[]{}")
+    if len(token) < 4 or not token.isalpha():
+        return False
+    if token.isupper():
+        return len(token) >= 7
+    return token.islower() or token.istitle() or len(token) >= 6
 
 
 def extract_xlsx(path: Path) -> list[SegmentDraft]:
@@ -186,7 +185,12 @@ def extract_xlsx(path: Path) -> list[SegmentDraft]:
     for s_i, ws in enumerate(wb.worksheets):
         # название листа — тоже переводим (вкладки листов показываем и на русском)
         title = (ws.title or "").strip()
-        if title and title not in seen:
+        if (
+            title
+            and not _DEFAULT_SHEET_TITLE_RE.fullmatch(title)
+            and _is_translatable_xlsx(title)
+            and title not in seen
+        ):
             seen.add(title)
             drafts.append(
                 SegmentDraft(
