@@ -230,6 +230,7 @@ class Settings(BaseSettings):
     # (3B, чистые слитые таблицы); paddle_vl → PaddleOCR-VL 1.6 (0.9B). dots/paddle —
     # альтернативные движки для сравнения, грузятся на GPU4.
     pdf_parser_backend: str = "mineru"  # mineru | dots_mocr | paddle_vl
+    parser_quality_shadow_enabled: bool = False
     # dots.mocr: постоянный vLLM-сервис на GPU4 (deploy/dots-mocr.service) + CLI parser.py
     dots_url: str = "http://127.0.0.1:8120"
     dots_model_name: str = "model"

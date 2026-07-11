@@ -56,6 +56,7 @@ from rag_app.pipeline.parse import (
     pdf_info,
     run_mineru,
 )
+from rag_app.pipeline.parse_quality import evaluate_parse, quality_metadata
 from rag_app.pipeline.scan_pdf import build_scan_overlay
 from rag_app.pipeline.segments import SegmentDraft, content_list_to_segments
 from rag_app.pipeline.validate import ValidationResult, validate_numbers, validate_standards
@@ -129,6 +130,7 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
     await _set_status(ctx, doc_id, DocumentStatus.parsing)
     logger.info("parse %s (%s)", doc_id, doc.filename)
 
+    quality_payload: dict[str, Any] | None = None
     try:
         ext = Path(doc.filename).suffix.lower().lstrip(".")
         artifact_key: str | None = None
@@ -253,6 +255,23 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
             else:
                 raise RuntimeError(f"неподдерживаемый формат: .{ext}")
 
+        if ext == "pdf" and settings.parser_quality_shadow_enabled:
+            assert n_pages is not None
+            quality = evaluate_parse(drafts, n_pages=n_pages)
+            quality_payload = quality_metadata(quality, backend=backend)
+            logger.info(
+                "parse_quality_shadow doc=%s backend=%s score=%.4f acceptable=%s "
+                "page_coverage=%.4f duplicate_ratio=%.4f integrity_ratio=%.4f reasons=%s",
+                doc_id,
+                backend,
+                quality.score,
+                quality.acceptable,
+                quality.page_coverage,
+                quality.duplicate_ratio,
+                quality.integrity_ratio,
+                ",".join(quality.reasons) or "none",
+            )
+
         if not drafts:
             # скан без распознаваемого текста (OCR дал мусор и его отфильтровали,
             # либо страница — чистый рисунок): не валим документ — кладём
@@ -277,18 +296,18 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 )
                 for d in drafts
             )
+            document_values: dict[str, Any] = {
+                "status": DocumentStatus.parsed,
+                "error": None,
+                "kind": kind.value,
+                "page_count": n_pages,
+                "segment_count": len(drafts),
+                "translated_count": 0,
+                "s3_key_content_list": artifact_key,
+                "parse_quality": quality_payload,
+            }
             await session.execute(
-                update(Document)
-                .where(Document.id == doc_id)
-                .values(
-                    status=DocumentStatus.parsed,
-                    error=None,
-                    kind=kind.value,
-                    page_count=n_pages,
-                    segment_count=len(drafts),
-                    translated_count=0,
-                    s3_key_content_list=artifact_key,
-                )
+                update(Document).where(Document.id == doc_id).values(**document_values)
             )
             await session.commit()
 
