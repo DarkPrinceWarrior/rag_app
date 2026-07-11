@@ -66,11 +66,19 @@ from rag_app.storage.s3 import Storage
 logger = logging.getLogger(__name__)
 
 
-async def _set_status(ctx: dict, doc_id: uuid.UUID, status: DocumentStatus, error: str | None = None) -> None:
+async def _set_status(
+    ctx: dict,
+    doc_id: uuid.UUID,
+    status: DocumentStatus,
+    error: str | None = None,
+    *,
+    parse_revision: int | None = None,
+) -> None:
     async with ctx["sessionmaker"]() as session:
-        await session.execute(
-            update(Document).where(Document.id == doc_id).values(status=status, error=error)
-        )
+        stmt = update(Document).where(Document.id == doc_id)
+        if parse_revision is not None:
+            stmt = stmt.where(Document.parse_revision == parse_revision)
+        await session.execute(stmt.values(status=status, error=error))
         await session.commit()
 
 
@@ -80,6 +88,27 @@ async def _get_doc(ctx: dict, doc_id: uuid.UUID) -> Document:
         if doc is None:
             raise RuntimeError(f"документ {doc_id} не найден")
         return doc
+
+
+async def _claim_parse(ctx: dict, doc_id: uuid.UUID, parse_revision: int | None) -> int | None:
+    """Атомарно занять uploaded-ревизию; дубль или старая задача вернет None."""
+
+    async with ctx["sessionmaker"]() as session:
+        stmt = update(Document).where(
+            Document.id == doc_id,
+            Document.status == DocumentStatus.uploaded,
+        )
+        if parse_revision is not None:
+            stmt = stmt.where(Document.parse_revision == parse_revision)
+        claimed = (
+            await session.execute(
+                stmt.values(status=DocumentStatus.parsing, error=None).returning(
+                    Document.parse_revision
+                )
+            )
+        ).scalar_one_or_none()
+        await session.commit()
+        return claimed
 
 
 async def _upload_segment_images(
@@ -123,12 +152,23 @@ async def _vlm_segments(backend: str, pdf_path: Path, out_dir: Path) -> list[Seg
     raise RuntimeError(f"неизвестный backend парсера: {backend}")
 
 
-async def parse_document(ctx: dict, doc_id_str: str) -> str:
+async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None = None) -> str:
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
+    claimed_revision = await _claim_parse(ctx, doc_id, parse_revision)
+    if claimed_revision is None:
+        async with ctx["sessionmaker"]() as session:
+            current = await session.get(Document, doc_id)
+        current_status = "missing" if current is None else current.status.value
+        logger.info(
+            "parse %s revision=%s skipped (status=%s)",
+            doc_id,
+            parse_revision,
+            current_status,
+        )
+        return f"skipped parse revision={parse_revision}: status={current_status}"
     doc = await _get_doc(ctx, doc_id)
-    await _set_status(ctx, doc_id, DocumentStatus.parsing)
-    logger.info("parse %s (%s)", doc_id, doc.filename)
+    logger.info("parse %s revision=%s (%s)", doc_id, claimed_revision, doc.filename)
 
     quality_payload: dict[str, Any] | None = None
     try:
@@ -306,9 +346,17 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
                 "s3_key_content_list": artifact_key,
                 "parse_quality": quality_payload,
             }
-            await session.execute(
-                update(Document).where(Document.id == doc_id).values(**document_values)
+            updated = await session.execute(
+                update(Document)
+                .where(
+                    Document.id == doc_id,
+                    Document.parse_revision == claimed_revision,
+                    Document.status == DocumentStatus.parsing,
+                )
+                .values(**document_values)
             )
+            if updated.rowcount != 1:
+                raise RuntimeError(f"устаревшая ревизия парсинга: {claimed_revision}")
             await session.commit()
 
         await ctx["redis"].enqueue_job(
@@ -324,7 +372,13 @@ async def parse_document(ctx: dict, doc_id_str: str) -> str:
 
     except Exception as exc:
         logger.exception("parse %s failed", doc_id)
-        await _set_status(ctx, doc_id, DocumentStatus.error, f"парсинг: {exc}")
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.error,
+            f"парсинг: {exc}",
+            parse_revision=claimed_revision,
+        )
         raise
 
 

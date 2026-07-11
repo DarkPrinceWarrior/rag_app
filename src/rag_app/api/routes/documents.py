@@ -4,15 +4,14 @@ import asyncio
 import io
 import mimetypes
 import uuid
-from pathlib import Path
-
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy import text as sql
 
 from rag_app.api.audit import audit
@@ -24,6 +23,65 @@ from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
 
 router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
+
+
+async def _enqueue_parse_job(request: Request, doc_id: uuid.UUID, parse_revision: int) -> None:
+    try:
+        await request.app.state.arq.enqueue_job(
+            "parse_document",
+            str(doc_id),
+            parse_revision,
+            _job_id=f"parse:{doc_id}:{parse_revision}",
+        )
+    except Exception as exc:
+        async with request.app.state.sessionmaker() as session:
+            await session.execute(
+                update(Document)
+                .where(
+                    Document.id == doc_id,
+                    Document.parse_revision == parse_revision,
+                    Document.status == DocumentStatus.uploaded,
+                )
+                .values(status=DocumentStatus.error, error=f"очередь парсинга: {exc}")
+            )
+            await session.commit()
+        raise HTTPException(503, "не удалось поставить документ в очередь парсинга") from None
+
+
+async def _queue_reparse(
+    request: Request,
+    doc_id: uuid.UUID,
+    **changes: object,
+) -> int:
+    """Атомарно создать следующую ревизию парсинга для свободного документа."""
+
+    async with request.app.state.sessionmaker() as session:
+        revision = (
+            await session.execute(
+                update(Document)
+                .where(
+                    Document.id == doc_id,
+                    Document.status.in_((DocumentStatus.error, DocumentStatus.done)),
+                )
+                .values(
+                    status=DocumentStatus.uploaded,
+                    error=None,
+                    parse_quality=None,
+                    parse_revision=Document.parse_revision + 1,
+                    **changes,
+                )
+                .returning(Document.parse_revision)
+            )
+        ).scalar_one_or_none()
+        if revision is None:
+            doc = await session.get(Document, doc_id)
+            if doc is None:
+                raise HTTPException(404, "документ не найден")
+            raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
+        await session.commit()
+
+    await _enqueue_parse_job(request, doc_id, revision)
+    return revision
 
 
 def _owner_filter(stmt, user: User):
@@ -143,9 +201,7 @@ async def upload_document(
         await session.commit()
         await session.refresh(doc)
 
-    await request.app.state.arq.enqueue_job(
-        "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
-    )
+    await _enqueue_parse_job(request, doc_id, doc.parse_revision)
     await audit(request, "upload", "document", str(doc_id), {"filename": filename, "bytes": len(data)})
     return DocumentOut.from_doc(doc)
 
@@ -205,14 +261,9 @@ async def get_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
 @router.post("/{doc_id}/retry", response_model=DocumentOut)
 async def retry_document(request: Request, doc_id: uuid.UUID) -> DocumentOut:
     """Перезапуск пайплайна с парсинга (после ошибки)."""
-    doc = await _get_or_404(request, doc_id)
-    if doc.status not in (DocumentStatus.error, DocumentStatus.done):
-        raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
-    await request.app.state.arq.enqueue_job(
-        "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
-    )
+    await _queue_reparse(request, doc_id)
     await audit(request, "retry", "document", str(doc_id))
-    return DocumentOut.from_doc(doc)
+    return DocumentOut.from_doc(await _get_or_404(request, doc_id))
 
 
 @router.post("/{doc_id}/describe")
@@ -238,18 +289,11 @@ class ReparseOcrIn(BaseModel):
 async def reparse_ocr(request: Request, doc_id: uuid.UUID, body: ReparseOcrIn) -> dict:
     """Переразбор через форс-OCR — восстановление PDF с битым ToUnicode-cmap
     текстового слоя (MinerU `-m ocr -l <lang>`); выбор сохраняется на документе."""
-    async with request.app.state.sessionmaker() as session:
-        doc = await session.get(Document, doc_id)
-        if doc is None:
-            raise HTTPException(404, "документ не найден")
-        if doc.status not in (DocumentStatus.error, DocumentStatus.done):
-            raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
-        doc.parse_force_ocr = True
-        doc.ocr_lang = body.lang
-        doc.status = DocumentStatus.uploaded
-        await session.commit()
-    await request.app.state.arq.enqueue_job(
-        "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
+    await _queue_reparse(
+        request,
+        doc_id,
+        parse_force_ocr=True,
+        ocr_lang=body.lang,
     )
     await audit(request, "reparse_ocr", "document", str(doc_id), {"lang": body.lang})
     return {"status": "queued", "ocr_lang": body.lang}
@@ -269,18 +313,11 @@ async def reparse(request: Request, doc_id: uuid.UUID, body: ReparseIn) -> dict:
     paddle_vl). Выбор сохраняется на документе и переживает retry/reexport."""
     if body.backend not in _PARSER_BACKENDS:
         raise HTTPException(422, f"неизвестный backend: {body.backend}")
-    async with request.app.state.sessionmaker() as session:
-        doc = await session.get(Document, doc_id)
-        if doc is None:
-            raise HTTPException(404, "документ не найден")
-        if doc.status not in (DocumentStatus.error, DocumentStatus.done):
-            raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
-        doc.parser_backend = body.backend
-        doc.parse_force_ocr = False  # выбор движка и форс-OCR взаимоисключающи
-        doc.status = DocumentStatus.uploaded
-        await session.commit()
-    await request.app.state.arq.enqueue_job(
-        "parse_document", str(doc_id), _job_id=f"parse:{doc_id}:{uuid.uuid4().hex[:8]}"
+    await _queue_reparse(
+        request,
+        doc_id,
+        parser_backend=body.backend,
+        parse_force_ocr=False,
     )
     await audit(request, "reparse", "document", str(doc_id), {"backend": body.backend})
     return {"status": "queued", "backend": body.backend}
@@ -344,7 +381,11 @@ async def download(request: Request, doc_id: uuid.UUID, kind: str) -> Response:
             content=chunk,
             status_code=206,
             media_type=media,
-            headers={**base, "Content-Range": f"bytes {start}-{end}/{total}", "Content-Length": str(len(chunk))},
+            headers={
+                **base,
+                "Content-Range": f"bytes {start}-{end}/{total}",
+                "Content-Length": str(len(chunk)),
+            },
         )
     return Response(content=data, media_type=media, headers={**base, "Content-Length": str(total)})
 

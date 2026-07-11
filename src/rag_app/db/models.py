@@ -95,6 +95,8 @@ class Document(Base):
     # Выбор парсера pdf_text на документе (null → settings.pdf_parser_backend).
     # mineru | dots_mocr | paddle_vl. Переживает retry/reexport.
     parser_backend: Mapped[str | None] = mapped_column(String(16), default=None)
+    # Монотонная ревизия parse job: защищает от дублей и запоздавших задач ARQ.
+    parse_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Обезличенные числовые сигналы shadow-оценки парсинга; без текста и user labels.
     parse_quality: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
 
