@@ -1095,6 +1095,13 @@ Combinators и межполевые ограничения отклоняютс�
 явный `UnsupportedTableSchemaError` до появления проверенного table split/merge.
 Foundation не обращается к модели, БД или MinIO и не включен в production flow.
 
+Каркас очереди, protocol v3 и offline-manifest зафиксированы коммитом
+`2da75f9` и синхронизированы между WSL, `origin/main` и A100. На A100 полный
+pytest дал **175 passed**, профильные Ruff/mypy прошли; основная и sidecar
+очереди содержат `0` jobs, внутренний и публичный `/healthz` возвращают `ok`.
+Running API и основной worker не перезапускались, новый sidecar worker не
+запускался, модельные сервисы и production-поведение не изменялись.
+
 ## 7. Этап P1: поиск и RAG
 
 ### 7.1. Настоящий BM25
