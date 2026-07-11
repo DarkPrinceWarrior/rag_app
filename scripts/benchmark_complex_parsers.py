@@ -424,6 +424,8 @@ async def _main(args: argparse.Namespace) -> None:
     manifest_path = args.corpus_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     pages = [page for page in manifest["pages"] if not args.categories or page["category"] in args.categories]
+    if getattr(args, "limit", 0):
+        pages = pages[: args.limit]
     if not pages:
         raise ValueError(f"в manifest нет категорий: {args.categories}")
     prediction_dirs: dict[str, Path] = args.predictions
@@ -511,7 +513,10 @@ def main() -> None:
         help="канонические внешние prediction-файлы <source.pdf>.json",
     )
     parser.add_argument("--categories", nargs="+")
+    parser.add_argument("--limit", type=int, default=0, help="первые N страниц после фильтра")
     args = parser.parse_args()
+    if args.limit < 0:
+        parser.error("--limit должен быть >= 0")
     predictions = dict(_parse_prediction_spec(spec) for spec in args.prediction)
     if len(predictions) != len(args.prediction):
         parser.error("имена --prediction должны быть уникальны")
