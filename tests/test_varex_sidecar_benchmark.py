@@ -10,6 +10,8 @@ _SCRIPT = runpy.run_path(
 )
 _parse_json_output = _SCRIPT["_parse_json_output"]
 _extraction_prompt = _SCRIPT["_extraction_prompt"]
+_load_summary = _SCRIPT["_load_summary"]
+_prediction_complete = _SCRIPT["_prediction_complete"]
 
 
 def test_parse_json_output_accepts_plain_and_fenced_objects() -> None:
@@ -30,3 +32,28 @@ def test_extraction_prompt_requires_instance_not_schema_echo() -> None:
     assert "Return ONLY valid JSON" in prompt
     assert "instance of the JSON" in prompt
     assert '"id"' in prompt
+
+
+def test_resume_requires_matching_protocol_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "summary.json"
+    path.write_text(
+        '{"protocol_version": 1, "model": "old", "results": {}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="protocol_version"):
+        _load_summary(
+            path,
+            expected={"protocol_version": 2, "model": "new"},
+            resume=True,
+        )
+
+
+def test_prediction_complete_requires_valid_successful_object(tmp_path: Path) -> None:
+    prediction = tmp_path / "doc.pred.json"
+    prediction.write_text('{"field": "value"}', encoding="utf-8")
+
+    assert _prediction_complete(prediction, {"status": "ok"})
+    assert not _prediction_complete(prediction, {"status": "error"})
+    prediction.write_text('{"_error": "failed"}', encoding="utf-8")
+    assert not _prediction_complete(prediction, {"status": "ok"})

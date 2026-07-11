@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 
+_PROTOCOL_VERSION = 2
+
 
 def _extraction_prompt(schema: dict[str, Any]) -> str:
     return (
@@ -36,6 +38,35 @@ def _parse_json_output(value: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("model output must be a JSON object")
     return parsed
+
+
+def _load_summary(
+    path: Path,
+    *,
+    expected: dict[str, Any],
+    resume: bool,
+) -> dict[str, Any]:
+    if not resume or not path.exists():
+        return {**expected, "results": {}}
+    existing = json.loads(path.read_text(encoding="utf-8"))
+    for key, value in expected.items():
+        if existing.get(key) != value:
+            raise ValueError(
+                f"resume metadata mismatch for {key}: {existing.get(key)!r} != {value!r}"
+            )
+    if not isinstance(existing.get("results"), dict):
+        raise ValueError("resume summary must contain a results object")
+    return existing
+
+
+def _prediction_complete(path: Path, result: Any) -> bool:
+    if not isinstance(result, dict) or result.get("status") != "ok" or not path.exists():
+        return False
+    try:
+        prediction = _parse_json_output(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return "_error" not in prediction
 
 
 def _request(
@@ -89,6 +120,7 @@ def main() -> None:
     parser.add_argument("--name", required=True)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     manifest = json.loads((args.corpus_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -96,13 +128,21 @@ def main() -> None:
     data_dir = args.output_dir / "_data"
     prediction_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    summary: dict[str, Any] = {
+    expected_summary: dict[str, Any] = {
+        "protocol_version": _PROTOCOL_VERSION,
         "source": manifest["source"],
         "model": args.model,
         "name": args.name,
-        "results": {},
+        "max_tokens": args.max_tokens,
+        "temperature": 0,
+        "prompt_role": "user_multimodal",
     }
     summary_path = args.output_dir / f"{args.name}.summary.json"
+    summary = _load_summary(
+        summary_path,
+        expected=expected_summary,
+        resume=args.resume,
+    )
 
     with httpx.Client(timeout=args.timeout) as client:
         for page in manifest["pages"]:
@@ -114,6 +154,14 @@ def main() -> None:
                 json.dumps(page["ground_truth"], ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
+
+            prediction_path = prediction_dir / f"{doc_id}.pred.json"
+            if args.resume and _prediction_complete(
+                prediction_path,
+                summary["results"].get(doc_id),
+            ):
+                print(f"{doc_id}: {args.name} resume=skip", flush=True)
+                continue
 
             print(f"{doc_id}: {args.name}", flush=True)
             started = time.monotonic()
@@ -134,7 +182,7 @@ def main() -> None:
                 status = "error"
                 error = str(exc)
             latency_s = round(time.monotonic() - started, 3)
-            (prediction_dir / f"{doc_id}.pred.json").write_text(
+            prediction_path.write_text(
                 json.dumps(prediction, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )

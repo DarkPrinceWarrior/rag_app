@@ -48,6 +48,11 @@ from rag_app.pipeline.dots import dots_to_segments, run_dots
 from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.office_render import render_to_pdf
 from rag_app.pipeline.paddle_vl import paddle_to_segments, run_paddle
+from rag_app.pipeline.page_routing_shadow import (
+    build_page_routing_plan,
+    page_router_allowed,
+    page_routing_metadata,
+)
 from rag_app.pipeline.parse import (
     PDFIUM_LOCK,
     backfill_text_layer,
@@ -176,6 +181,11 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
     raw_parser_drafts: list[SegmentDraft] | None = None
     backfilled_pages: list[int] = []
     native_text_by_page: dict[int, str] | None = None
+    router_allowed = page_router_allowed(
+        settings.parser_page_router_mode,
+        owner_sub=doc.owner_sub,
+        allowed_owner_subs=settings.parser_page_router_owner_subs,
+    )
     try:
         ext = Path(doc.filename).suffix.lower().lstrip(".")
         artifact_key: str | None = None
@@ -197,7 +207,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                     kind = DocumentKind.pdf_text
                     drafts = await _vlm_segments(backend, local_file, out_dir)
                     raw_parser_drafts = list(drafts)
-                    if settings.parser_quality_shadow_enabled:
+                    if settings.parser_quality_shadow_enabled or router_allowed:
                         native_text_by_page = await asyncio.to_thread(
                             read_pdf_text_by_page, local_file
                         )
@@ -318,7 +328,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
             else:
                 raise RuntimeError(f"неподдерживаемый формат: .{ext}")
 
-        if ext == "pdf" and settings.parser_quality_shadow_enabled:
+        if ext == "pdf" and (settings.parser_quality_shadow_enabled or router_allowed):
             assert n_pages is not None
             assert raw_parser_drafts is not None
             assert quality_backend is not None
@@ -338,6 +348,33 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 raw_report=raw_quality,
                 backfilled_pages=backfilled_pages,
             )
+            if router_allowed:
+                routing_plan = build_page_routing_plan(
+                    drafts,
+                    raw_parser_drafts,
+                    n_pages=n_pages,
+                    final_quality=quality,
+                    native_text_by_page=native_text_by_page,
+                    backfilled_pages=backfilled_pages,
+                    explicit_backend=doc.parser_backend is not None,
+                    min_raw_score=settings.parser_page_router_min_score,
+                    max_pages=settings.parser_page_router_max_pages,
+                )
+                routing_summary = page_routing_metadata(
+                    routing_plan,
+                    mode=settings.parser_page_router_mode,
+                )
+                quality_payload["page_routing"] = routing_summary
+                logger.info(
+                    "page_routing_shadow doc=%s mode=%s eligible=%s selected=%s "
+                    "types=%s roles=%s",
+                    doc_id,
+                    settings.parser_page_router_mode,
+                    routing_summary["eligible_page_count"],
+                    routing_summary["selected_page_count"],
+                    routing_summary["type_counts"],
+                    routing_summary["role_counts"],
+                )
             logger.info(
                 "parse_quality_shadow doc=%s backend=%s score=%.4f acceptable=%s "
                 "raw_score=%.4f backfilled_pages=%s page_coverage=%.4f "

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -233,7 +235,7 @@ class Settings(BaseSettings):
     parser_quality_shadow_enabled: bool = False
     # Постраничная маршрутизация пока только scaffold: off не вычисляет решения,
     # shadow пишет обезличенные сигналы, canary в будущем ограничивается allowlist.
-    parser_page_router_mode: str = "off"  # off | shadow | canary
+    parser_page_router_mode: Literal["off", "shadow", "canary"] = "off"
     parser_page_router_owner_subs: list[str] = []
     parser_page_router_max_pages: int = 12
     parser_page_router_min_score: float = 0.70
