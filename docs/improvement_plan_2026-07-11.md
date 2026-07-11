@@ -1226,6 +1226,13 @@ Granite. Только после parser-only downstream `Recall@5`, nDCG, точ
 чисел допускаются shadow model job и canary. Production и десять действующих
 аккаунтов этим изменением не затронуты.
 
+Контракт зафиксирован коммитом `47d40a2` и синхронизирован между WSL,
+`origin/main` и A100. На A100 профильный набор дал **10 passed**, полный backend
+**245 passed**, измененные файлы прошли Ruff/mypy. API, основной worker,
+sidecar worker и GPU-сервисы не перезапускались. Основная и sidecar ARQ-очереди
+после проверки `0/0`; внутренний и публичный `/healthz` возвращают `ok`,
+`/api/config` подтверждает `auth_enabled=true` и production OIDC issuer.
+
 ## 7. Этап P1: поиск и RAG
 
 ### 7.1. Настоящий BM25
