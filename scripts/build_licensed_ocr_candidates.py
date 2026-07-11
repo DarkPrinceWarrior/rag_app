@@ -162,6 +162,34 @@ def _strict_json_loads(value: str | bytes) -> Any:
     )
 
 
+def _read_bounded_regular_file(path: Path, max_bytes: int, context: str) -> bytes:
+    try:
+        file_fd = os.open(
+            path,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+        )
+    except OSError as exc:
+        raise ValueError(f"{context} cannot be opened safely") from exc
+    with os.fdopen(file_fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{context} must be a regular file")
+        if before.st_size > max_bytes:
+            raise ValueError(f"{context} exceeds file size limit")
+        payload = stream.read(max_bytes + 1)
+        after = os.fstat(stream.fileno())
+    if len(payload) > max_bytes:
+        raise ValueError(f"{context} exceeds file size limit")
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise ValueError(f"{context} changed while being read")
+    return payload
+
+
 def _canonical_hash(value: Any) -> str:
     return _sha256_bytes(_canonical_json(value))
 
@@ -596,10 +624,11 @@ def _ai2d_candidates(
 
 def _load_image_index(path: Path, limits: SafetyLimits) -> dict[str, str]:
     try:
-        with path.open("rb") as stream:
-            payload = stream.read(limits.max_image_index_bytes + 1)
-        if len(payload) > limits.max_image_index_bytes:
-            raise ValueError("MWS image index exceeds file size limit")
+        payload = _read_bounded_regular_file(
+            path,
+            limits.max_image_index_bytes,
+            "MWS image index",
+        )
         value = _strict_json_loads(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid MWS image index: {path}") from exc

@@ -396,6 +396,21 @@ def test_mws_image_index_obeys_file_size_limit(tmp_path: Path) -> None:
         )
 
 
+def test_mws_image_index_must_be_a_regular_file(tmp_path: Path) -> None:
+    root, _, pins, adapter = _fixture_source(tmp_path)
+    fifo = tmp_path / "mws-images.fifo"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="must be a regular file"):
+        build_candidates(
+            root,
+            fifo,
+            pins=pins,
+            parquet_adapter=adapter,
+            require_quotas=False,
+        )
+
+
 def test_default_generation_rejects_catalog_below_required_quotas(tmp_path: Path) -> None:
     root, index_path, pins, adapter = _fixture_source(tmp_path)
     with pytest.raises(ValueError, match="lacks quota capacity"):

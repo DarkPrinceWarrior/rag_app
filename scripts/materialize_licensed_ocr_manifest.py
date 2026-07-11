@@ -139,6 +139,18 @@ _PINNED_DATASETS: dict[str, dict[str, Any]] = {
         "license_components": {"benchmark_code": "MIT", "source_assets": "CC-BY-4.0"},
     },
 }
+_PINNED_QUOTAS: dict[str, dict[str, int]] = {
+    "pubtables_v2": {"pages_2": 8, "pages_3": 4, "pages_4": 2},
+    "varex": {"Flat": 10, "Nested": 10, "Table": 10},
+    "ai2d_rst": {"diagram": 12},
+    "mws_vision_bench": {
+        "document_parsing_ru": 6,
+        "full_page_ocr_ru": 6,
+        "key_information_extraction_ru": 6,
+        "reasoning_vqa_ru": 6,
+        "text_grounding_ru": 6,
+    },
+}
 
 
 class HttpClient(Protocol):
@@ -309,6 +321,43 @@ def _canonical_json_bytes(value: Any) -> bytes:
 
 def _canonical_json_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
+
+
+def _strict_json_loads(value: str | bytes) -> Any:
+    return json.loads(
+        value,
+        parse_constant=lambda constant: (_ for _ in ()).throw(
+            ValueError(f"non-finite JSON constant: {constant}")
+        ),
+    )
+
+
+def _read_bounded_regular_file(path: Path, max_bytes: int, context: str) -> bytes:
+    try:
+        file_fd = os.open(
+            path,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+        )
+    except OSError as exc:
+        raise ValueError(f"{context} cannot be opened safely") from exc
+    with os.fdopen(file_fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{context} must be a regular file")
+        if before.st_size > max_bytes:
+            raise ValueError(f"{context} exceeds max bytes: {max_bytes}")
+        payload = stream.read(max_bytes + 1)
+        after = os.fstat(stream.fileno())
+    if len(payload) > max_bytes:
+        raise ValueError(f"{context} exceeds max bytes: {max_bytes}")
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise ValueError(f"{context} changed while being read")
+    return payload
 
 
 def _safe_pinned_path(uri: str, prefix: str, context: str) -> None:
@@ -751,6 +800,11 @@ def _validate_source_manifest(manifest: Any) -> dict[str, Any]:
             )
         ):
             raise ValueError(f"{dataset}: quotas must be positive integer counts")
+        pinned_quotas = _PINNED_QUOTAS[dataset]
+        if set(quotas) - set(pinned_quotas) or any(
+            quota > pinned_quotas[stratum] for stratum, quota in quotas.items()
+        ):
+            raise ValueError(f"{dataset}: quotas exceed the pinned corpus design")
         items = [candidate for candidate in selected if candidate["dataset"] == dataset]
         actual_counts = {
             stratum: sum(candidate["stratum"] == stratum for candidate in items)
@@ -1273,13 +1327,13 @@ def materialize_manifest(
         raise ValueError("timeout_s must be positive")
     if output_dir.exists():
         raise FileExistsError(f"output directory already exists: {output_dir}")
-    if source_manifest.stat().st_size > max_manifest_bytes:
-        raise ValueError("source manifest exceeds max_manifest_bytes")
-    source_bytes = source_manifest.read_bytes()
-    if len(source_bytes) > max_manifest_bytes:
-        raise ValueError("source manifest exceeds max_manifest_bytes")
+    source_bytes = _read_bounded_regular_file(
+        source_manifest,
+        max_manifest_bytes,
+        "source manifest",
+    )
     source_hash = hashlib.sha256(source_bytes).hexdigest()
-    manifest = _validate_source_manifest(json.loads(source_bytes))
+    manifest = _validate_source_manifest(_strict_json_loads(source_bytes))
     verified = copy.deepcopy(manifest)
     if container_source_dir is not None:
         container_source_dir = container_source_dir.resolve(strict=True)

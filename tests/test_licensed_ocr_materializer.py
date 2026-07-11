@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import io
 import json
+import os
 import runpy
 import stat
 import tarfile
@@ -904,6 +905,48 @@ def test_rejects_tampered_component_provenance_before_download(
     with pytest.raises(ValueError, match=field):
         materialize_manifest(source, tmp_path / "out", http_client=client)
     assert client.opened == []
+
+
+def test_rejects_non_finite_json_in_unrecognized_metadata_before_download(
+    tmp_path: Path,
+) -> None:
+    candidate = _mws_candidate(b"image", [_mws_row()])
+    manifest = _manifest(candidate)
+    manifest["datasets"]["mws_vision_bench"]["unrecognized"] = float("nan")
+    source = tmp_path / "source.json"
+    _write_manifest(source, manifest)
+    client = FakeHttpClient({})
+
+    with pytest.raises(ValueError, match="non-finite JSON constant"):
+        materialize_manifest(source, tmp_path / "out", http_client=client)
+    assert client.opened == []
+
+
+def test_rejects_declared_quota_above_pinned_design_before_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [_mws_row(str(index)) for index in range(7)]
+    metadata_payload = b"".join(_canonical_bytes(row) + b"\n" for row in rows)
+    candidates = [
+        _mws_candidate(f"image-{index}".encode(), rows, row_index=index)
+        for index in range(7)
+    ]
+    _pin_container(monkeypatch, _MWS_METADATA_URI, metadata_payload)
+    source = tmp_path / "source.json"
+    _write_manifest(source, _manifest(*candidates))
+    client = FakeHttpClient({})
+
+    with pytest.raises(ValueError, match="quotas exceed the pinned corpus design"):
+        materialize_manifest(source, tmp_path / "out", http_client=client)
+    assert client.opened == []
+
+
+def test_source_manifest_must_be_a_regular_file_without_blocking(tmp_path: Path) -> None:
+    source = tmp_path / "source.fifo"
+    os.mkfifo(source)
+
+    with pytest.raises(ValueError, match="must be a regular file"):
+        materialize_manifest(source, tmp_path / "out", http_client=FakeHttpClient({}))
 
 
 def test_parquet_default_adapter_has_precise_optional_dependency_error(
