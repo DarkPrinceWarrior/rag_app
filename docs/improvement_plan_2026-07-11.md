@@ -132,14 +132,14 @@ Production не используется как место первичного 
 
 | № | Пункт | Статус | Текущий результат |
 |---:|---|---|---|
-| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Текущий backend pytest: 245 passed; измененные parser-benchmark файлы проходят Ruff/mypy, но общий Ruff еще содержит 124 ранее существовавших нарушения, ESLint/полный CI требуют доводки |
+| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Текущий backend pytest: 254 passed; измененные parser-benchmark файлы проходят Ruff/mypy, но общий Ruff еще содержит 124 ранее существовавших нарушения, ESLint/полный CI требуют доводки |
 | 2 | Fail-closed RLS и тесты изоляции | не начат | Риск и критерии описаны |
 | 3 | Секреты, лицензии, Keycloak, резервное копирование и восстановление | исследование | Найдено обязательство атрибуции MinerU; нужна юридическая проверка и репетиция восстановления |
 | 4 | Эталонный набор документов и вопросов | **в работе** | На A100 проверены SHA 150 сложных VAREX; для 138 лицензионно однозначных входов добавлен offline-manifest, до byte verification он маркируется metadata-only; нужен закрытый доменный набор |
 | 5 | Автоматический выпускной шлюз качества моделей | не начат | Определены общие условия приемки |
 | 6 | A/B MinerU 3.4 | исследование | Подтвержден выпуск 3.4; сервер пока на 3.3.1 |
 | 7 | A/B MinerU-Popo и дерево документа | исследование | Подтверждены назначение и MIT-лицензия |
-| 8 | Оценка качества парсинга и управляемый fallback | **в работе** | Page-router работает в production shadow; на 150 сложных VAREX Granite 90,5% против Qianfan 15,8%; добавлен строгий offline-import результатов новых parser-моделей, model job еще не запускался |
+| 8 | Оценка качества парсинга и управляемый fallback | **в работе** | Page-router работает в production shadow; на 150 сложных VAREX Granite 90,5% против Qianfan 15,8%; готовы изолированные Infinity Flash/NuExtract3 runners, новый полный model run еще не запускался |
 | 9 | Настоящий BM25 | не начат | Кандидат: pg_textsearch; требуется доменный A/B |
 | 10 | Фильтрованный HNSW | не начат | Требуется проверка iterative scan в pgvector 0.8.2 |
 | 11 | Иерархический поиск | не начат | Архитектурная гипотеза описана |
@@ -1232,6 +1232,52 @@ Granite. Только после parser-only downstream `Recall@5`, nDCG, точ
 sidecar worker и GPU-сервисы не перезапускались. Основная и sidecar ARQ-очереди
 после проверки `0/0`; внутренний и публичный `/healthz` возвращают `ok`,
 `/api/config` подтверждает `auth_enabled=true` и production OIDC issuer.
+
+### 6.15. Изолированные runners Infinity Flash и NuExtract3
+
+Перед новым скачиванием выполнен read-only аудит A100. Наиболее безопасен GPU5:
+при работающем MinerU свободно 27 515 МиБ. На корневом разделе осталось около
+23,99 ГБ и заполнение достигло 96%, поэтому model cache запрещено размещать в
+`/root`. Временные HF-веса и окружения должны жить в
+`/tmp/rag_parser_trials`, а `/root/parser_trials/runs` хранит только небольшие
+логи, prediction и итоговые манифесты. Infinity и NuExtract запускаются строго
+последовательно; production-переводчик на GPU1 не затрагивается.
+
+Для Infinity-Parser2-Flash добавлен
+`scripts/generate_infinity_flash_predictions.py`. Runner:
+
+1. Принимает только полный pinned commit
+   `9837b83778196e6107b3767ca62eb5bdfc08f22a` и заранее сверяет SHA каждого PDF.
+2. Использует direct Transformers, а не vLLM и не SDK: прежний vLLM 0.17.1
+   вернул 8192 символа `!`, а SDK безусловно импортирует vLLM даже для другого
+   backend.
+3. Рендерит одностраничный PDF при фиксированном DPI, отправляет официальный
+   `doc2json` prompt и строго разбирает полный JSON без repair/truncation.
+4. Проверяет нормализованные bbox `0..1000` и переводит их непосредственно в
+   top-left PDF points. Reading order модели становится непрерывным `idx`.
+5. Преобразует title/text/formula/figure/table в канонические сегменты. HTML-
+   таблица получает реальные ячейки и span; неразбираемая таблица явно остается
+   paragraph с `table_parse_error`, поэтому не может дать ложный table score.
+6. Пишет revision, точные runtime-версии, source SHA, latency, render metadata,
+   сырой ответ и атомарный resume-safe prediction.
+
+Для `benchmark_varex_sidecars.py` добавлен профиль `nuextract3`. Он не вставляет
+JSON Schema в обычный текстовый prompt. Официальный NuMind 0.3.0 конвертирует
+схему в JSON-template с `omit_unsupported_branches=false`; любое потерянное поле
+завершает страницу ошибкой. Template передается JSON-строкой через
+`chat_template_kwargs.template`, описания полей — через `instructions`, thinking
+выключен. На всех 150 текущих VAREX схемах официальный конвертер агента дал
+150/150 без потерянных ветвей и пустых инструкций. Прогон закрепляется на
+`2e9fca82ee641e6bb6e1f5d905241e994be27a07`, требует явный runtime, seed 0,
+8192 output tokens и принимает только `finish_reason=stop` плюс прямой валидный
+JSON без исправлений.
+
+Локально профильный набор дал **24 passed**, полный backend — **254 passed**;
+измененные runners проходят Ruff/mypy. Следующий обязательный этап: A100
+fail-fast smoke Infinity на сложной table/chart странице и greedy parity-smoke
+NuExtract Transformers/vLLM на пяти VAREX. Только после валидного smoke
+разрешается полный прогон; production API/worker и пользовательские данные на
+этом этапе не меняются.
 
 ## 7. Этап P1: поиск и RAG
 
