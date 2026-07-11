@@ -996,6 +996,26 @@ Foundation пока не регистрирует ARQ-задачу, не соз�
 `parse_revision`. Локально: **102 passed**, профильные Ruff/mypy прошли,
 `alembic heads` показывает единственную head `0023`.
 
+Foundation развернут на SHA `2dafbab`. На A100 полный pytest также дал
+**102 passed**, Ruff/mypy прошли. В отдельной временной Postgres-базе с теми же
+предустановленными `vector/pg_trgm` успешно выполнен цикл
+`upgrade 0022 → 0023 → downgrade 0022 → upgrade 0023`; повторная полная сборка
+с нуля подтвердила `RLS=true`, одну policy и 14 constraints.
+
+Перед production DDL создан schema-only backup
+`/root/parser_trials/rag_schema_before_0023_2026-07-11.sql`, 34577 байт. Роль
+приложения не имеет постоянных DDL-прав; для миграции ей временно выданы только
+`CREATE ON SCHEMA public` и `REFERENCES ON documents`, после транзакции оба права
+отозваны и повторная проверка дала `false/false`. Production находится на
+`0023`, таблица пуста, RLS включен. API и worker перезапущены при пустой очереди;
+page-router остался в `shadow`, все health-check — `ok`.
+
+Delete canary проверил prefix isolation на настоящем MinIO: под UUID публичного
+VAREX-canary создан тестовый sidecar-object, под соседним UUID — контрольный.
+Штатный DELETE удалил все объекты только целевого документа, контрольный объект
+сохранился и затем был удален отдельно. Canary дошел до `done`, после очистки в
+библиотеке снова 9 документов, очередь `0`.
+
 ## 7. Этап P1: поиск и RAG
 
 ### 7.1. Настоящий BM25
