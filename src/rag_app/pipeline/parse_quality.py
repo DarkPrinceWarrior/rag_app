@@ -34,10 +34,16 @@ class ParseQualityReport:
     reasons: tuple[str, ...]
 
 
-def quality_metadata(report: ParseQualityReport, *, backend: str) -> dict[str, Any]:
+def quality_metadata(
+    report: ParseQualityReport,
+    *,
+    backend: str,
+    raw_report: ParseQualityReport | None = None,
+    backfilled_pages: Sequence[int] = (),
+) -> dict[str, Any]:
     """Serialize privacy-safe shadow signals for storage on a document."""
 
-    return {
+    metadata: dict[str, Any] = {
         "schema_version": 1,
         "backend": backend,
         "score": report.score,
@@ -53,6 +59,22 @@ def quality_metadata(report: ParseQualityReport, *, backend: str) -> dict[str, A
         "integrity_ratio": report.integrity_ratio,
         "reasons": list(report.reasons),
     }
+    if raw_report is None:
+        return metadata
+
+    backfilled_page_count = len(set(backfilled_pages))
+    metadata.update(
+        {
+            "schema_version": 2,
+            "raw_parser": quality_metadata(raw_report, backend=backend),
+            "backfilled_page_count": backfilled_page_count,
+            "backfilled_page_ratio": round(
+                backfilled_page_count / max(1, len(report.pages)),
+                4,
+            ),
+        }
+    )
+    return metadata
 
 
 def _normalized_text(value: str) -> str:

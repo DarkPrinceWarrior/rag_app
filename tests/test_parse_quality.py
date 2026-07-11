@@ -144,3 +144,28 @@ def test_quality_metadata_contains_only_aggregate_signals() -> None:
         "reasons": list(report.reasons),
     }
     assert "Confidential source text" not in repr(metadata)
+
+
+def test_quality_metadata_separates_raw_parser_from_backfilled_result() -> None:
+    raw_report = evaluate_parse([], n_pages=2)
+    final_report = evaluate_parse(
+        [
+            _draft(0, 0, "Recovered first page"),
+            _draft(1, 1, "Recovered second page"),
+        ],
+        n_pages=2,
+    )
+
+    metadata = quality_metadata(
+        final_report,
+        backend="mineru",
+        raw_report=raw_report,
+        backfilled_pages=[0, 1, 1],
+    )
+
+    assert metadata["schema_version"] == 2
+    assert metadata["score"] == final_report.score
+    assert metadata["raw_parser"]["score"] == 0.0
+    assert metadata["raw_parser"]["reasons"] == ["empty_output", "missing_pages"]
+    assert metadata["backfilled_page_count"] == 2
+    assert metadata["backfilled_page_ratio"] == 1.0

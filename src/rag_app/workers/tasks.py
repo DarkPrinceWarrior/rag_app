@@ -171,6 +171,9 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
     logger.info("parse %s revision=%s (%s)", doc_id, claimed_revision, doc.filename)
 
     quality_payload: dict[str, Any] | None = None
+    quality_backend: str | None = None
+    raw_parser_drafts: list[SegmentDraft] | None = None
+    backfilled_pages: list[int] = []
     try:
         ext = Path(doc.filename).suffix.lower().lstrip(".")
         artifact_key: str | None = None
@@ -184,17 +187,20 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 # сканы идут той же командой — mineru -m auto решает постранично
                 n_pages, has_text = await asyncio.to_thread(pdf_info, local_file)
                 backend = _parser_backend(doc)
+                quality_backend = backend
                 out_dir = tmp_path / "parser_out"
                 if not doc.parse_force_ocr and has_text and backend in ("dots_mocr", "paddle_vl"):
                     # альтернативный VLM-движок (сравнение парсеров): свой формат
                     # вывода → SegmentDraft напрямую, без mineru content_list/geo
                     kind = DocumentKind.pdf_text
                     drafts = await _vlm_segments(backend, local_file, out_dir)
+                    raw_parser_drafts = list(drafts)
                     # PaddleOCR-VL вырезает рисунки в файлы (dots — нет) → грузим в
                     # img_s3, чтобы они появились в текст-просмотре (как у MinerU)
                     if backend == "paddle_vl":
                         await _upload_segment_images(storage, doc_id, out_dir, drafts)
                 else:
+                    quality_backend = "mineru"
                     if doc.parse_force_ocr:
                         # битый ToUnicode-cmap текстового слоя → OCR с картинки
                         # VLM-бэкендом (MinerU 3.3, multilingual — кириллица/таблицы/
@@ -212,15 +218,20 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                         content_list_path = await run_mineru(local_file, out_dir)
                     items = load_content_list(content_list_path)
                     drafts = content_list_to_segments(items)
+                    raw_parser_drafts = list(drafts)
                     # pdf_text: VLM местами роняет/прореживает целые страницы —
                     # достраиваем их абзацами из текстового слоя (истина для PDF
                     # с текстом), дедуп против VLM. Сканам слой не поможет (no-op).
                     if kind == DocumentKind.pdf_text:
-                        drafts, filled = await asyncio.to_thread(
+                        drafts, backfilled_pages = await asyncio.to_thread(
                             backfill_text_layer, local_file, drafts
                         )
-                        if filled:
-                            logger.info("parse %s: достроены страницы из слоя: %s", doc_id, filled)
+                        if backfilled_pages:
+                            logger.info(
+                                "parse %s: достроены страницы из слоя: %s",
+                                doc_id,
+                                backfilled_pages,
+                            )
                     # геометрия в пунктах из middle.json — для оверлея сканов и
                     # подсветки цитат (этап 3); content_list-bbox в другом масштабе
                     geo = load_block_geometry(content_list_path)
@@ -297,15 +308,26 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
 
         if ext == "pdf" and settings.parser_quality_shadow_enabled:
             assert n_pages is not None
+            assert raw_parser_drafts is not None
+            assert quality_backend is not None
             quality = evaluate_parse(drafts, n_pages=n_pages)
-            quality_payload = quality_metadata(quality, backend=backend)
+            raw_quality = evaluate_parse(raw_parser_drafts, n_pages=n_pages)
+            quality_payload = quality_metadata(
+                quality,
+                backend=quality_backend,
+                raw_report=raw_quality,
+                backfilled_pages=backfilled_pages,
+            )
             logger.info(
                 "parse_quality_shadow doc=%s backend=%s score=%.4f acceptable=%s "
-                "page_coverage=%.4f duplicate_ratio=%.4f integrity_ratio=%.4f reasons=%s",
+                "raw_score=%.4f backfilled_pages=%s page_coverage=%.4f "
+                "duplicate_ratio=%.4f integrity_ratio=%.4f reasons=%s",
                 doc_id,
-                backend,
+                quality_backend,
                 quality.score,
                 quality.acceptable,
+                raw_quality.score,
+                len(set(backfilled_pages)),
                 quality.page_coverage,
                 quality.duplicate_ratio,
                 quality.integrity_ratio,
