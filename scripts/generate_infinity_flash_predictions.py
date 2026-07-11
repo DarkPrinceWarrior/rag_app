@@ -296,10 +296,11 @@ class _DirectInfinityParser:
         )
 
         self._torch = torch
-        self._model = AutoModelForImageTextToText.from_pretrained(
+        model_object: Any = AutoModelForImageTextToText.from_pretrained(
             snapshot,
             torch_dtype=torch.bfloat16,
-        ).to("cuda")
+        )
+        self._model = model_object.to("cuda")
         self._model.eval()
         self._processor = AutoProcessor.from_pretrained(snapshot)
 
