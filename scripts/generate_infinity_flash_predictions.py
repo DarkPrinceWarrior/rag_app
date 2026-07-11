@@ -304,7 +304,7 @@ class _DirectInfinityParser:
         self._model.eval()
         self._processor = AutoProcessor.from_pretrained(snapshot)
 
-    def parse(self, image: Any, *, max_new_tokens: int) -> str:
+    def parse(self, image: Any, *, max_new_tokens: int, max_time_s: float) -> str:
         from qwen_vl_utils import process_vision_info  # type: ignore[import-not-found]
 
         messages = [
@@ -343,6 +343,7 @@ class _DirectInfinityParser:
             generated = self._model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
+                max_time=max_time_s,
                 do_sample=False,
             )
         trimmed = [
@@ -421,6 +422,7 @@ def main() -> None:
     parser.add_argument("--revision", default=_REVISION)
     parser.add_argument("--dpi", type=int, default=144)
     parser.add_argument("--max-new-tokens", type=int, default=32_768)
+    parser.add_argument("--max-generation-seconds", type=float, default=600.0)
     parser.add_argument("--categories", nargs="+", default=[])
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
@@ -432,6 +434,8 @@ def main() -> None:
         parser.error("--dpi должен быть в диапазоне 72..300")
     if args.max_new_tokens < 1 or args.max_new_tokens > 65_536:
         parser.error("--max-new-tokens должен быть в диапазоне 1..65536")
+    if args.max_generation_seconds <= 0 or args.max_generation_seconds > 3600:
+        parser.error("--max-generation-seconds должен быть в диапазоне (0, 3600]")
     if args.limit < 0:
         parser.error("--limit должен быть >= 0")
 
@@ -452,6 +456,7 @@ def main() -> None:
         "revision": args.revision,
         "dpi": args.dpi,
         "max_new_tokens": args.max_new_tokens,
+        "max_generation_seconds": args.max_generation_seconds,
         "results": {},
     }
 
@@ -484,7 +489,11 @@ def main() -> None:
         try:
             image, image_size, page_size, render_latency_s = _render_pdf(pdf, args.dpi)
             started = time.monotonic()
-            raw_output = inference.parse(image, max_new_tokens=args.max_new_tokens)
+            raw_output = inference.parse(
+                image,
+                max_new_tokens=args.max_new_tokens,
+                max_time_s=args.max_generation_seconds,
+            )
             inference_latency_s = round(time.monotonic() - started, 3)
             segments = _layout_to_segments(
                 raw_output,
