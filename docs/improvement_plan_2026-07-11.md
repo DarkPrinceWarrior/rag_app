@@ -132,14 +132,14 @@ Production не используется как место первичного 
 
 | № | Пункт | Статус | Текущий результат |
 |---:|---|---|---|
-| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Текущий backend pytest: 175 passed; профильные Ruff/mypy зеленые, ESLint/полный CI еще требуют доводки |
+| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Текущий backend pytest: 245 passed; измененные parser-benchmark файлы проходят Ruff/mypy, но общий Ruff еще содержит 124 ранее существовавших нарушения, ESLint/полный CI требуют доводки |
 | 2 | Fail-closed RLS и тесты изоляции | не начат | Риск и критерии описаны |
 | 3 | Секреты, лицензии, Keycloak, резервное копирование и восстановление | исследование | Найдено обязательство атрибуции MinerU; нужна юридическая проверка и репетиция восстановления |
 | 4 | Эталонный набор документов и вопросов | **в работе** | На A100 проверены SHA 150 сложных VAREX; для 138 лицензионно однозначных входов добавлен offline-manifest, до byte verification он маркируется metadata-only; нужен закрытый доменный набор |
 | 5 | Автоматический выпускной шлюз качества моделей | не начат | Определены общие условия приемки |
 | 6 | A/B MinerU 3.4 | исследование | Подтвержден выпуск 3.4; сервер пока на 3.3.1 |
 | 7 | A/B MinerU-Popo и дерево документа | исследование | Подтверждены назначение и MIT-лицензия |
-| 8 | Оценка качества парсинга и управляемый fallback | **в работе** | Page-router работает в production shadow; на 150 сложных VAREX Granite 90,5% против Qianfan 15,8%; deterministic Granite protocol v3 реализован без model job |
+| 8 | Оценка качества парсинга и управляемый fallback | **в работе** | Page-router работает в production shadow; на 150 сложных VAREX Granite 90,5% против Qianfan 15,8%; добавлен строгий offline-import результатов новых parser-моделей, model job еще не запускался |
 | 9 | Настоящий BM25 | не начат | Кандидат: pg_textsearch; требуется доменный A/B |
 | 10 | Фильтрованный HNSW | не начат | Требуется проверка iterative scan в pgvector 0.8.2 |
 | 11 | Иерархический поиск | не начат | Архитектурная гипотеза описана |
@@ -477,6 +477,9 @@ ParseBench дополнительно показывает только 0,90 п�
 | MinerU2.5-Pro, 1,2B | веса Apache-2.0; код MinerU под собственной лицензией | 95,75 в официальном leaderboard v1.7 | Оставить основным; проверить атрибуцию и условия кода |
 | Infinity-Parser2-Flash, 2,2B | metadata Apache-2.0 | 73,25 ParseBench; 91,98 OmniDocBench v1.6 от авторов | Первый новый кандидат для agent/RAG A/B; одна A100 |
 | Infinity-Parser2-Pro, 35B/3B active | metadata Apache-2.0 | 74,28 ParseBench; 93,95 OmniDocBench v1.6 от авторов | Только после Flash: BF16 требует двух A100 и TP без NVLink |
+| NuExtract3, 4,5B | Apache-2.0 | 0,651 +/- 0,019 на внутреннем structured benchmark; публичного VAREX нет | Первый новый schema-KIE кандидат против Granite; одна A100 |
+| FireRed-OCR-2B | Apache-2.0 | 94,14 OmniDocBench в актуальной таблице; 92,94 в отчете v1.5 | Вторичный однокарточный parser-кандидат после Infinity Flash |
+| LightOnOCR-2-1B | Apache-2.0 | 83,2 +/- 0,9 olmOCR | Быстрый транскриптор; низкий приоритет для KIE/диаграмм |
 | GLM-OCR, 0,9B | MIT | 95,22 OmniDocBench; 29,60 ParseBench | Исключить по строгому Apache-only; не приоритетен для agent/RAG |
 | Unlimited-OCR, 3B/0,5B active | MIT | 93,92, OmniDocBench v1.6 | Исключить из production при Apache-only; research multi-page |
 | Granite Vision 4.1, 4B | Apache-2.0 | 94,2 exact match на VAREX; 86,4 Chart2Summary | Первый кандидат KIE/table/chart sidecar; не канонический parser |
@@ -1168,6 +1171,60 @@ structured sidecars еще не индексируются в `Segment`/`Chunk`.
 должен сравнить parser backends в отдельных eval-БД при одинаковых embedding,
 reranker и generator, используя стабильные source/page references. Model job,
 sidecar worker и пользовательское поведение production на этом шаге не менялись.
+
+### 6.14. Повторная проверка моделей и единый parser-benchmark contract
+
+Актуализация на 11.07.2026 выполнена через Tavily по первичным карточкам моделей,
+техническим отчетам и текущему ParseBench. Отдельные агенты независимо проверили
+рейтинг и эксплуатационную пригодность для A100-40GB. Универсальной новой модели,
+доказанно превосходящей Granite Vision 4.1 на schema-KIE, не найдено: Granite
+остается единственной из shortlist с опубликованным VAREX 94,2%, а локально уже
+получил 90,5% на 150 сложных страницах.
+
+Актуальный ролевой shortlist:
+
+| Роль | Первый кандидат | Закрепленная ревизия | Причина |
+|---|---|---|---|
+| Общий parser/table/layout | `infly/Infinity-Parser2-Flash` | `9837b83778196e6107b3767ca62eb5bdfc08f22a` | Apache-2.0, 2,2B, ParseBench 73,3 против 72,8 у MinerU; помещается на одной A100 |
+| Действующий fallback | `PaddlePaddle/PaddleOCR-VL-1.6` | `66317acc4c9fc17bd154591ce650735cd2855f3e` | Apache-2.0, 0,959B, уже поднят на `:8118`; OmniDocBench v1.6 96,33 и Table-TEDS 94,76 |
+| Schema-KIE challenger | `numind/NuExtract3` | `2e9fca82ee641e6bb6e1f5d905241e994be27a07` | Apache-2.0, 4,5B, schema-driven JSON и одна A100; обязан пройти тот же VAREX, что Granite |
+| Quality ceiling | `infly/Infinity-Parser2-Pro` | `2f82e707a3baa094c2f121e72b8455132e4b08c4` | ParseBench 74,3, но около 70 ГБ BF16 и официальный TP=2; не подходит первым production-кандидатом без NVLink |
+| Вторичный parser | `FireRedTeam/FireRed-OCR` | `7bf5e9d91d3bb6bf91a3b6bc66d163096b696e50` | Apache-2.0, 2,1B; тестировать только если Flash/Paddle не закрывают доменные ошибки |
+
+KDL-Frontier-Parser-nano остается первым в ParseBench среди этих компактных
+моделей: 76,4 overall, 85,6 tables, 63,4 charts, 87,2 content, 66,8 semantic и
+78,8 grounding. Но веса опубликованы под AGPL-3.0, а фактический A100-smoke в
+двух vLLM-runtime дал поврежденный layout. Поэтому открытая доступность весов не
+делает KDL допустимым для Apache-only production. Qianfan-OCR также не возвращен
+в общий fallback: его локальные 15,8% на VAREX и ParseBench chart 0,9 сильнее
+ограничивают решение, чем заявленные общие OCR-метрики.
+
+Для следующих A/B в `scripts/benchmark_complex_parsers.py` реализован единый
+offline-import внешних результатов:
+
+```bash
+uv run python scripts/benchmark_complex_parsers.py CORPUS OUT \
+  --backends mineru paddle_vl \
+  --prediction infinity_flash=/path/to/canonical_predictions
+```
+
+Каждый `<source.pdf>.json` обязан содержать версию схемы, точные `model id`,
+revision и runtime, SHA-256 исходного PDF, измеренную latency и непрерывный
+reading order сегментов. До оценки проверяются SHA corpus manifest, диапазон
+страниц, конечные координаты, `bbox_pt` внутри `page_size_pt`, типы сегментов и
+лимиты размера. Сводка пишется атомарно; ошибочный prediction остается явным
+`status=error` и не маскируется пустым успешным parse. В worker/API этот адаптер
+не импортируется.
+
+Локальная проверка: профильный набор **10 passed**, полный backend **245 passed**;
+измененные файлы проходят Ruff и mypy. Репозиторный Ruff пока не является
+зеленым: осталось 124 ранее существовавших нарушения вне этого изменения.
+Следующий порядок неизменен: сначала полный локальный прогон, затем синхронизация
+на A100; Infinity Flash проходит 138 байтово проверенных входов и закрытый
+доменный набор, NuExtract3 — те же 150 VAREX и сложные RU/EN/ZH-формы против
+Granite. Только после parser-only downstream `Recall@5`, nDCG, точности цитат и
+чисел допускаются shadow model job и canary. Production и десять действующих
+аккаунтов этим изменением не затронуты.
 
 ## 7. Этап P1: поиск и RAG
 
