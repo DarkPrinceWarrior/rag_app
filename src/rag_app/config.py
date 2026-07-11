@@ -242,6 +242,9 @@ class Settings(BaseSettings):
     parser_page_router_max_pages: int = 12
     parser_page_router_min_score: float = 0.70
     parser_page_router_min_margin: float = 0.05
+    # Реальный page replacement допускается только в canary+allowlist. Shadow
+    # продолжает считать решения без второго parser; флаг по умолчанию выключен.
+    parser_page_fallback_enabled: bool = False
     parser_sidecar_timeout_s: int = 180
     structured_sidecar_queue_name: str = "arq:structured-sidecar"
     structured_sidecar_health_check_interval_s: int = 30

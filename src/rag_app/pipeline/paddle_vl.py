@@ -28,6 +28,7 @@ _IMG_RE = re.compile(r"^!\[[^\]]*\]\(([^)]*)\)$")  # markdown ![](path) (ста�
 _IMG_HTML = re.compile(r'<img[^>]*\bsrc="([^"]+)"[^>]*>', re.I)  # PaddleOCR-VL: <img src="imgs/...">
 _DIV_TAG = re.compile(r"</?div[^>]*>", re.I)  # PaddleOCR-VL центрирует картинки/подписи в <div>
 _HEAD_RE = re.compile(r"^(#{1,6})\s+(.*)")
+_PAGE_FILE_RE = re.compile(r"_(\d+)\.md$")
 
 
 def _img_meta(rel: str) -> dict:
@@ -35,8 +36,11 @@ def _img_meta(rel: str) -> dict:
     return {"img_path": rel} if rel and not rel.startswith(("http://", "https://", "data:")) else {}
 
 
-async def run_paddle(pdf_path: Path, out_dir: Path) -> Path:
+async def run_paddle(pdf_path: Path, out_dir: Path, *, timeout_s: int | None = None) -> Path:
     """Прогон PaddleOCR-VL; возвращает каталог с постраничным Markdown (doc_N.md)."""
+    timeout = settings.paddle_timeout_s if timeout_s is None else timeout_s
+    if timeout <= 0:
+        raise ValueError("paddle timeout must be positive")
     out_dir.mkdir(parents=True, exist_ok=True)
     clean = out_dir / "doc.pdf"  # чистое имя (без пробелов/скобок) для стабильных doc_N.md
     shutil.copy(pdf_path, clean)
@@ -51,10 +55,15 @@ async def run_paddle(pdf_path: Path, out_dir: Path) -> Path:
         *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
     )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=settings.paddle_timeout_s)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
         proc.kill()
-        raise RuntimeError(f"paddle-vl: таймаут {settings.paddle_timeout_s}s") from None
+        await proc.wait()
+        raise RuntimeError(f"paddle-vl: таймаут {timeout}s") from None
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
     if proc.returncode != 0:
         raise RuntimeError(f"paddle-vl: код {proc.returncode}\n{out.decode(errors='replace')[-3000:]}")
     if not any(out_dir.glob("doc_*.md")):
@@ -91,15 +100,22 @@ def _text_blocks(text: str, pidx: int, drafts: list[SegmentDraft]) -> None:
             drafts.append(SegmentDraft(0, SegmentKind.paragraph, piece, pidx))
 
 
+def _page_index(path: Path) -> int:
+    match = _PAGE_FILE_RE.search(path.name)
+    if match is None:
+        raise ValueError(f"unexpected Paddle page filename: {path.name}")
+    return int(match.group(1))
+
+
 def paddle_to_segments(out_dir: Path) -> list[SegmentDraft]:
     """Постраничный Markdown PaddleOCR-VL → SegmentDraft (idx по порядку)."""
     files = sorted(
         out_dir.glob("doc_*.md"),
-        key=lambda p: int(re.search(r"_(\d+)\.md$", p.name).group(1)),
+        key=_page_index,
     )
     drafts: list[SegmentDraft] = []
     for f in files:
-        pidx = int(re.search(r"_(\d+)\.md$", f.name).group(1))
+        pidx = _page_index(f)
         md = f.read_text(encoding="utf-8")
         pos = 0
         for m in _TABLE_RE.finditer(md):

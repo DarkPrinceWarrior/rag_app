@@ -48,7 +48,15 @@ from rag_app.pipeline.dots import dots_to_segments, run_dots
 from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.office_render import render_to_pdf
 from rag_app.pipeline.paddle_vl import paddle_to_segments, run_paddle
+from rag_app.pipeline.page_fallback import (
+    page_fallback_allowed,
+    page_fallback_error_metadata,
+    page_fallback_metadata,
+    select_page_fallbacks,
+)
+from rag_app.pipeline.page_routing import RouteRole, merge_page_replacements
 from rag_app.pipeline.page_routing_shadow import (
+    PageRoutingPlan,
     build_page_routing_plan,
     page_router_allowed,
     page_routing_metadata,
@@ -147,15 +155,88 @@ def _parser_backend(doc: Document) -> str:
     return doc.parser_backend or settings.pdf_parser_backend
 
 
-async def _vlm_segments(backend: str, pdf_path: Path, out_dir: Path) -> list[SegmentDraft]:
+async def _vlm_segments(
+    backend: str,
+    pdf_path: Path,
+    out_dir: Path,
+    *,
+    timeout_s: int | None = None,
+) -> list[SegmentDraft]:
     """Парс PDF альтернативным VLM-движком (dots.mocr / PaddleOCR-VL) → SegmentDraft."""
     if backend == "dots_mocr":
         page_dir = await run_dots(pdf_path, out_dir)
         return await asyncio.to_thread(dots_to_segments, page_dir, pdf_path)
     if backend == "paddle_vl":
-        await run_paddle(pdf_path, out_dir)
+        await run_paddle(pdf_path, out_dir, timeout_s=timeout_s)
         return await asyncio.to_thread(paddle_to_segments, out_dir)
     raise RuntimeError(f"неизвестный backend парсера: {backend}")
+
+
+def _pdf_page_sizes(pdf_bytes: bytes) -> dict[int, tuple[float, float]]:
+    """Физические размеры страниц PDF в пунктах, под общей блокировкой pdfium."""
+
+    import pypdfium2 as pdfium  # type: ignore[import-untyped]
+
+    result: dict[int, tuple[float, float]] = {}
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            for page_idx in range(len(pdf)):
+                page = pdf[page_idx]
+                try:
+                    width, height = page.get_size()
+                finally:
+                    page.close()
+                result[page_idx] = (float(width), float(height))
+        finally:
+            pdf.close()
+    return result
+
+
+async def _apply_paddle_page_fallback(
+    storage: Storage,
+    doc: Document,
+    primary_final: list[SegmentDraft],
+    primary_raw: list[SegmentDraft],
+    routing: PageRoutingPlan,
+    *,
+    n_pages: int,
+    parser_revision: int,
+) -> tuple[list[SegmentDraft], dict[str, Any], frozenset[int]]:
+    """Запустить Paddle отдельно и атомарно принять только выигравшие страницы."""
+
+    with tempfile.TemporaryDirectory(prefix="rag_page_fallback_") as tmp:
+        tmp_path = Path(tmp)
+        local_file = tmp_path / "source.pdf"
+        await storage.download_to(settings.bucket_originals, doc.s3_key_original, local_file)
+        out_dir = tmp_path / "paddle_out"
+        fallback_drafts = await _vlm_segments(
+            "paddle_vl",
+            local_file,
+            out_dir,
+            timeout_s=settings.parser_sidecar_timeout_s,
+        )
+        page_sizes = await asyncio.to_thread(_pdf_page_sizes, local_file.read_bytes())
+        if len(page_sizes) != n_pages:
+            raise RuntimeError(
+                f"fallback PDF page count mismatch: expected={n_pages} actual={len(page_sizes)}"
+            )
+        plan = select_page_fallbacks(
+            primary_raw,
+            fallback_drafts,
+            routing,
+            n_pages=n_pages,
+            page_sizes=page_sizes,
+            parser_revision=parser_revision,
+            min_score=settings.parser_page_router_min_score,
+            min_margin=settings.parser_page_router_min_margin,
+        )
+        accepted_drafts = [draft for candidate in plan.candidates for draft in candidate.drafts]
+        if accepted_drafts:
+            await _upload_segment_images(storage, doc.id, out_dir, accepted_drafts)
+        merged = merge_page_replacements(primary_final, plan.candidates, n_pages=n_pages)
+    accepted_pages = frozenset(candidate.page_idx for candidate in plan.candidates)
+    return merged, page_fallback_metadata(plan, backend="paddle_vl"), accepted_pages
 
 
 async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None = None) -> str:
@@ -181,6 +262,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
     raw_parser_drafts: list[SegmentDraft] | None = None
     backfilled_pages: list[int] = []
     native_text_by_page: dict[int, str] | None = None
+    n_pages: int | None
     router_allowed = page_router_allowed(
         settings.parser_page_router_mode,
         owner_sub=doc.owner_sub,
@@ -314,7 +396,8 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                     drafts = await asyncio.to_thread(ooxml.extract, ext, local_file, img_dir)
                     if ext == "docx":
                         await _upload_segment_images(storage, doc_id, img_dir, drafts)
-                    n_pages = (max(d.page_idx for d in drafts) + 1) if ext == "pptx" and drafts else None
+                    page_indices = [d.page_idx for d in drafts if d.page_idx is not None]
+                    n_pages = max(page_indices) + 1 if ext == "pptx" and page_indices else None
             elif ext == "txt":
                 # plain-текст (ТЗ §4.2): абзацы (разделённые пустой строкой) → сегменты
                 kind = DocumentKind.text
@@ -364,7 +447,56 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                     routing_plan,
                     mode=settings.parser_page_router_mode,
                 )
+                fallback_summary: dict[str, Any] | None = None
+                fallback_attempts = sum(
+                    decision.role == RouteRole.parser_fallback
+                    for decision in routing_plan.selected
+                )
+                if page_fallback_allowed(
+                    enabled=settings.parser_page_fallback_enabled,
+                    router_mode=settings.parser_page_router_mode,
+                    router_allowed=router_allowed,
+                    primary_backend=quality_backend,
+                    attempted_page_count=fallback_attempts,
+                ):
+                    try:
+                        drafts, fallback_summary, fallback_pages = await _apply_paddle_page_fallback(
+                            storage,
+                            doc,
+                            drafts,
+                            raw_parser_drafts,
+                            routing_plan,
+                            n_pages=n_pages,
+                            parser_revision=claimed_revision,
+                        )
+                        if fallback_summary["accepted_page_count"]:
+                            quality = evaluate_parse(
+                                drafts,
+                                n_pages=n_pages,
+                                native_text_by_page=native_text_by_page,
+                            )
+                            quality_payload = quality_metadata(
+                                quality,
+                                backend=quality_backend,
+                                raw_report=raw_quality,
+                                backfilled_pages=[
+                                    page for page in backfilled_pages if page not in fallback_pages
+                                ],
+                            )
+                    except Exception as exc:  # noqa: BLE001 - fallback не валит primary
+                        logger.warning(
+                            "page_fallback doc=%s backend=paddle_vl failed type=%s",
+                            doc_id,
+                            type(exc).__name__,
+                        )
+                        fallback_summary = page_fallback_error_metadata(
+                            backend="paddle_vl",
+                            attempted_page_count=fallback_attempts,
+                            error_type=type(exc).__name__,
+                        )
                 quality_payload["page_routing"] = routing_summary
+                if fallback_summary is not None:
+                    quality_payload["page_fallback"] = fallback_summary
                 logger.info(
                     "page_routing_shadow doc=%s mode=%s eligible=%s selected=%s "
                     "types=%s roles=%s",
@@ -528,9 +660,9 @@ async def _translate_segment(translator: Translator, seg: Segment, context: Segm
         # уже переведённые тексты из сетки выше.
         if cells:
             cells_ru: list[list[dict[str, Any]]] = []
-            for row in cells:
+            for cell_row in cells:
                 row_ru_cells: list[dict[str, Any]] = []
-                for c in row:
+                for c in cell_row:
                     row_ru_cells.append(
                         {"text": await tr(c["text"]), "colspan": c["colspan"], "rowspan": c["rowspan"]}
                     )
