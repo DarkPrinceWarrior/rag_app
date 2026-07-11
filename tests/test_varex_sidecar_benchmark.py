@@ -13,6 +13,7 @@ _load_summary = _SCRIPT["_load_summary"]
 _nuextract_contract = _SCRIPT["_nuextract_contract"]
 _prediction_complete = _SCRIPT["_prediction_complete"]
 _request_payload = _SCRIPT["_request_payload"]
+_select_pages = _SCRIPT["_select_pages"]
 
 
 def test_parse_json_output_accepts_plain_and_fenced_objects() -> None:
@@ -103,3 +104,16 @@ def test_nuextract_request_uses_template_kwargs_without_text_prompt(monkeypatch)
         "instructions": "pressure",
         "enable_thinking": False,
     }
+
+
+def test_limit_per_split_keeps_deterministic_balanced_smoke() -> None:
+    pages = [
+        {"doc_id": "n1", "split": "Nested"},
+        {"doc_id": "n2", "split": "Nested"},
+        {"doc_id": "t1", "split": "Table"},
+        {"doc_id": "n3", "split": "Nested"},
+        {"doc_id": "t2", "split": "Table"},
+    ]
+
+    assert [page["doc_id"] for page in _select_pages(pages, 1)] == ["n1", "t1"]
+    assert _select_pages(pages, 0) is pages

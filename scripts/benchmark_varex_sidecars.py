@@ -209,6 +209,24 @@ def _request(
     return content, finish_reason if isinstance(finish_reason, str) else None
 
 
+def _select_pages(pages: Any, limit_per_split: int) -> list[dict[str, Any]]:
+    if not isinstance(pages, list) or any(not isinstance(page, dict) for page in pages):
+        raise ValueError("VAREX manifest pages must be an array of objects")
+    if limit_per_split == 0:
+        return pages
+    selected: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for page in pages:
+        split = page.get("split")
+        if not isinstance(split, str):
+            raise ValueError("VAREX page split must be a string")
+        if counts.get(split, 0) >= limit_per_split:
+            continue
+        selected.append(page)
+        counts[split] = counts.get(split, 0) + 1
+    return selected
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("corpus_dir", type=Path)
@@ -221,12 +239,15 @@ def main() -> None:
     parser.add_argument("--profile", choices=("generic", "nuextract3"), default="generic")
     parser.add_argument("--model-revision", default="")
     parser.add_argument("--runtime", default="")
+    parser.add_argument("--limit-per-split", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     if args.max_tokens == 0:
         args.max_tokens = 8192 if args.profile == "nuextract3" else 4096
     if args.max_tokens < 1 or args.max_tokens > 16_384:
         parser.error("--max-tokens must be in 1..16384")
+    if args.limit_per_split < 0:
+        parser.error("--limit-per-split must be >= 0")
     if args.profile == "nuextract3":
         if not args.model_revision:
             args.model_revision = _NUEXTRACT3_REVISION
@@ -254,6 +275,7 @@ def main() -> None:
         "seed": 0,
         "prompt_role": "user_multimodal",
         "corpus_manifest_sha256": _sha256_file(manifest_path),
+        "limit_per_split": args.limit_per_split,
     }
     summary_path = args.output_dir / f"{args.name}.summary.json"
     summary = _load_summary(
@@ -263,7 +285,7 @@ def main() -> None:
     )
 
     with httpx.Client(timeout=args.timeout) as client:
-        for page in manifest["pages"]:
+        for page in _select_pages(manifest["pages"], args.limit_per_split):
             doc_id = page["doc_id"]
             image_path = args.corpus_dir / page["image_file"]
             if (
