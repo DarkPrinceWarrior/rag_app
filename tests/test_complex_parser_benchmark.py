@@ -52,6 +52,8 @@ def _result(*, tables: int = 0, cells: int = 0, images: int = 0) -> dict[str, An
         "source_chars": 100,
         "segments": 3,
         "table_cells": cells,
+        "table_rows": 10 if tables else 0,
+        "table_nonempty_cells": 120 if tables else 0,
         "kinds": {
             "heading": 0,
             "paragraph": 2,
@@ -64,13 +66,16 @@ def _result(*, tables: int = 0, cells: int = 0, images: int = 0) -> dict[str, An
 
 
 def test_table_benchmark_proxy_exposes_missing_structure() -> None:
-    page = {"category": "table", "selection": {"cells": 200}}
+    page = {"category": "table", "selection": {"cells": 200, "rows": 8}}
     result = _result(tables=1, cells=150)
 
     assert _benchmark_proxies(page, result) == {
         "table_detected": True,
         "expected_table_cells": 200,
+        "expected_table_rows": 8,
         "table_cell_count_ratio": 0.75,
+        "table_nonempty_cell_count_ratio": 0.6,
+        "table_row_count_ratio": 1.25,
     }
 
 
@@ -95,6 +100,8 @@ def test_aggregates_count_structural_pages() -> None:
         "segments": 6,
         "tables": 1,
         "table_cells": 150,
+        "table_rows": 10,
+        "table_nonempty_cells": 120,
         "images": 1,
         "empty_text_pages": 0,
         "quality_mean": 1.0,

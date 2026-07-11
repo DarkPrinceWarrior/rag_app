@@ -285,16 +285,27 @@ async def _run_prediction(
 def _stats(drafts: list[SegmentDraft]) -> dict[str, Any]:
     kinds = {kind.value: 0 for kind in SegmentKind}
     table_cells = 0
+    table_rows = 0
+    table_nonempty_cells = 0
     for draft in drafts:
         kinds[draft.kind.value] += 1
         cells = draft.meta.get("table_cells")
         if isinstance(cells, list):
-            table_cells += sum(len(row) for row in cells if isinstance(row, list))
+            rows = [row for row in cells if isinstance(row, list)]
+            table_rows += len(rows)
+            table_cells += sum(len(row) for row in rows)
+            table_nonempty_cells += sum(
+                isinstance(cell, dict) and bool(str(cell.get("text", "")).strip())
+                for row in rows
+                for cell in row
+            )
     return {
         "segments": len(drafts),
         "source_chars": sum(len(draft.source_text) for draft in drafts),
         "kinds": kinds,
         "table_cells": table_cells,
+        "table_rows": table_rows,
+        "table_nonempty_cells": table_nonempty_cells,
     }
 
 
@@ -307,13 +318,22 @@ def _benchmark_proxies(page: dict[str, Any], result: dict[str, Any]) -> dict[str
     kinds = result["kinds"]
     if category == "table":
         expected_cells = page["selection"].get("cells")
+        expected_rows = page["selection"].get("rows")
         actual_cells = result["table_cells"]
+        actual_rows = result["table_rows"]
         output: dict[str, Any] = {
             "table_detected": kinds[SegmentKind.table.value] > 0,
             "expected_table_cells": expected_cells,
+            "expected_table_rows": expected_rows,
         }
         if isinstance(expected_cells, int) and expected_cells > 0:
             output["table_cell_count_ratio"] = round(actual_cells / expected_cells, 4)
+            output["table_nonempty_cell_count_ratio"] = round(
+                result["table_nonempty_cells"] / expected_cells,
+                4,
+            )
+        if isinstance(expected_rows, int) and expected_rows > 0:
+            output["table_row_count_ratio"] = round(actual_rows / expected_rows, 4)
         return output
     if category == "chart":
         return {"visual_region_preserved": kinds[SegmentKind.image.value] > 0}
@@ -346,6 +366,8 @@ def _aggregates(output: dict[str, Any]) -> dict[str, Any]:
             "segments": sum(result["segments"] for result in completed),
             "tables": sum(result["kinds"][SegmentKind.table.value] for result in completed),
             "table_cells": sum(result["table_cells"] for result in completed),
+            "table_rows": sum(result["table_rows"] for result in completed),
+            "table_nonempty_cells": sum(result["table_nonempty_cells"] for result in completed),
             "images": sum(result["kinds"][SegmentKind.image.value] for result in completed),
             "empty_text_pages": sum(result["source_chars"] == 0 for result in completed),
             "quality_mean": round(
