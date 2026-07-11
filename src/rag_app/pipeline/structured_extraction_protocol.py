@@ -9,6 +9,7 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 PROTOCOL_VERSION = 3
@@ -16,6 +17,10 @@ PROMPT_VERSION = "granite-varex-split-v1"
 DEFAULT_MAX_LEAVES = 24
 DEFAULT_MAX_SCHEMA_TOKENS = 2048
 DEFAULT_TOKENIZER_POLICY = "model-tokenizer-v1"
+DEFAULT_TABLE_MAX_COLUMNS = 8
+DEFAULT_TABLE_MAX_ANCHORS = 2
+DEFAULT_TABLE_MAX_ROWS = 50
+DEFAULT_TABLE_MAX_CELL_BYTES = 4096
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ANNOTATION_KEYS = {
@@ -93,7 +98,15 @@ class StructuredExtractionProtocolError(ValueError):
 
 
 class UnsupportedTableSchemaError(StructuredExtractionProtocolError):
-    """Array-of-object schemas require the separate table split/merge protocol."""
+    """A table schema cannot be represented by the bounded table protocol."""
+
+
+class TablePredictionError(StructuredExtractionProtocolError):
+    """A table chunk prediction does not match its requested schema."""
+
+
+class TableAlignmentConflictError(TablePredictionError):
+    """Table chunks cannot be joined without guessing row identity or values."""
 
 
 class SchemaTokenLimitError(StructuredExtractionProtocolError):
@@ -146,6 +159,33 @@ class SchemaChunk:
     schema: dict[str, Any]
     leaf_count: int
     schema_tokens: int
+
+
+@dataclass(frozen=True)
+class TableSchemaChunk:
+    chunk_id: str
+    array_path: str
+    anchor_fields: tuple[str, ...]
+    value_fields: tuple[str, ...]
+    schema: dict[str, Any]
+    schema_tokens: int
+
+
+@dataclass(frozen=True)
+class TableArrayPlan:
+    array_path: str
+    fields: tuple[str, ...]
+    anchor_fields: tuple[str, ...]
+    max_rows: int
+    max_cell_bytes: int
+    chunks: tuple[TableSchemaChunk, ...]
+
+
+@dataclass(frozen=True)
+class TableExtractionPlan:
+    scalar_chunks: tuple[SchemaChunk, ...]
+    tables: tuple[TableArrayPlan, ...]
+    total_schema_tokens: int
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -475,9 +515,14 @@ def _is_array_schema(schema: Mapping[str, Any]) -> bool:
     return value == "array" or (isinstance(value, list) and "array" in value)
 
 
-def _stable_nullable_schema(value: Any, *, is_root: bool = False) -> Any:
+def _stable_nullable_schema(
+    value: Any,
+    *,
+    is_root: bool = False,
+    allow_table: bool = False,
+) -> Any:
     if isinstance(value, list):
-        return [_stable_nullable_schema(item) for item in value]
+        return [_stable_nullable_schema(item, allow_table=allow_table) for item in value]
     if not isinstance(value, Mapping):
         return value
 
@@ -487,11 +532,11 @@ def _stable_nullable_schema(value: Any, *, is_root: bool = False) -> Any:
         if not isinstance(properties, Mapping):
             raise StructuredExtractionProtocolError("object properties must be an object")
         stable_properties = {
-            key: _stable_nullable_schema(properties[key])
+            key: _stable_nullable_schema(properties[key], allow_table=allow_table)
             for key in sorted(properties)
         }
         out = {
-            key: _stable_nullable_schema(item)
+            key: _stable_nullable_schema(item, allow_table=allow_table)
             for key, item in sorted(node.items())
             if key not in {"properties", "required", "type"}
         }
@@ -502,19 +547,29 @@ def _stable_nullable_schema(value: Any, *, is_root: bool = False) -> Any:
 
     if _is_array_schema(node):
         items = node.get("items", {})
-        if isinstance(items, Mapping) and _is_object_schema(items):
+        if isinstance(items, Mapping) and _is_object_schema(items) and not allow_table:
             raise UnsupportedTableSchemaError(
                 "array-of-object schemas require table splitting and merge support"
             )
         out = {
-            key: _stable_nullable_schema(item)
+            key: _stable_nullable_schema(item, allow_table=allow_table)
             for key, item in sorted(node.items())
-            if key != "type"
+            if key not in {"items", "type"}
         }
         out["type"] = _normalized_type(node.get("type", "array"), nullable=True)
+        if isinstance(items, Mapping):
+            out["items"] = _stable_nullable_schema(
+                items,
+                is_root=_is_object_schema(items),
+                allow_table=allow_table,
+            )
         return out
 
-    out = {key: _stable_nullable_schema(item) for key, item in sorted(node.items()) if key != "type"}
+    out = {
+        key: _stable_nullable_schema(item, allow_table=allow_table)
+        for key, item in sorted(node.items())
+        if key != "type"
+    }
     normalized_type = _normalized_type(node.get("type"), nullable=True)
     if normalized_type is not None:
         out["type"] = normalized_type
@@ -530,7 +585,7 @@ def normalize_extraction_schema(
 ) -> dict[str, Any]:
     """Resolve refs, reject table schemas, make requested leaves nullable, and sort properties."""
 
-    resolved = resolve_local_refs(schema, limits=limits)
+    resolved = normalize_request_schema(schema, limits=limits)
     if not _is_object_schema(resolved):
         raise StructuredExtractionProtocolError("root extraction schema must have type object")
     normalized = _stable_nullable_schema(resolved, is_root=True)
@@ -538,6 +593,45 @@ def normalize_extraction_schema(
         raise StructuredExtractionProtocolError("normalized schema must be an object")
     _check_json_structure(normalized, limits=limits, label="normalized schema")
     total_leaves = len(_leaf_paths(normalized))
+    if total_leaves > limits.max_total_leaves:
+        raise SchemaPreflightLimitError(
+            f"schema exceeds maximum total leaves {limits.max_total_leaves}"
+        )
+    return normalized
+
+
+def _schema_leaf_count(schema: Mapping[str, Any]) -> int:
+    if _is_object_schema(schema):
+        properties = schema.get("properties", {})
+        if not isinstance(properties, Mapping):
+            raise StructuredExtractionProtocolError("object properties must be an object")
+        return sum(
+            _schema_leaf_count(child)
+            for child in properties.values()
+            if isinstance(child, Mapping)
+        )
+    if _is_array_schema(schema):
+        items = schema.get("items")
+        if isinstance(items, Mapping) and _is_object_schema(items):
+            return _schema_leaf_count(items)
+    return 1
+
+
+def normalize_request_schema(
+    schema: Mapping[str, Any],
+    *,
+    limits: SchemaPreflightLimits = DEFAULT_PREFLIGHT_LIMITS,
+) -> dict[str, Any]:
+    """Canonical nullable schema used by request hashes, including table arrays."""
+
+    resolved = resolve_local_refs(schema, limits=limits)
+    if not _is_object_schema(resolved):
+        raise StructuredExtractionProtocolError("root extraction schema must have type object")
+    normalized = _stable_nullable_schema(resolved, is_root=True, allow_table=True)
+    if not isinstance(normalized, dict):
+        raise StructuredExtractionProtocolError("normalized request schema must be an object")
+    _check_json_structure(normalized, limits=limits, label="normalized request schema")
+    total_leaves = _schema_leaf_count(normalized)
     if total_leaves > limits.max_total_leaves:
         raise SchemaPreflightLimitError(
             f"schema exceeds maximum total leaves {limits.max_total_leaves}"
@@ -685,6 +779,559 @@ def chunk_nested_schema(
     return tuple(chunks)
 
 
+def _contains_table_array(schema: Mapping[str, Any]) -> bool:
+    if _is_array_schema(schema):
+        items = schema.get("items")
+        return isinstance(items, Mapping) and _is_object_schema(items)
+    if not _is_object_schema(schema):
+        return False
+    properties = schema.get("properties", {})
+    return isinstance(properties, Mapping) and any(
+        isinstance(child, Mapping) and _contains_table_array(child)
+        for child in properties.values()
+    )
+
+
+def _root_subset_schema(
+    root: Mapping[str, Any], properties: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
+    result = {
+        key: copy.deepcopy(value)
+        for key, value in sorted(root.items())
+        if key not in {"$defs", "properties", "required", "type"}
+    }
+    result["type"] = "object"
+    result["properties"] = {
+        key: copy.deepcopy(properties[key]) for key in sorted(properties)
+    }
+    result["required"] = sorted(properties)
+    return result
+
+
+def _table_anchor_rank(name: str) -> tuple[int, int, str] | None:
+    priorities = ("id", "number", "no", "code", "name", "date")
+    lowered = name.lower()
+    tokens = tuple(token for token in re.split(r"[^a-z0-9]+", lowered) if token)
+    for index, priority in enumerate(priorities):
+        if lowered == priority:
+            return (index, 0, lowered)
+        if priority in tokens:
+            return (index, 1, lowered)
+    return None
+
+
+def _table_chunk_schema(
+    root: Mapping[str, Any],
+    *,
+    array_name: str,
+    array_schema: Mapping[str, Any],
+    item_schema: Mapping[str, Any],
+    fields: Sequence[str],
+) -> dict[str, Any]:
+    item_properties = item_schema.get("properties", {})
+    if not isinstance(item_properties, Mapping):
+        raise StructuredExtractionProtocolError("table item properties must be an object")
+    normalized_properties = {
+        field: _stable_nullable_schema(item_properties[field]) for field in fields
+    }
+    item_result = {
+        key: copy.deepcopy(value)
+        for key, value in sorted(item_schema.items())
+        if key not in {"properties", "required", "type"}
+    }
+    item_result["type"] = "object"
+    item_result["properties"] = normalized_properties
+    item_result["required"] = list(fields)
+
+    array_result = {
+        key: copy.deepcopy(value)
+        for key, value in sorted(array_schema.items())
+        if key not in {"items", "type"}
+    }
+    array_result["type"] = ["array", "null"]
+    array_result["items"] = item_result
+    return _root_subset_schema(root, {array_name: array_result})
+
+
+def split_table_schema(
+    schema: Mapping[str, Any],
+    *,
+    token_counter: Callable[[str], int],
+    max_columns: int = DEFAULT_TABLE_MAX_COLUMNS,
+    max_anchors: int = DEFAULT_TABLE_MAX_ANCHORS,
+    max_rows: int = DEFAULT_TABLE_MAX_ROWS,
+    max_cell_bytes: int = DEFAULT_TABLE_MAX_CELL_BYTES,
+    max_leaves: int = DEFAULT_MAX_LEAVES,
+    max_schema_tokens: int = DEFAULT_MAX_SCHEMA_TOKENS,
+    limits: SchemaPreflightLimits = DEFAULT_PREFLIGHT_LIMITS,
+) -> TableExtractionPlan:
+    """Split root table arrays independently and keep non-table fields in Nested chunks."""
+
+    if not 1 <= max_columns <= DEFAULT_TABLE_MAX_COLUMNS:
+        raise ValueError(
+            f"table max_columns must be between 1 and {DEFAULT_TABLE_MAX_COLUMNS}"
+        )
+    if not 1 <= max_anchors <= DEFAULT_TABLE_MAX_ANCHORS:
+        raise ValueError(
+            f"table max_anchors must be between 1 and {DEFAULT_TABLE_MAX_ANCHORS}"
+        )
+    if not 1 <= max_rows <= DEFAULT_TABLE_MAX_ROWS:
+        raise ValueError(f"table max_rows must be between 1 and {DEFAULT_TABLE_MAX_ROWS}")
+    if not 1 <= max_cell_bytes <= DEFAULT_TABLE_MAX_CELL_BYTES:
+        raise ValueError(
+            f"table max_cell_bytes must be between 1 and {DEFAULT_TABLE_MAX_CELL_BYTES}"
+        )
+    resolved = normalize_request_schema(schema, limits=limits)
+    if not _is_object_schema(resolved):
+        raise StructuredExtractionProtocolError("root table schema must have type object")
+    properties = resolved.get("properties", {})
+    if not isinstance(properties, Mapping):
+        raise StructuredExtractionProtocolError("root table properties must be an object")
+
+    scalar_properties: dict[str, Mapping[str, Any]] = {}
+    raw_tables: list[tuple[str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for name in sorted(properties):
+        child = properties[name]
+        if not isinstance(child, Mapping):
+            raise StructuredExtractionProtocolError("property schema must be an object")
+        items = child.get("items") if _is_array_schema(child) else None
+        if isinstance(items, Mapping) and _is_object_schema(items):
+            raw_tables.append((name, child, items))
+        elif _contains_table_array(child):
+            raise UnsupportedTableSchemaError(
+                f"nested table arrays are unsupported: {_pointer((name,))}"
+            )
+        else:
+            scalar_properties[name] = child
+    if not raw_tables:
+        raise UnsupportedTableSchemaError("schema does not contain a root array-of-object table")
+
+    scalar_chunks: tuple[SchemaChunk, ...] = ()
+    if scalar_properties:
+        scalar_schema = _root_subset_schema(resolved, scalar_properties)
+        scalar_chunks = chunk_nested_schema(
+            scalar_schema,
+            token_counter=token_counter,
+            max_leaves=max_leaves,
+            max_schema_tokens=max_schema_tokens,
+            limits=limits,
+        )
+
+    table_plans: list[TableArrayPlan] = []
+    chunk_count = len(scalar_chunks)
+    total_schema_tokens = sum(chunk.schema_tokens for chunk in scalar_chunks)
+    for table_index, (array_name, array_schema, item_schema) in enumerate(raw_tables):
+        item_properties = item_schema.get("properties", {})
+        if not isinstance(item_properties, Mapping) or not item_properties:
+            raise UnsupportedTableSchemaError(
+                f"table item requires non-empty properties: {_pointer((array_name,))}"
+            )
+        fields = tuple(sorted(item_properties))
+        table_fields: list[str] = []
+        anchor_candidates: list[str] = []
+        for field in fields:
+            field_schema = item_properties[field]
+            if not isinstance(field_schema, Mapping):
+                raise StructuredExtractionProtocolError("table field schema must be an object")
+            is_array = _is_array_schema(field_schema)
+            array_items = field_schema.get("items") if is_array else None
+            if _is_object_schema(field_schema) or (
+                is_array and isinstance(array_items, Mapping) and _is_object_schema(array_items)
+            ):
+                raise UnsupportedTableSchemaError(
+                    f"nested table column is unsupported: {_pointer((array_name, field))}"
+                )
+            table_fields.append(field)
+            if not is_array:
+                anchor_candidates.append(field)
+        ranked_anchors = sorted(
+            (
+                (rank, field)
+                for field in anchor_candidates
+                if (rank := _table_anchor_rank(field)) is not None
+            ),
+            key=lambda item: item[0],
+        )
+        anchor_fields = tuple(field for _, field in ranked_anchors[:max_anchors])
+        if not anchor_fields and anchor_candidates:
+            anchor_fields = (anchor_candidates[0],)
+        value_fields = [field for field in table_fields if field not in anchor_fields]
+        if not anchor_fields and len(value_fields) > max_columns:
+            raise UnsupportedTableSchemaError(
+                f"anchorless table cannot be split safely: {_pointer((array_name,))}"
+            )
+
+        field_groups: list[tuple[str, ...]] = []
+        if not value_fields:
+            field_groups.append(())
+        else:
+            current: list[str] = []
+            for field in value_fields:
+                candidate = [*current, field]
+                selected = (*anchor_fields, *candidate)
+                candidate_schema = _table_chunk_schema(
+                    resolved,
+                    array_name=array_name,
+                    array_schema=array_schema,
+                    item_schema=item_schema,
+                    fields=selected,
+                )
+                candidate_tokens = _count_tokens(
+                    token_counter,
+                    json.dumps(candidate_schema, ensure_ascii=False, indent=2, allow_nan=False),
+                )
+                if current and (
+                    len(candidate) > max_columns or candidate_tokens > max_schema_tokens
+                ):
+                    field_groups.append(tuple(current))
+                    current = [field]
+                else:
+                    if candidate_tokens > max_schema_tokens:
+                        raise SchemaTokenLimitError(
+                            "single table column exceeds token limit: "
+                            f"{_pointer((array_name, field))}"
+                        )
+                    current = candidate
+            if current:
+                field_groups.append(tuple(current))
+        if not anchor_fields and len(field_groups) > 1:
+            raise UnsupportedTableSchemaError(
+                f"anchorless table exceeds one safe chunk: {_pointer((array_name,))}"
+            )
+
+        chunks: list[TableSchemaChunk] = []
+        for group_index, group in enumerate(field_groups):
+            selected = (*anchor_fields, *group)
+            chunk_schema = _table_chunk_schema(
+                resolved,
+                array_name=array_name,
+                array_schema=array_schema,
+                item_schema=item_schema,
+                fields=selected,
+            )
+            schema_tokens = _count_tokens(
+                token_counter,
+                json.dumps(chunk_schema, ensure_ascii=False, indent=2, allow_nan=False),
+            )
+            if schema_tokens > max_schema_tokens:
+                raise SchemaTokenLimitError(
+                    f"table anchor schema exceeds token limit: {_pointer((array_name,))}"
+                )
+            chunk_count += 1
+            total_schema_tokens += schema_tokens
+            if chunk_count > limits.max_chunks:
+                raise SchemaPreflightLimitError(
+                    f"schema exceeds maximum chunks {limits.max_chunks}"
+                )
+            if total_schema_tokens > limits.max_total_schema_tokens:
+                raise SchemaPreflightLimitError(
+                    "schema chunks exceed maximum total schema tokens "
+                    f"{limits.max_total_schema_tokens}"
+                )
+            chunks.append(
+                TableSchemaChunk(
+                    chunk_id=f"t{table_index:03d}-c{group_index:03d}",
+                    array_path=_pointer((array_name,)),
+                    anchor_fields=anchor_fields,
+                    value_fields=group,
+                    schema=chunk_schema,
+                    schema_tokens=schema_tokens,
+                )
+            )
+        table_plans.append(
+            TableArrayPlan(
+                array_path=_pointer((array_name,)),
+                fields=fields,
+                anchor_fields=anchor_fields,
+                max_rows=max_rows,
+                max_cell_bytes=max_cell_bytes,
+                chunks=tuple(chunks),
+            )
+        )
+    return TableExtractionPlan(
+        scalar_chunks=scalar_chunks,
+        tables=tuple(table_plans),
+        total_schema_tokens=total_schema_tokens,
+    )
+
+
+def _table_array_name(array_path: str) -> str:
+    if not array_path.startswith("/") or "/" in array_path[1:]:
+        raise ValueError("table array path must address one root property")
+    return _decode_pointer_token(array_path[1:])
+
+
+def _json_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _validate_table_value(
+    value: Any,
+    schema: Mapping[str, Any],
+    *,
+    path: str,
+    max_cell_bytes: int,
+    depth: int = 0,
+) -> None:
+    if depth > 8:
+        raise TablePredictionError(f"table value nesting is too deep at {path}")
+    try:
+        payload_size = len(canonical_json_bytes(value))
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise TablePredictionError(f"table value is not canonical JSON at {path}") from exc
+    if payload_size > max_cell_bytes:
+        raise TablePredictionError(f"table value exceeds byte limit at {path}")
+
+    raw_type = schema.get("type")
+    allowed_types = (
+        {raw_type}
+        if isinstance(raw_type, str)
+        else set(raw_type)
+        if isinstance(raw_type, list)
+        else set()
+    )
+    if value is None:
+        if allowed_types and "null" not in allowed_types:
+            raise TablePredictionError(f"null is not allowed at {path}")
+        return
+    non_null_types = allowed_types - {"null"}
+    expected_type = next(iter(non_null_types), None)
+    if expected_type == "string" and not isinstance(value, str):
+        raise TablePredictionError(f"expected string at {path}")
+    if expected_type == "boolean" and not isinstance(value, bool):
+        raise TablePredictionError(f"expected boolean at {path}")
+    if expected_type == "integer" and not (
+        _json_number(value) and (isinstance(value, int) or float(value).is_integer())
+    ):
+        raise TablePredictionError(f"expected integer at {path}")
+    if expected_type == "number" and not _json_number(value):
+        raise TablePredictionError(f"expected number at {path}")
+    if expected_type == "array" and not isinstance(value, list):
+        raise TablePredictionError(f"expected array at {path}")
+    if expected_type == "object" or isinstance(value, Mapping):
+        raise TablePredictionError(f"nested object table values are unsupported at {path}")
+
+    enum = schema.get("enum")
+    if isinstance(enum, list):
+        encoded = canonical_json_bytes(value)
+        if not any(canonical_json_bytes(candidate) == encoded for candidate in enum):
+            raise TablePredictionError(f"value is outside enum at {path}")
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        max_length = schema.get("maxLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            raise TablePredictionError(f"string is shorter than minLength at {path}")
+        if isinstance(max_length, int) and len(value) > max_length:
+            raise TablePredictionError(f"string exceeds maxLength at {path}")
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                matches = re.search(pattern, value) is not None
+            except re.error as exc:
+                raise StructuredExtractionProtocolError(
+                    f"invalid schema pattern at {path}"
+                ) from exc
+            if not matches:
+                raise TablePredictionError(f"string does not match pattern at {path}")
+    if _json_number(value):
+        numeric = Decimal(str(value))
+        for keyword, predicate in (
+            ("minimum", lambda bound: numeric >= bound),
+            ("maximum", lambda bound: numeric <= bound),
+            ("exclusiveMinimum", lambda bound: numeric > bound),
+            ("exclusiveMaximum", lambda bound: numeric < bound),
+        ):
+            bound = schema.get(keyword)
+            if bound is not None and not predicate(Decimal(str(bound))):
+                raise TablePredictionError(f"number violates {keyword} at {path}")
+        multiple_of = schema.get("multipleOf")
+        if multiple_of is not None:
+            try:
+                if numeric % Decimal(str(multiple_of)) != 0:
+                    raise TablePredictionError(f"number violates multipleOf at {path}")
+            except InvalidOperation as exc:
+                raise StructuredExtractionProtocolError(
+                    f"invalid multipleOf at {path}"
+                ) from exc
+    if isinstance(value, list):
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            raise TablePredictionError(f"array is shorter than minItems at {path}")
+        if isinstance(max_items, int) and len(value) > max_items:
+            raise TablePredictionError(f"array exceeds maxItems at {path}")
+        if schema.get("uniqueItems") is True:
+            encoded_items = [canonical_json_bytes(item) for item in value]
+            if len(encoded_items) != len(set(encoded_items)):
+                raise TablePredictionError(f"array violates uniqueItems at {path}")
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            for index, item in enumerate(value):
+                _validate_table_value(
+                    item,
+                    items,
+                    path=f"{path}/{index}",
+                    max_cell_bytes=max_cell_bytes,
+                    depth=depth + 1,
+                )
+
+
+def _table_prediction_rows(
+    chunk: TableSchemaChunk,
+    prediction: Any,
+    *,
+    max_rows: int,
+    max_cell_bytes: int,
+) -> list[dict[str, Any]] | None:
+    array_name = _table_array_name(chunk.array_path)
+    if not isinstance(prediction, Mapping) or set(prediction) != {array_name}:
+        raise TablePredictionError(
+            f"chunk {chunk.chunk_id} must contain only {chunk.array_path}"
+        )
+    value = prediction[array_name]
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise TablePredictionError(f"chunk {chunk.chunk_id} table value must be an array or null")
+    if len(value) > max_rows:
+        raise TablePredictionError(
+            f"chunk {chunk.chunk_id} exceeds maximum rows {max_rows}"
+        )
+    requested = (*chunk.anchor_fields, *chunk.value_fields)
+    expected = set(requested)
+    array_schema = chunk.schema["properties"][array_name]
+    min_items = array_schema.get("minItems")
+    max_items = array_schema.get("maxItems")
+    if isinstance(min_items, int) and len(value) < min_items:
+        raise TablePredictionError(f"chunk {chunk.chunk_id} is shorter than minItems")
+    if isinstance(max_items, int) and len(value) > max_items:
+        raise TablePredictionError(f"chunk {chunk.chunk_id} exceeds maxItems")
+    item_schema = array_schema["items"]
+    field_schemas = item_schema["properties"]
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(value):
+        if not isinstance(row, Mapping) or set(row) != expected:
+            raise TablePredictionError(
+                f"chunk {chunk.chunk_id} row {index} must contain every requested field only"
+            )
+        normalized_row: dict[str, Any] = {}
+        for field in requested:
+            _validate_table_value(
+                row[field],
+                field_schemas[field],
+                path=f"{chunk.array_path}/{index}/{_encode_pointer_token(field)}",
+                max_cell_bytes=max_cell_bytes,
+            )
+            normalized_row[field] = copy.deepcopy(row[field])
+        rows.append(normalized_row)
+    if array_schema.get("uniqueItems") is True:
+        encoded_rows = [canonical_json_bytes(row) for row in rows]
+        if len(encoded_rows) != len(set(encoded_rows)):
+            raise TablePredictionError(f"chunk {chunk.chunk_id} violates uniqueItems")
+    return rows
+
+
+def _empty_table_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _table_anchor_key(
+    row: Mapping[str, Any], anchor_fields: Sequence[str]
+) -> tuple[bytes, ...] | None:
+    if not anchor_fields:
+        return None
+    values = [row[field] for field in anchor_fields]
+    if any(_empty_table_value(value) for value in values):
+        return None
+    try:
+        return tuple(canonical_json_bytes(value) for value in values)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise TablePredictionError("table anchor is not canonical JSON") from exc
+
+
+def _merge_table_value(current: Any, incoming: Any, *, field: str) -> Any:
+    if _empty_table_value(current):
+        return copy.deepcopy(incoming)
+    if _empty_table_value(incoming) or current == incoming:
+        return current
+    raise TableAlignmentConflictError(f"conflicting non-empty table value for {field}")
+
+
+def merge_table_array_predictions(
+    plan: TableArrayPlan,
+    predictions: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]] | None]:
+    """Merge one table's chunks only when repeated anchors prove row identity."""
+
+    expected_chunk_ids = {chunk.chunk_id for chunk in plan.chunks}
+    if set(predictions) != expected_chunk_ids:
+        raise TablePredictionError("table predictions must contain every planned chunk exactly once")
+    row_sets = [
+        _table_prediction_rows(
+            chunk,
+            predictions[chunk.chunk_id],
+            max_rows=plan.max_rows,
+            max_cell_bytes=plan.max_cell_bytes,
+        )
+        for chunk in plan.chunks
+    ]
+    array_name = _table_array_name(plan.array_path)
+    if all(rows is None for rows in row_sets):
+        return {array_name: None}
+    if any(rows is None for rows in row_sets):
+        raise TableAlignmentConflictError("table chunks disagree between null and row data")
+    concrete_rows = [rows for rows in row_sets if rows is not None]
+    if len(concrete_rows) == 1:
+        return {
+            array_name: [
+                {field: copy.deepcopy(row[field]) for field in plan.fields}
+                for row in concrete_rows[0]
+            ]
+        }
+    if not plan.anchor_fields:
+        raise TableAlignmentConflictError("multi-chunk table requires stable anchor fields")
+
+    keyed_rows: list[dict[tuple[bytes, ...], dict[str, Any]]] = []
+    keyed_orders: list[list[tuple[bytes, ...]]] = []
+    for rows in concrete_rows:
+        mapping: dict[tuple[bytes, ...], dict[str, Any]] = {}
+        order: list[tuple[bytes, ...]] = []
+        for row in rows:
+            key = _table_anchor_key(row, plan.anchor_fields)
+            if key is None or key in mapping:
+                raise TableAlignmentConflictError(
+                    "multi-chunk table requires non-empty unique anchors"
+                )
+            mapping[key] = row
+            order.append(key)
+        keyed_rows.append(mapping)
+        keyed_orders.append(order)
+
+    reference_keys = set(keyed_rows[0])
+    if any(set(mapping) != reference_keys for mapping in keyed_rows[1:]):
+        raise TableAlignmentConflictError("table chunks contain different anchor sets")
+    aligned = [
+        [mapping[key] for mapping in keyed_rows]
+        for key in keyed_orders[0]
+    ]
+
+    merged_rows: list[dict[str, Any]] = []
+    for row_group in aligned:
+        merged: dict[str, Any] = {}
+        for row in row_group:
+            for field, value in row.items():
+                if field in merged:
+                    merged[field] = _merge_table_value(merged[field], value, field=field)
+                else:
+                    merged[field] = copy.deepcopy(value)
+        merged_rows.append({field: merged[field] for field in plan.fields})
+    return {array_name: merged_rows}
+
+
 def is_schema_echo(value: Any, *, expected_schema: Mapping[str, Any] | None = None) -> bool:
     """Detect direct or wrapped JSON Schema output without rejecting normal instances."""
 
@@ -756,6 +1403,10 @@ def build_request_hash(
     tokenizer_policy: str = DEFAULT_TOKENIZER_POLICY,
     max_leaves: int = DEFAULT_MAX_LEAVES,
     max_schema_tokens: int = DEFAULT_MAX_SCHEMA_TOKENS,
+    table_max_columns: int = DEFAULT_TABLE_MAX_COLUMNS,
+    table_max_anchors: int = DEFAULT_TABLE_MAX_ANCHORS,
+    table_max_rows: int = DEFAULT_TABLE_MAX_ROWS,
+    table_max_cell_bytes: int = DEFAULT_TABLE_MAX_CELL_BYTES,
     flat_nested_max_tokens: int = 4096,
     table_max_tokens: int = 8192,
     limits: SchemaPreflightLimits = DEFAULT_PREFLIGHT_LIMITS,
@@ -768,17 +1419,36 @@ def build_request_hash(
         raise ValueError(
             "model, revision, prompt version, split policy, and tokenizer policy must be non-empty"
         )
+    if not 1 <= table_max_columns <= DEFAULT_TABLE_MAX_COLUMNS:
+        raise ValueError(
+            f"table_max_columns must be between 1 and {DEFAULT_TABLE_MAX_COLUMNS}"
+        )
+    if not 1 <= table_max_anchors <= DEFAULT_TABLE_MAX_ANCHORS:
+        raise ValueError(
+            f"table_max_anchors must be between 1 and {DEFAULT_TABLE_MAX_ANCHORS}"
+        )
+    if not 1 <= table_max_rows <= DEFAULT_TABLE_MAX_ROWS:
+        raise ValueError(f"table_max_rows must be between 1 and {DEFAULT_TABLE_MAX_ROWS}")
+    if not 1 <= table_max_cell_bytes <= DEFAULT_TABLE_MAX_CELL_BYTES:
+        raise ValueError(
+            "table_max_cell_bytes must be between 1 and "
+            f"{DEFAULT_TABLE_MAX_CELL_BYTES}"
+        )
     if any(
         value <= 0
         for value in (
             max_leaves,
             max_schema_tokens,
+            table_max_columns,
+            table_max_anchors,
+            table_max_rows,
+            table_max_cell_bytes,
             flat_nested_max_tokens,
             table_max_tokens,
         )
     ):
         raise ValueError("token limits must be positive")
-    normalized = normalize_extraction_schema(schema, limits=limits)
+    normalized = normalize_request_schema(schema, limits=limits)
     fingerprint = {
         "flat_nested_max_tokens": flat_nested_max_tokens,
         "max_leaves": max_leaves,
@@ -800,6 +1470,10 @@ def build_request_hash(
         "source_sha256": source_sha256,
         "split_policy_version": split_policy_version,
         "table_max_tokens": table_max_tokens,
+        "table_max_columns": table_max_columns,
+        "table_max_anchors": table_max_anchors,
+        "table_max_rows": table_max_rows,
+        "table_max_cell_bytes": table_max_cell_bytes,
         "temperature": 0,
         "tokenizer_policy": tokenizer_policy,
     }

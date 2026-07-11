@@ -20,7 +20,52 @@ _DEFAULT_SEED = "docragenslate-ocr-v1"
 _HASH_ALGORITHM = "sha256-nul-v1"
 _CANONICAL_JSON_ALGORITHM = "sha256-json-sort-keys-ascii-v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_CONTENT_ADDRESSED_SCHEMES = {"artifact+sha256", "sha256"}
+
+_PUBTABLES_IMAGES_PATH = "PubTables-v2_Full-Documents_test_images.tar.gz"
+_PUBTABLES_IMAGES_SHA256 = "0d42821fb1dce5713a86c327bec5fabbe214bb5ebbd0cfc75cd2ef89b7c7230e"
+_PUBTABLES_TABLES_PATH = "PubTables-v2_Full-Documents_test_tables.tar.gz"
+_PUBTABLES_TABLES_SHA256 = "dfd10e0dc4cb3e92d0f521e8a135e6e96094d8e90e130fb3fe25c9fa31b3a3de"
+_VAREX_SHARDS = {
+    "data/benchmark-00000-of-00004.parquet": (
+        "f0328edd6242318f97eb85fdd63466ec6a9db1482b7edd3ddb92de2bc535e147"
+    ),
+    "data/benchmark-00001-of-00004.parquet": (
+        "6eee390d60212571269d1002fe335d635f149e5850a0ed05dd1b3dc77a8a5d07"
+    ),
+    "data/benchmark-00002-of-00004.parquet": (
+        "03c5411bb91eaaacedd77ee280e4e92359fa18cb26f5bf9a0cfab53481c4c194"
+    ),
+    "data/benchmark-00003-of-00004.parquet": (
+        "b2304eb66183063d18da6d93bf6ce73283fa5dfa5b39611082f1b85a5f2874c7"
+    ),
+}
+_VAREX_RECORD_FIELDS = ["doc_id", "ground_truth", "schema", "split"]
+_AI2D_IMAGE_ARCHIVE_URL = (
+    "https://ai2-public-datasets.s3.us-west-2.amazonaws.com/diagrams/ai2d-all.zip"
+)
+_AI2D_IMAGE_ARCHIVE_SHA256 = (
+    "1a6b77eebb8b7dbdf76a0ba6ca76c2f97ce8f81d8ee33b06593aa722e54c4786"
+)
+_AI2D_ANNOTATION_ARCHIVE_URL = (
+    "https://www.kielipankki.fi/download/AI2D-RST/v1.1/ai2d-rst-v1-1.zip"
+)
+_AI2D_ANNOTATION_ARCHIVE_SHA256 = (
+    "eb11d67507e08eb9bfd0f5944da7ca32cfcffa13e119b04ac5054effa65a759a"
+)
+_MWS_LEGACY_REVISION = "e204166bde25f7dcaaffb9313b855de67b516e5d"
+_MWS_METADATA_URL = (
+    "https://huggingface.co/datasets/MTSAIR/MWS-Vision-Bench/resolve/"
+    f"{_MWS_LEGACY_REVISION}/metadata.jsonl"
+)
+_MWS_METADATA_SHA256 = "c234a569583858bfab13399169ec9951da12edf6d88a5cd4c4efae8a1fd4197d"
+_MWS_RECORD_FIELDS = ["answers", "dataset_name", "file_name", "id", "question", "type"]
+_MWS_SOURCE_TYPES = {
+    "document_parsing_ru": "document parsing ru",
+    "full_page_ocr_ru": "full-page OCR ru",
+    "key_information_extraction_ru": "key information extraction ru",
+    "reasoning_vqa_ru": "reasoning VQA ru",
+    "text_grounding_ru": "text grounding ru",
+}
 
 
 @dataclass(frozen=True)
@@ -53,9 +98,9 @@ DATASETS: dict[str, DatasetSpec] = {
         expected_inputs={"Flat": 2, "Nested": 2, "Table": 2},
     ),
     "ai2d_rst": DatasetSpec(
-        source="thiippal/AI2D-RST",
-        source_url="https://github.com/thiippal/AI2D-RST",
-        revision="76cf0f8fadd1f431545fa540c58ef8a24ea31335",
+        source="AllenAI/AI2D + AI2D-RST v1.1",
+        source_url=_AI2D_IMAGE_ARCHIVE_URL,
+        revision="content-addressed-source-components",
         license="CC-BY-4.0 AND CC-BY-SA-4.0",
         quotas={"diagram": 12},
         expected_inputs={"diagram": 1},
@@ -65,14 +110,14 @@ DATASETS: dict[str, DatasetSpec] = {
         },
         source_components={
             "annotations": {
-                "source": "thiippal/AI2D-RST",
-                "source_url": "https://github.com/thiippal/AI2D-RST",
-                "revision": "76cf0f8fadd1f431545fa540c58ef8a24ea31335",
+                "source": "Kielipankki/AI2D-RST-v1.1",
+                "source_url": _AI2D_ANNOTATION_ARCHIVE_URL,
+                "revision": _AI2D_ANNOTATION_ARCHIVE_SHA256,
             },
             "source_images": {
                 "source": "AllenAI/AI2D",
-                "source_url": "https://registry.opendata.aws/allenai-diagrams/",
-                "revision": "content-addressed-by-input-sha256",
+                "source_url": _AI2D_IMAGE_ARCHIVE_URL,
+                "revision": _AI2D_IMAGE_ARCHIVE_SHA256,
             },
         },
     ),
@@ -80,7 +125,8 @@ DATASETS: dict[str, DatasetSpec] = {
         source="MTSAIR/MWS-Vision-Bench",
         source_url="https://huggingface.co/datasets/MTSAIR/MWS-Vision-Bench",
         revision="b8d473734b79343cac2b74f692a29ab191c7d11d",
-        license="MIT",
+        license="MIT AND CC-BY-4.0",
+        license_components={"benchmark_code": "MIT", "source_assets": "CC-BY-4.0"},
         quotas={
             "document_parsing_ru": 6,
             "full_page_ocr_ru": 6,
@@ -110,6 +156,7 @@ def _canonical_json(value: Any) -> bytes:
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode()
 
 
@@ -132,7 +179,12 @@ def _read_candidates(path: Path) -> list[dict[str, Any]]:
         if not raw_line.strip():
             continue
         try:
-            value = json.loads(raw_line)
+            value = json.loads(
+                raw_line,
+                parse_constant=lambda constant: (_ for _ in ()).throw(
+                    ValueError(f"non-finite JSON constant: {constant}")
+                ),
+            )
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON on line {line_number}: {exc.msg}") from exc
         if not isinstance(value, dict):
@@ -162,67 +214,127 @@ def _safe_pinned_path(uri: str, expected_prefix: str, context: str) -> None:
         raise ValueError(f"{context}.uri contains an unsafe path segment")
 
 
-def _validate_uri_policy(
-    dataset: str,
-    component: str,
-    uri: str,
-    sha256: str,
-    *,
-    spec: DatasetSpec,
-    context: str,
-) -> None:
+def _validate_sha256(value: Any, context: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{context} must be 64 lowercase hexadecimal characters")
+    return value
+
+
+def _validate_member(value: Any, context: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{context} must be a non-empty relative POSIX path")
+    decoded = unquote(value)
+    if decoded != value or "\\" in value or value.startswith("/"):
+        raise ValueError(f"{context} must not contain encoded, absolute or backslash paths")
+    if any(segment in {"", ".", ".."} for segment in value.split("/")):
+        raise ValueError(f"{context} contains an unsafe path segment")
+    return value
+
+
+def _validate_container(value: Any, *, formats: set[str], context: str) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    if set(value) != {"uri", "sha256", "format"}:
+        raise ValueError(f"{context} fields must be exactly uri, sha256 and format")
+    uri = value.get("uri")
+    if not isinstance(uri, str) or not uri:
+        raise ValueError(f"{context}.uri must be an absolute URI")
     parsed = urlparse(uri)
-    if dataset in {"pubtables_v2", "varex", "mws_vision_bench"}:
-        if parsed.scheme != "https" or parsed.netloc != "huggingface.co":
-            raise ValueError(f"{context}.uri must use trusted HTTPS Hugging Face storage")
-        prefix = f"/datasets/{spec.source}/resolve/{spec.revision}/"
-        _safe_pinned_path(uri, prefix, context)
-        return
-    if dataset != "ai2d_rst":
-        raise ValueError(f"no URI policy for dataset: {dataset}")
-    if component == "annotation":
-        if parsed.scheme != "https" or parsed.netloc != "raw.githubusercontent.com":
-            raise ValueError(f"{context}.uri must use trusted raw.githubusercontent.com storage")
-        prefix = f"/thiippal/AI2D-RST/{spec.revision}/"
-        _safe_pinned_path(uri, prefix, context)
-        return
-    if component != "source_image":
-        raise ValueError(f"unsupported AI2D component: {component}")
-    if parsed.scheme not in _CONTENT_ADDRESSED_SCHEMES or parsed.netloc != sha256:
-        raise ValueError(
-            f"{context}.uri must be content-addressed with sha256 as the exact authority component"
-        )
-    if parsed.query or parsed.fragment or parsed.params:
-        raise ValueError(f"{context}.uri must not contain query, fragment or params")
-    if parsed.scheme == "sha256" and parsed.path not in {"", "/"}:
-        raise ValueError(f"{context}.uri sha256 scheme must not add a mutable path")
-    if parsed.scheme == "artifact+sha256":
-        decoded_path = unquote(parsed.path)
-        if any(
-            segment.lower() in {".", "..", "latest", "main", "master"}
-            for segment in decoded_path.split("/")
-        ):
-            raise ValueError(f"{context}.uri contains a mutable or unsafe artifact path")
+    if parsed.scheme != "https" or not parsed.netloc or parsed.query or parsed.fragment or parsed.params:
+        raise ValueError(f"{context}.uri must be an immutable absolute HTTPS URI")
+    sha256 = _validate_sha256(value.get("sha256"), f"{context}.sha256")
+    format_ = value.get("format")
+    if format_ not in formats:
+        raise ValueError(f"{context}.format must be one of {sorted(formats)}")
+    return {"uri": uri, "sha256": sha256, "format": format_}
 
 
 def _validate_reference(
     value: Any,
     *,
-    dataset: str,
-    component: str,
-    spec: DatasetSpec,
     context: str,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{context} must be an object")
-    uri = value.get("uri")
-    if not isinstance(uri, str) or not uri:
-        raise ValueError(f"{context}.uri must be an absolute URI")
-    sha256 = value.get("sha256")
-    if not isinstance(sha256, str) or _SHA256_RE.fullmatch(sha256) is None:
-        raise ValueError(f"{context}.sha256 must be 64 lowercase hexadecimal characters")
-    _validate_uri_policy(dataset, component, uri, sha256, spec=spec, context=context)
-    return {"uri": uri, "sha256": sha256}
+    kind = value.get("kind")
+    if kind == "direct":
+        if set(value) != {"kind", "uri", "sha256"}:
+            raise ValueError(f"{context} direct fields must be exactly kind, uri and sha256")
+        uri = value.get("uri")
+        if not isinstance(uri, str) or not uri:
+            raise ValueError(f"{context}.uri must be an absolute URI")
+        return {
+            "kind": kind,
+            "uri": uri,
+            "sha256": _validate_sha256(value.get("sha256"), f"{context}.sha256"),
+        }
+    if kind == "archive_member":
+        if set(value) != {"kind", "container", "member", "sha256"}:
+            raise ValueError(
+                f"{context} archive_member fields must be exactly kind, container, member and sha256"
+            )
+        return {
+            "kind": kind,
+            "container": _validate_container(
+                value.get("container"), formats={"tar.gz", "zip"}, context=f"{context}.container"
+            ),
+            "member": _validate_member(value.get("member"), f"{context}.member"),
+            "sha256": _validate_sha256(value.get("sha256"), f"{context}.sha256"),
+        }
+    if kind == "parquet_field":
+        if set(value) != {"kind", "container", "row_index", "field", "sha256"}:
+            raise ValueError(
+                f"{context} parquet_field fields must be exactly kind, container, row_index, field and sha256"
+            )
+        row_index = value.get("row_index")
+        field = value.get("field")
+        if not isinstance(row_index, int) or isinstance(row_index, bool) or row_index < 0:
+            raise ValueError(f"{context}.row_index must be a non-negative integer")
+        if not isinstance(field, str) or not field:
+            raise ValueError(f"{context}.field must be a non-empty string")
+        return {
+            "kind": kind,
+            "container": _validate_container(
+                value.get("container"), formats={"parquet"}, context=f"{context}.container"
+            ),
+            "row_index": row_index,
+            "field": field,
+            "sha256": _validate_sha256(value.get("sha256"), f"{context}.sha256"),
+        }
+    raise ValueError(f"{context}.kind must be direct, archive_member or parquet_field")
+
+
+def _validate_record_reference(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    kind = value.get("kind")
+    if kind not in {"parquet_row", "jsonl_row"}:
+        raise ValueError(f"{context}.kind must be parquet_row or jsonl_row")
+    if set(value) != {"kind", "container", "row_index", "fields", "sha256"}:
+        raise ValueError(
+            f"{context} fields must be exactly kind, container, row_index, fields and sha256"
+        )
+    row_index = value.get("row_index")
+    if not isinstance(row_index, int) or isinstance(row_index, bool) or row_index < 0:
+        raise ValueError(f"{context}.row_index must be a non-negative integer")
+    fields = value.get("fields")
+    if (
+        not isinstance(fields, list)
+        or not fields
+        or any(not isinstance(field, str) or not field for field in fields)
+        or fields != sorted(set(fields))
+    ):
+        raise ValueError(f"{context}.fields must be a non-empty sorted list of unique strings")
+    format_ = "parquet" if kind == "parquet_row" else "jsonl"
+    return {
+        "kind": kind,
+        "container": _validate_container(
+            value.get("container"), formats={format_}, context=f"{context}.container"
+        ),
+        "row_index": row_index,
+        "fields": fields,
+        "sha256": _validate_sha256(value.get("sha256"), f"{context}.sha256"),
+    }
 
 
 def _expected_roles(dataset: str, stratum: str, expected_inputs: int) -> set[str]:
@@ -235,6 +347,175 @@ def _expected_roles(dataset: str, stratum: str, expected_inputs: int) -> set[str
     raise ValueError(f"no input-role schema for dataset: {dataset}")
 
 
+def _hf_uri(source: str, revision: str, path: str) -> str:
+    return f"https://huggingface.co/datasets/{source}/resolve/{revision}/{path}"
+
+
+def _require_container(
+    reference: Mapping[str, Any],
+    *,
+    kind: str,
+    uri: str,
+    sha256: str | None,
+    format_: str,
+    context: str,
+) -> None:
+    if reference.get("kind") != kind:
+        raise ValueError(f"{context}.kind must be {kind}")
+    container = reference.get("container")
+    if not isinstance(container, Mapping):
+        raise ValueError(f"{context}.container is required")
+    if container.get("uri") != uri or container.get("format") != format_:
+        raise ValueError(f"{context}.container must use the exact pinned source container")
+    if sha256 is not None and container.get("sha256") != sha256:
+        raise ValueError(f"{context}.container.sha256 must match the pinned container")
+
+
+def _asset_identity(reference: Mapping[str, Any]) -> str:
+    kind = reference["kind"]
+    if kind == "direct":
+        return str(reference["uri"])
+    container_uri = reference["container"]["uri"]
+    if kind == "archive_member":
+        return f"{container_uri}#member={reference['member']}"
+    if kind == "parquet_field":
+        return f"{container_uri}#row={reference['row_index']}&field={reference['field']}"
+    return f"{container_uri}#row={reference['row_index']}"
+
+
+def _validate_source_inputs(
+    dataset: str,
+    inputs: Sequence[Mapping[str, Any]],
+    metadata: Mapping[str, Any],
+    *,
+    spec: DatasetSpec,
+    context: str,
+) -> None:
+    by_role = {item["role"]: item for item in inputs}
+    if dataset == "pubtables_v2":
+        uri = _hf_uri(spec.source, spec.revision, _PUBTABLES_IMAGES_PATH)
+        document_id = metadata["document_id"]
+        for ordinal, page_index in enumerate(metadata["page_indices"], start=1):
+            item = by_role[f"page_{ordinal}"]
+            _require_container(
+                item,
+                kind="archive_member",
+                uri=uri,
+                sha256=_PUBTABLES_IMAGES_SHA256,
+                format_="tar.gz",
+                context=f"{context}.inputs[{ordinal - 1}]",
+            )
+            expected_member = f"Full Documents/test/images/{document_id}_page_{page_index}.jpg"
+            if item.get("member") != expected_member:
+                raise ValueError(f"{context}: PubTables input member does not match document/page metadata")
+        return
+    if dataset == "varex":
+        bindings: set[tuple[str, str, int]] = set()
+        for role, field in (("image_200dpi", "image"), ("image_50dpi", "image_50dpi")):
+            item = by_role[role]
+            if item.get("kind") != "parquet_field" or item.get("field") != field:
+                raise ValueError(f"{context}: {role} must reference VAREX parquet field {field!r}")
+            container = item["container"]
+            matched = [
+                path
+                for path, sha256 in _VAREX_SHARDS.items()
+                if container == {
+                    "uri": _hf_uri(spec.source, spec.revision, path),
+                    "sha256": sha256,
+                    "format": "parquet",
+                }
+            ]
+            if not matched:
+                raise ValueError(f"{context}: VAREX input must use a pinned benchmark parquet shard")
+            bindings.add((container["uri"], container["sha256"], item["row_index"]))
+        if len(bindings) != 1:
+            raise ValueError(f"{context}: VAREX inputs must use the same parquet row")
+        return
+    if dataset == "ai2d_rst":
+        item = by_role["image"]
+        _require_container(
+            item,
+            kind="archive_member",
+            uri=_AI2D_IMAGE_ARCHIVE_URL,
+            sha256=_AI2D_IMAGE_ARCHIVE_SHA256,
+            format_="zip",
+            context=f"{context}.inputs[0]",
+        )
+        if item.get("member") != f"ai2d/images/{metadata['diagram_id']}.png":
+            raise ValueError(f"{context}: AI2D image member must match metadata.diagram_id")
+        return
+    item = by_role["image"]
+    if item.get("kind") != "direct":
+        raise ValueError(f"{context}: MWS image must be a direct reference")
+    uri = item["uri"]
+    parsed = urlparse(uri)
+    if parsed.scheme != "https" or parsed.netloc != "huggingface.co":
+        raise ValueError(f"{context}: MWS image must use trusted HTTPS Hugging Face storage")
+    prefix = f"/datasets/{spec.source}/resolve/{spec.revision}/"
+    _safe_pinned_path(uri, prefix, f"{context}.inputs[0]")
+    expected_uri = _hf_uri(spec.source, spec.revision, metadata["image_path"])
+    if uri != expected_uri or not metadata["image_path"].startswith("images/"):
+        raise ValueError(f"{context}: MWS image URI must match metadata.image_path")
+
+
+def _schema_property_reaches_type(schema: Mapping[str, Any], target_type: str) -> bool:
+    properties = schema.get("properties")
+    definitions = schema.get("$defs")
+    if not isinstance(properties, Mapping):
+        return False
+    stack: list[Any] = list(properties.values())
+    visited_references: set[str] = set()
+    visited_nodes = 0
+    while stack:
+        value = stack.pop()
+        visited_nodes += 1
+        if visited_nodes > 10_000:
+            raise ValueError("schema exceeds structural validation limit")
+        if isinstance(value, list):
+            stack.extend(value)
+            continue
+        if not isinstance(value, Mapping):
+            continue
+        if value.get("type") == target_type:
+            return True
+        reference = value.get("$ref")
+        prefix = "#/$defs/"
+        if (
+            isinstance(reference, str)
+            and reference.startswith(prefix)
+            and "/" not in reference.removeprefix(prefix)
+            and isinstance(definitions, Mapping)
+            and reference not in visited_references
+        ):
+            visited_references.add(reference)
+            target = definitions.get(reference.removeprefix(prefix))
+            if isinstance(target, Mapping):
+                stack.append(target)
+        nested_properties = value.get("properties")
+        if isinstance(nested_properties, Mapping):
+            stack.extend(nested_properties.values())
+        for keyword in ("items", "allOf", "anyOf", "oneOf"):
+            nested = value.get(keyword)
+            if isinstance(nested, (Mapping, list)):
+                stack.append(nested)
+    return False
+
+
+def _contains_list(value: Any) -> bool:
+    stack = [value]
+    visited_nodes = 0
+    while stack:
+        nested = stack.pop()
+        visited_nodes += 1
+        if visited_nodes > 10_000:
+            raise ValueError("ground_truth exceeds structural validation limit")
+        if isinstance(nested, list):
+            return True
+        if isinstance(nested, Mapping):
+            stack.extend(nested.values())
+    return False
+
+
 def _validate_metadata(
     dataset: str,
     stratum: str,
@@ -244,6 +525,7 @@ def _validate_metadata(
     group_id: str,
     spec: DatasetSpec,
     expected_inputs: int,
+    inputs: Sequence[Mapping[str, Any]],
     context: str,
 ) -> dict[str, Any]:
     if not isinstance(metadata, dict):
@@ -264,22 +546,25 @@ def _validate_metadata(
             raise ValueError(
                 f"{context}: metadata.page_indices must contain {expected_inputs} unique sorted integers"
             )
-        _validate_reference(
-            metadata.get("annotation"),
-            dataset=dataset,
-            component="annotation",
-            spec=spec,
+        annotation = _validate_reference(
+            metadata.get("annotation"), context=f"{context}.metadata.annotation"
+        )
+        _require_container(
+            annotation,
+            kind="archive_member",
+            uri=_hf_uri(spec.source, spec.revision, _PUBTABLES_TABLES_PATH),
+            sha256=_PUBTABLES_TABLES_SHA256,
+            format_="tar.gz",
             context=f"{context}.metadata.annotation",
         )
+        if annotation.get("member") != f"Full Documents/test/tables/{document_id}_tables.json":
+            raise ValueError(f"{context}: PubTables annotation member must match document_id")
         expected_group_id = document_id
     elif dataset == "varex":
         expected_group_id = _require_string(metadata, "doc_id", context)
-        _validate_reference(
-            metadata.get("source_record"),
-            dataset=dataset,
-            component="source_record",
-            spec=spec,
-            context=f"{context}.metadata.source_record",
+        _validate_source_inputs(dataset, inputs, metadata, spec=spec, context=context)
+        source_record = _validate_record_reference(
+            metadata.get("source_record"), context=f"{context}.metadata.source_record"
         )
         schema = metadata.get("schema")
         ground_truth = metadata.get("ground_truth")
@@ -290,33 +575,52 @@ def _validate_metadata(
         properties = schema.get("properties")
         if schema.get("type") != "object" or not isinstance(properties, dict) or not properties:
             raise ValueError(f"{context}: metadata.schema requires object type and non-empty properties")
-        if stratum == "Nested" and not any(
-            isinstance(value, dict)
-            and (value.get("type") == "object" or isinstance(value.get("properties"), dict))
-            for value in properties.values()
-        ):
+        if stratum == "Nested" and not _schema_property_reaches_type(schema, "object"):
             raise ValueError(f"{context}: Nested schema requires a nested object property")
         if stratum == "Nested" and not any(isinstance(value, dict) for value in ground_truth.values()):
             raise ValueError(f"{context}: Nested ground_truth requires a nested object value")
-        if stratum == "Table" and not any(
-            isinstance(value, dict) and value.get("type") == "array"
-            for value in properties.values()
-        ):
+        if stratum == "Table" and not _schema_property_reaches_type(schema, "array"):
             raise ValueError(f"{context}: Table schema requires an array property")
-        if stratum == "Table" and not any(isinstance(value, list) for value in ground_truth.values()):
+        if stratum == "Table" and not _contains_list(ground_truth):
             raise ValueError(f"{context}: Table ground_truth requires an array value")
+        input_binding = inputs[0]
+        if (
+            source_record["kind"] != "parquet_row"
+            or source_record["container"] != input_binding["container"]
+            or source_record["row_index"] != input_binding["row_index"]
+            or source_record["fields"] != _VAREX_RECORD_FIELDS
+        ):
+            raise ValueError(f"{context}: VAREX source_record must bind the selected parquet row")
+        expected_record_hash = _canonical_json_hash(
+            {
+                "doc_id": expected_group_id,
+                "ground_truth": ground_truth,
+                "schema": schema,
+                "split": stratum,
+            }
+        )
+        if source_record["sha256"] != expected_record_hash:
+            raise ValueError(f"{context}: VAREX source_record sha256 does not match canonical JSON")
     elif dataset == "ai2d_rst":
         expected_group_id = _require_string(metadata, "diagram_id", context)
-        _validate_reference(
-            metadata.get("annotation"),
-            dataset=dataset,
-            component="annotation",
-            spec=spec,
+        annotation = _validate_reference(
+            metadata.get("annotation"), context=f"{context}.metadata.annotation"
+        )
+        _require_container(
+            annotation,
+            kind="archive_member",
+            uri=_AI2D_ANNOTATION_ARCHIVE_URL,
+            sha256=_AI2D_ANNOTATION_ARCHIVE_SHA256,
+            format_="zip",
             context=f"{context}.metadata.annotation",
         )
+        expected_member = f"ai2d-rst-v1-1/json/ai2d-rst/{expected_group_id}.png.json"
+        if annotation.get("member") != expected_member:
+            raise ValueError(f"{context}: AI2D annotation member must match metadata.diagram_id")
     elif dataset == "mws_vision_bench":
         expected_group_id = _require_string(metadata, "image_path", context)
         question = _require_string(metadata, "question", context)
+        dataset_name = _require_string(metadata, "dataset_name", context)
         if metadata.get("task_type") != stratum:
             raise ValueError(f"{context}: metadata.task_type must match stratum {stratum!r}")
         answers = metadata.get("answers")
@@ -326,13 +630,28 @@ def _validate_metadata(
             or any(not isinstance(answer, str) or not answer for answer in answers)
         ):
             raise ValueError(f"{context}: metadata.answers must be a non-empty list of strings")
-        _validate_reference(
-            metadata.get("source_record"),
-            dataset=dataset,
-            component="source_record",
-            spec=spec,
-            context=f"{context}.metadata.source_record",
+        source_record = _validate_record_reference(
+            metadata.get("source_record"), context=f"{context}.metadata.source_record"
         )
+        if (
+            source_record["kind"] != "jsonl_row"
+            or source_record["container"]
+            != {"uri": _MWS_METADATA_URL, "sha256": _MWS_METADATA_SHA256, "format": "jsonl"}
+            or source_record["fields"] != _MWS_RECORD_FIELDS
+        ):
+            raise ValueError(f"{context}: MWS source_record must use the pinned legacy metadata row")
+        expected_record_hash = _canonical_json_hash(
+            {
+                "answers": answers,
+                "dataset_name": dataset_name,
+                "file_name": expected_group_id,
+                "id": canonical_id,
+                "question": question,
+                "type": _MWS_SOURCE_TYPES[stratum],
+            }
+        )
+        if source_record["sha256"] != expected_record_hash:
+            raise ValueError(f"{context}: MWS source_record sha256 does not match canonical JSON")
     else:
         raise ValueError(f"no metadata schema for dataset: {dataset}")
     if group_id != expected_group_id:
@@ -340,6 +659,7 @@ def _validate_metadata(
             f"{context}: group_id must equal the physical content id {expected_group_id!r}"
         )
     normalized = dict(metadata)
+    _validate_source_inputs(dataset, inputs, normalized, spec=spec, context=context)
     if dataset == "varex":
         schema_hash = _canonical_json_hash(normalized["schema"])
         ground_truth_hash = _canonical_json_hash(normalized["ground_truth"])
@@ -351,15 +671,7 @@ def _validate_metadata(
                 raise ValueError(f"{context}: metadata.{key} does not match canonical content")
             normalized[key] = value
     if dataset == "mws_vision_bench":
-        record_hash = _canonical_json_hash(
-            {
-                "id": canonical_id,
-                "image_path": expected_group_id,
-                "task_type": stratum,
-                "question": question,
-                "answers": answers,
-            }
-        )
+        record_hash = expected_record_hash
         key = "source_record_canonical_sha256"
         if key in normalized and normalized[key] != record_hash:
             raise ValueError(f"{context}: metadata.{key} does not match the bound record")
@@ -402,19 +714,12 @@ def _validate_candidate(
     for index, item in enumerate(inputs):
         if not isinstance(item, dict):
             raise ValueError(f"{context}: input {index} must be an object")
-        unknown_input_fields = set(item) - {"role", "uri", "sha256"}
-        if unknown_input_fields:
-            raise ValueError(
-                f"{context}: input {index} contains unsupported fields: {sorted(unknown_input_fields)}"
-            )
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise ValueError(f"{context}: input {index} requires a non-empty role")
+        reference_value = {key: value for key, value in item.items() if key != "role"}
         reference = _validate_reference(
-            item,
-            dataset=dataset,
-            component="source_image" if dataset == "ai2d_rst" else "input",
-            spec=specs[dataset],
+            reference_value,
             context=f"{context}.inputs[{index}]",
         )
         normalized_inputs.append({"role": role, **reference})
@@ -423,9 +728,9 @@ def _validate_candidate(
     if set(roles) != expected_roles or len(roles) != len(set(roles)):
         raise ValueError(f"{context}: input roles must be exactly {sorted(expected_roles)}")
     normalized_inputs.sort(key=lambda item: item["role"])
-    uris = [item["uri"] for item in normalized_inputs]
-    if len(uris) != len(set(uris)):
-        raise ValueError(f"{context}: input uris must be unique")
+    identities = [_asset_identity(item) for item in normalized_inputs]
+    if len(identities) != len(set(identities)):
+        raise ValueError(f"{context}: input asset references must be unique")
     input_hashes = [item["sha256"] for item in normalized_inputs]
     if len(input_hashes) != len(set(input_hashes)):
         raise ValueError(f"{context}: input sha256 values must be unique")
@@ -437,6 +742,7 @@ def _validate_candidate(
         group_id=group_id,
         spec=specs[dataset],
         expected_inputs=expected,
+        inputs=normalized_inputs,
         context=context,
     )
     return {
@@ -522,18 +828,35 @@ def _select_dataset(
 
 
 def _validate_selected_assets(selected: Sequence[dict[str, Any]]) -> None:
-    seen_uris: dict[str, tuple[str, str]] = {}
+    seen_references: dict[str, tuple[str, str]] = {}
     seen_hashes: dict[str, tuple[str, str]] = {}
+    seen_metadata_references: dict[str, tuple[str, str]] = {}
     for candidate in selected:
         owner = (candidate["dataset"], candidate["group_id"])
         for item in candidate["inputs"]:
-            for key, seen in (("uri", seen_uris), ("sha256", seen_hashes)):
-                previous = seen.get(item[key])
+            for key, value, seen in (
+                ("reference", _asset_identity(item), seen_references),
+                ("sha256", item["sha256"], seen_hashes),
+            ):
+                previous = seen.get(value)
                 if previous is not None and previous != owner:
                     raise ValueError(
                         f"duplicate selected input {key} across groups: {previous} and {owner}"
                     )
-                seen[item[key]] = owner
+                seen[value] = owner
+        reference_key = {
+            "pubtables_v2": "annotation",
+            "varex": "source_record",
+            "ai2d_rst": "annotation",
+            "mws_vision_bench": "source_record",
+        }[candidate["dataset"]]
+        reference_identity = _asset_identity(candidate["metadata"][reference_key])
+        previous = seen_metadata_references.get(reference_identity)
+        if previous is not None and previous != owner:
+            raise ValueError(
+                f"duplicate selected metadata reference across groups: {previous} and {owner}"
+            )
+        seen_metadata_references[reference_identity] = owner
 
 
 def _validate_specs(specs: Mapping[str, DatasetSpec]) -> None:
@@ -561,8 +884,13 @@ def _validate_specs(specs: Mapping[str, DatasetSpec]) -> None:
             raise ValueError(f"{dataset}: unsupported quota stratum")
         if any(spec.expected_inputs[stratum] != pinned.expected_inputs[stratum] for stratum in spec.quotas):
             raise ValueError(f"{dataset}: expected_inputs must match the pinned spec")
-        if any(value < 1 for value in (*spec.quotas.values(), *spec.expected_inputs.values())):
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in (*spec.quotas.values(), *spec.expected_inputs.values())
+        ):
             raise ValueError(f"{dataset}: quotas and expected_inputs must be positive")
+        if any(spec.quotas[stratum] > pinned.quotas[stratum] for stratum in spec.quotas):
+            raise ValueError(f"{dataset}: quota exceeds the pinned corpus design")
 
 
 def build_manifest(

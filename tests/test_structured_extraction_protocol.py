@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,8 @@ from rag_app.pipeline.structured_extraction_protocol import (
     SchemaTokenCounterError,
     SchemaTokenLimitError,
     StructuredExtractionProtocolError,
+    TableAlignmentConflictError,
+    TablePredictionError,
     UnsupportedSchemaKeywordError,
     UnsupportedTableSchemaError,
     build_request_hash,
@@ -20,8 +23,11 @@ from rag_app.pipeline.structured_extraction_protocol import (
     canonical_json_sha256,
     chunk_nested_schema,
     is_schema_echo,
+    merge_table_array_predictions,
     normalize_extraction_schema,
+    normalize_request_schema,
     resolve_local_refs,
+    split_table_schema,
 )
 
 
@@ -428,3 +434,409 @@ def test_varex_prompt_requires_instance_and_nulls() -> None:
     assert "Return ONLY valid JSON." in prompt
     assert "Return an instance of the JSON with extracted values" in prompt
     assert '"invoice_number"' in prompt
+
+
+def _table_schema(*, columns: int = 20, second_table: bool = False) -> dict:
+    row_properties = {
+        "id": {"type": "string"},
+        "name": {"type": "string"},
+        **{f"value_{index:02d}": {"type": "string"} for index in range(columns)},
+    }
+    properties: dict = {
+        "document_number": {"type": "string"},
+        "rows": {
+            "type": "array",
+            "items": {"type": "object", "properties": row_properties},
+        },
+    }
+    if second_table:
+        properties["approvals"] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "name": {"type": "string"},
+                    "status": {"type": "string"},
+                },
+            },
+        }
+    return {"type": "object", "properties": properties}
+
+
+def _chunk_prediction(chunk, rows: list[dict]) -> dict:
+    array_name = chunk.array_path.removeprefix("/")
+    fields = (*chunk.anchor_fields, *chunk.value_fields)
+    return {array_name: [{field: row[field] for field in fields} for row in rows]}
+
+
+def test_table_split_repeats_two_anchors_and_bounds_value_columns() -> None:
+    schema = _table_schema(columns=20, second_table=True)
+    plan = split_table_schema(
+        schema,
+        token_counter=_word_tokens,
+        max_schema_tokens=100_000,
+    )
+
+    assert len(plan.scalar_chunks) == 1
+    assert [table.array_path for table in plan.tables] == ["/approvals", "/rows"]
+    rows = plan.tables[1]
+    assert rows.anchor_fields == ("id", "name")
+    assert [len(chunk.value_fields) for chunk in rows.chunks] == [8, 8, 4]
+    assert all(chunk.anchor_fields == ("id", "name") for chunk in rows.chunks)
+    assert all(len(chunk.value_fields) <= 8 for chunk in rows.chunks)
+    assert all(
+        set(chunk.schema["properties"]) == {"rows"}
+        for chunk in rows.chunks
+    )
+
+
+def test_request_hash_supports_tables_and_fingerprints_table_policy() -> None:
+    schema = _table_schema(columns=2)
+    normalized = normalize_request_schema(schema)
+    base = build_request_hash(
+        schema,
+        source_sha256="d" * 64,
+        model="granite",
+        model_revision="revision",
+    )
+
+    assert normalized["properties"]["rows"]["type"] == ["array", "null"]
+    assert base != build_request_hash(
+        schema,
+        source_sha256="d" * 64,
+        model="granite",
+        model_revision="revision",
+        table_max_columns=4,
+    )
+    assert base != build_request_hash(
+        schema,
+        source_sha256="d" * 64,
+        model="granite",
+        model_revision="revision",
+        table_max_anchors=1,
+    )
+    assert base != build_request_hash(
+        schema,
+        source_sha256="d" * 64,
+        model="granite",
+        model_revision="revision",
+        table_max_rows=25,
+    )
+    assert base != build_request_hash(
+        schema,
+        source_sha256="d" * 64,
+        model="granite",
+        model_revision="revision",
+        table_max_cell_bytes=2048,
+    )
+
+
+def test_table_merge_uses_unique_composite_anchors_across_reordered_chunks() -> None:
+    table = split_table_schema(
+        _table_schema(columns=9),
+        token_counter=_word_tokens,
+        max_columns=5,
+        max_schema_tokens=100_000,
+    ).tables[0]
+    source_rows = [
+        {
+            "id": "A",
+            "name": "Alpha",
+            **{f"value_{index:02d}": f"a{index}" for index in range(9)},
+        },
+        {
+            "id": "B",
+            "name": "Beta",
+            **{f"value_{index:02d}": f"b{index}" for index in range(9)},
+        },
+    ]
+    predictions = {
+        table.chunks[0].chunk_id: _chunk_prediction(table.chunks[0], source_rows),
+        table.chunks[1].chunk_id: _chunk_prediction(
+            table.chunks[1], list(reversed(source_rows))
+        ),
+    }
+
+    merged = merge_table_array_predictions(table, predictions)["rows"]
+
+    assert merged == source_rows
+
+
+def test_table_merge_rejects_empty_or_duplicate_planned_anchors() -> None:
+    table = split_table_schema(
+        _table_schema(columns=9),
+        token_counter=_word_tokens,
+        max_columns=5,
+        max_schema_tokens=100_000,
+    ).tables[0]
+    source_rows = [
+        {
+            "id": "",
+            "name": "",
+            **{f"value_{index:02d}": f"a{index}" for index in range(9)},
+        },
+        {
+            "id": "",
+            "name": "",
+            **{f"value_{index:02d}": f"b{index}" for index in range(9)},
+        },
+    ]
+    predictions = {
+        chunk.chunk_id: _chunk_prediction(chunk, source_rows)
+        for chunk in table.chunks
+    }
+    with pytest.raises(TableAlignmentConflictError, match="non-empty unique anchors"):
+        merge_table_array_predictions(table, predictions)
+
+    duplicate_rows = [{**row, "id": "same", "name": "same"} for row in source_rows]
+    predictions = {
+        chunk.chunk_id: _chunk_prediction(
+            chunk,
+            duplicate_rows if index == 0 else list(reversed(duplicate_rows)),
+        )
+        for index, chunk in enumerate(table.chunks)
+    }
+    with pytest.raises(TableAlignmentConflictError, match="non-empty unique anchors"):
+        merge_table_array_predictions(table, predictions)
+
+
+def test_table_merge_rejects_anchor_set_conflicts_and_missing_chunks() -> None:
+    table = split_table_schema(
+        _table_schema(columns=9),
+        token_counter=_word_tokens,
+        max_columns=5,
+        max_schema_tokens=100_000,
+    ).tables[0]
+    first_rows = [
+        {
+            "id": "A",
+            "name": "Alpha",
+            **{f"value_{index:02d}": f"a{index}" for index in range(9)},
+        }
+    ]
+    second_rows = [{**first_rows[0], "id": "B"}]
+    predictions = {
+        table.chunks[0].chunk_id: _chunk_prediction(table.chunks[0], first_rows),
+        table.chunks[1].chunk_id: _chunk_prediction(table.chunks[1], second_rows),
+    }
+    with pytest.raises(TableAlignmentConflictError, match="different anchor sets"):
+        merge_table_array_predictions(table, predictions)
+
+    predictions.pop(table.chunks[1].chunk_id)
+    with pytest.raises(TablePredictionError, match="every planned chunk"):
+        merge_table_array_predictions(table, predictions)
+
+
+def test_table_split_and_predictions_fail_closed_on_unsupported_shapes() -> None:
+    nested_table = {
+        "type": "object",
+        "properties": {
+            "wrapper": {
+                "type": "object",
+                "properties": {
+                    "rows": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"id": {"type": "string"}},
+                        },
+                    }
+                },
+            }
+        },
+    }
+    with pytest.raises(UnsupportedTableSchemaError, match="nested table"):
+        split_table_schema(
+            nested_table,
+            token_counter=_word_tokens,
+            max_schema_tokens=100_000,
+        )
+
+    plan = split_table_schema(
+        _table_schema(columns=1),
+        token_counter=_word_tokens,
+        max_schema_tokens=100_000,
+    ).tables[0]
+    chunk = plan.chunks[0]
+    with pytest.raises(TablePredictionError, match="every requested field"):
+        merge_table_array_predictions(
+            plan,
+            {chunk.chunk_id: {"rows": [{"id": "A"}]}},
+        )
+
+
+def test_table_split_allows_primitive_array_values_but_never_uses_them_as_anchors() -> None:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "code": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+
+    table = split_table_schema(
+        schema,
+        token_counter=_word_tokens,
+        max_schema_tokens=100_000,
+    ).tables[0]
+
+    assert table.anchor_fields == ("code",)
+    assert table.chunks[0].value_fields == ("tags",)
+
+    array_only = copy.deepcopy(schema)
+    del array_only["properties"]["rows"]["items"]["properties"]["code"]
+    ordinal_table = split_table_schema(
+        array_only,
+        token_counter=_word_tokens,
+        max_schema_tokens=100_000,
+    ).tables[0]
+    assert ordinal_table.anchor_fields == ()
+    chunk = ordinal_table.chunks[0]
+    valid = {chunk.chunk_id: {"rows": [{"tags": ["a", "b"]}]}}
+    assert merge_table_array_predictions(ordinal_table, valid) == {
+        "rows": [{"tags": ["a", "b"]}]
+    }
+    with pytest.raises(TablePredictionError, match="expected array"):
+        merge_table_array_predictions(
+            ordinal_table,
+            {chunk.chunk_id: {"rows": [{"tags": "not-an-array"}]}},
+        )
+
+    two_arrays = copy.deepcopy(array_only)
+    two_arrays["properties"]["rows"]["items"]["properties"]["labels"] = {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    with pytest.raises(UnsupportedTableSchemaError, match="one safe chunk"):
+        split_table_schema(
+            two_arrays,
+            token_counter=lambda value: value.count('"type"'),
+            max_schema_tokens=6,
+        )
+
+
+def test_table_prediction_validates_enum_limits_and_row_cap() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "uniqueItems": True,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "pattern": "^[A-Z]+$"},
+                        "status": {"type": "string", "enum": ["open", "closed"]},
+                        "values": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 0},
+                            "maxItems": 2,
+                        },
+                    },
+                },
+            }
+        },
+    }
+    table = split_table_schema(
+        schema,
+        token_counter=_word_tokens,
+        max_schema_tokens=100_000,
+    ).tables[0]
+    chunk = table.chunks[0]
+    with pytest.raises(TablePredictionError, match="outside enum"):
+        merge_table_array_predictions(
+            table,
+            {
+                chunk.chunk_id: {
+                    "rows": [{"code": "ABC", "status": "unknown", "values": [1]}]
+                }
+            },
+        )
+    with pytest.raises(TablePredictionError, match="maximum rows"):
+        merge_table_array_predictions(
+            table,
+            {
+                chunk.chunk_id: {
+                    "rows": [
+                        {"code": "ABC", "status": "open", "values": [1]}
+                        for _ in range(51)
+                    ]
+                }
+            },
+        )
+    duplicate = {"code": "ABC", "status": "open", "values": [1]}
+    with pytest.raises(TablePredictionError, match="uniqueItems"):
+        merge_table_array_predictions(
+            table,
+            {chunk.chunk_id: {"rows": [duplicate, duplicate]}},
+        )
+    with pytest.raises(TablePredictionError, match="exceeds byte limit"):
+        merge_table_array_predictions(
+            table,
+            {
+                chunk.chunk_id: {
+                    "rows": [{"code": "A" * 4097, "status": "open", "values": [1]}]
+                }
+            },
+        )
+
+
+def test_table_protocol_rejects_limits_above_hard_caps() -> None:
+    schema = _table_schema(columns=9)
+    with pytest.raises(ValueError, match="max_columns"):
+        split_table_schema(
+            schema,
+            token_counter=_word_tokens,
+            max_columns=9,
+        )
+    with pytest.raises(ValueError, match="max_anchors"):
+        split_table_schema(
+            schema,
+            token_counter=_word_tokens,
+            max_anchors=3,
+        )
+    with pytest.raises(ValueError, match="max_rows"):
+        split_table_schema(
+            schema,
+            token_counter=_word_tokens,
+            max_rows=51,
+        )
+    with pytest.raises(ValueError, match="max_cell_bytes"):
+        split_table_schema(
+            schema,
+            token_counter=_word_tokens,
+            max_cell_bytes=4097,
+        )
+    with pytest.raises(ValueError, match="table_max_columns"):
+        build_request_hash(
+            schema,
+            source_sha256="e" * 64,
+            model="granite",
+            model_revision="revision",
+            table_max_columns=9,
+        )
+    with pytest.raises(ValueError, match="table_max_rows"):
+        build_request_hash(
+            schema,
+            source_sha256="e" * 64,
+            model="granite",
+            model_revision="revision",
+            table_max_rows=51,
+        )
+    with pytest.raises(ValueError, match="table_max_cell_bytes"):
+        build_request_hash(
+            schema,
+            source_sha256="e" * 64,
+            model="granite",
+            model_revision="revision",
+            table_max_cell_bytes=4097,
+        )

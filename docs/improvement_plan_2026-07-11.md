@@ -1091,9 +1091,14 @@ VAREX отдельно описывает schema echo при `$defs/$ref` и у�
 `pipeline/structured_extraction_protocol.py`: fail-closed подмножество JSON
 Schema, локальные `$ref`, preflight-лимиты размера/глубины/ref/leaves/chunks,
 канонический request hash, bounded Nested chunking и schema-echo detector.
-Combinators и межполевые ограничения отклоняются, а array-of-object возвращает
-явный `UnsupportedTableSchemaError` до появления проверенного table split/merge.
-Foundation не обращается к модели, БД или MinIO и не включен в production flow.
+Combinators и межполевые ограничения отклоняются. Для корневых table-массивов
+добавлен отдельный split/merge: максимум восемь новых колонок, два повторяемых
+anchor, 50 строк и 4096 байт на ячейку. Многочастный merge разрешен только по
+непустым уникальным anchor без позиционного fallback; расхождение состава строк,
+null/отсутствующего значения или повтор anchor завершает страницу ошибкой.
+Вложенная таблица внутри `$ref` пока не раскрывается table-планировщиком и должна
+явно попасть в release gate, а не быть молча упрощена. Foundation не обращается
+к модели, БД или MinIO и не включен в production flow.
 
 Каркас очереди, protocol v3 и offline-manifest зафиксированы коммитом
 `2da75f9` и синхронизированы между WSL, `origin/main` и A100. На A100 полный
@@ -1101,6 +1106,68 @@ pytest дал **175 passed**, профильные Ruff/mypy прошли; ос�
 очереди содержат `0` jobs, внутренний и публичный `/healthz` возвращают `ok`.
 Running API и основной worker не перезапускались, новый sidecar worker не
 запускался, модельные сервисы и production-поведение не изменялись.
+
+### 6.13. Байтово проверенный сложный корпус и downstream-метрики
+
+Первоначальный контракт с отдельным URL каждого изображения оказался неверным
+для реальных источников. PubTables хранит изображения и аннотации в двух TAR.GZ,
+VAREX — в четырех Parquet shards, AI2D/AI2D-RST — в двух ZIP, а MWS связывает
+закрепленный JSONL с отдельными image assets. Контракт заменен на типизированные
+ссылки `direct`, `archive_member`, `parquet_field`, `parquet_row` и `jsonl_row`.
+Для каждого контейнера закреплены revision и SHA-256; локальные пути, redirect,
+archive member, row/field и derived bytes проверяются до присвоения статуса.
+
+Лицензии фиксируются консервативно и на уровне компонентов: PubTables и VAREX —
+CDLA-Permissive-2.0; AI2D + AI2D-RST —
+`CC-BY-4.0 AND CC-BY-SA-4.0`; MWS — `MIT AND CC-BY-4.0` из-за расхождения
+деклараций benchmark code и source assets. Materializer не разрешает менять
+`license_components` или `source_components` при переходе в `bytes_verified`.
+
+Добавлены три offline-утилиты:
+
+1. `build_licensed_ocr_candidates.py` читает только локальные закрепленные
+   контейнеры, повторно проверяет SHA-256/inode после обработки, ограничивает
+   TAR/ZIP/Parquet/JSONL и строит точные source references.
+2. `build_licensed_ocr_manifest.py` выполняет детерминированный hash-ranking и
+   двудольное сопоставление квот; `NaN/Infinity`, подмена лицензии, повтор одной
+   физической записи и превышение закрепленной квоты отклоняются.
+3. `materialize_licensed_ocr_manifest.py` заново проверяет каждый container и
+   derived object, поддерживает безопасный локальный cache по имени SHA-256,
+   пишет во временный каталог и публикует результат только атомарно.
+
+На A100 обработаны реальные 4,7 ГБ исходных контейнеров. Генератор получил
+**6708 кандидатов**; manifest выбрал **86 единиц / 138 входов**: PubTables 14/36,
+VAREX 30/60, AI2D-RST 12/12 и MWS 30/30. SHA-256 исходного manifest:
+`1a7773ff9a1bd3040fdae714a536ea8bf86fb5d90397276c3347865311d8f5f4`.
+
+Материализация в `/root/parser_trials/ocr_materialized_v1` завершилась статусом
+`bytes_verified`. Независимый повторный проход подтвердил **224/224 ссылки**,
+224 уникальных объекта, **9/9 контейнеров**, 5 045 423 116 проверенных байт,
+ноль межкорпусных digest-дублей и ноль незавершенных `.part`. SHA-256 итогового
+`manifest.verified.json`:
+`5255af59ebbacec8354a136863e133812db827cbbda413acc6c551fc37ed5144`.
+
+Table-протокол отдельно прогнан на 75 сложных VAREX Table schemas: все 75
+планируются, а эталон проходит split/merge 75/75 после нормализации
+`missing → null`. Без этой явно заданной нормализации exact составляет 71/75,
+поскольку четыре официальных ground truth не содержат часть schema fields.
+Все 75 реальных таблиц оказались одночастными; перестановка строк и merge трех
+частей проверены синтетическими adversarial-тестами, а не выданы за результат
+VAREX.
+
+В `rag_app.eval.rag_metrics` добавлены детерминированные Recall@k, MRR@k,
+graded nDCG@k, validity/precision/recall/F1 цитат и точность пар «число + единица»
+по стабильным внешним evidence references. No-answer оценивается отдельно.
+Неоднозначное `1,234` требует явной политики decimal/thousands, `0,125`
+нормализуется как `0.125`, а поврежденные смешанные формы вроде `1,234,56`
+отклоняются. Локальный полный набор после защитных исправлений: **233 passed**;
+профильные Ruff, mypy и `git diff --check` прошли.
+
+Эти метрики пока не являются доказательством улучшения production RAG:
+structured sidecars еще не индексируются в `Segment`/`Chunk`. Следующий gate
+должен сравнить parser backends в отдельных eval-БД при одинаковых embedding,
+reranker и generator, используя стабильные source/page references. Model job,
+sidecar worker и пользовательское поведение production на этом шаге не менялись.
 
 ## 7. Этап P1: поиск и RAG
 
