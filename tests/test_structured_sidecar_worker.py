@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from arq.constants import default_queue_name
+from arq.worker import create_worker
+from pydantic import ValidationError
+
+from rag_app.config import Settings, settings
+from rag_app.workers import structured_sidecar
+
+
+class _Engine:
+    def __init__(self) -> None:
+        self.disposed = False
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
+class _Storage:
+    def __init__(self) -> None:
+        self.buckets_ready = False
+
+    async def ensure_buckets(self) -> None:
+        self.buckets_ready = True
+
+
+def test_worker_uses_isolated_queue_with_probe_only() -> None:
+    worker = structured_sidecar.WorkerSettings
+
+    assert worker.queue_name == settings.structured_sidecar_queue_name
+    assert worker.queue_name != default_queue_name
+    assert worker.functions == [structured_sidecar.health_probe]
+    assert worker.cron_jobs == []
+    assert worker.max_jobs == 1
+    assert worker.job_timeout == settings.parser_sidecar_timeout_s
+    assert worker.health_check_interval == settings.structured_sidecar_health_check_interval_s
+    assert worker.health_check_key == f"{worker.queue_name}:health-check"
+
+    async def build_worker():
+        return create_worker(worker, burst=True)
+
+    instance = asyncio.run(build_worker())
+    assert [function.name for function in instance.functions.values()] == ["health_probe"]
+
+
+@pytest.mark.parametrize("queue_name", ["", "arq:queue", "sidecar", "arq:structured-sidecar:BAD"])
+def test_settings_reject_queue_collision_or_invalid_namespace(queue_name: str) -> None:
+    with pytest.raises(ValidationError, match="isolated"):
+        Settings(_env_file=None, structured_sidecar_queue_name=queue_name)
+
+
+def test_settings_accepts_isolated_queue_suffix() -> None:
+    configured = Settings(
+        _env_file=None,
+        structured_sidecar_queue_name=" arq:structured-sidecar:canary_1 ",
+    )
+    assert configured.structured_sidecar_queue_name == "arq:structured-sidecar:canary_1"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("parser_sidecar_timeout_s", 0),
+        ("parser_sidecar_timeout_s", -1),
+        ("structured_sidecar_health_check_interval_s", 0),
+        ("structured_sidecar_health_check_interval_s", -1),
+    ],
+)
+def test_settings_rejects_non_positive_sidecar_timing(field: str, value: int) -> None:
+    with pytest.raises(ValidationError, match="timing values must be positive"):
+        Settings(_env_file=None, **{field: value})
+
+
+def test_startup_and_shutdown_use_shared_infrastructure(monkeypatch) -> None:
+    engine = _Engine()
+    storage = _Storage()
+    sessionmaker = object()
+    monkeypatch.setattr(structured_sidecar, "create_engine", lambda: engine)
+    monkeypatch.setattr(structured_sidecar, "create_sessionmaker", lambda value: sessionmaker)
+    monkeypatch.setattr(structured_sidecar, "Storage", lambda: storage)
+    ctx: dict = {}
+
+    asyncio.run(structured_sidecar.startup(ctx))
+
+    assert ctx == {
+        "engine": engine,
+        "sessionmaker": sessionmaker,
+        "storage": storage,
+    }
+    assert storage.buckets_ready is True
+
+    asyncio.run(structured_sidecar.shutdown(ctx))
+    assert engine.disposed is True
+
+
+def test_shutdown_tolerates_failed_startup() -> None:
+    asyncio.run(structured_sidecar.shutdown({}))

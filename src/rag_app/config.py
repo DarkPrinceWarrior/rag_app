@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -241,6 +243,8 @@ class Settings(BaseSettings):
     parser_page_router_min_score: float = 0.70
     parser_page_router_min_margin: float = 0.05
     parser_sidecar_timeout_s: int = 180
+    structured_sidecar_queue_name: str = "arq:structured-sidecar"
+    structured_sidecar_health_check_interval_s: int = 30
     # dots.mocr: постоянный vLLM-сервис на GPU4 (deploy/dots-mocr.service) + CLI parser.py
     dots_url: str = "http://127.0.0.1:8120"
     dots_model_name: str = "model"
@@ -326,6 +330,24 @@ class Settings(BaseSettings):
     # --- Прочее ---
     max_upload_mb: int = 200
     job_timeout_s: int = 3600
+
+    @field_validator("structured_sidecar_queue_name")
+    @classmethod
+    def validate_structured_sidecar_queue_name(cls, value: str) -> str:
+        queue_name = value.strip()
+        if not re.fullmatch(r"arq:structured-sidecar(?::[a-z0-9][a-z0-9_-]{0,31})?", queue_name):
+            raise ValueError(
+                "structured sidecar queue must use the isolated "
+                "arq:structured-sidecar[:suffix] namespace"
+            )
+        return queue_name
+
+    @field_validator("parser_sidecar_timeout_s", "structured_sidecar_health_check_interval_s")
+    @classmethod
+    def validate_structured_sidecar_positive_seconds(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("structured sidecar timing values must be positive")
+        return value
 
 
 settings = Settings()
