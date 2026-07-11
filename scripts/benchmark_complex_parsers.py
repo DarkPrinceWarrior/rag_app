@@ -428,6 +428,8 @@ async def _main(args: argparse.Namespace) -> None:
         raise ValueError(f"в manifest нет категорий: {args.categories}")
     prediction_dirs: dict[str, Path] = args.predictions
     all_backends = [*args.backends, *prediction_dirs]
+    if not all_backends:
+        raise ValueError("нужен хотя бы один встроенный backend или external prediction")
     if len(all_backends) != len(set(all_backends)):
         raise ValueError("имена встроенных backend и external prediction должны быть уникальны")
 
@@ -495,7 +497,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("corpus_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
-    parser.add_argument("--backends", nargs="+", default=["mineru", "paddle_vl"])
+    parser.add_argument(
+        "--backends",
+        nargs="*",
+        default=["mineru", "paddle_vl"],
+        help="встроенные backend; передайте пустой список перед --prediction для external-only",
+    )
     parser.add_argument(
         "--prediction",
         action="append",

@@ -196,3 +196,22 @@ def test_main_rejects_corpus_sha_before_parser_start(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="SHA256 не совпадает"):
         asyncio.run(_main(args))
     assert not args.output_dir.exists()
+
+
+def test_main_rejects_run_without_any_backend(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "manifest.json").write_text(
+        json.dumps({"source": "test", "pages": [{"category": "table"}]}),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        corpus_dir=corpus,
+        output_dir=tmp_path / "out",
+        backends=[],
+        predictions={},
+        categories=None,
+    )
+
+    with pytest.raises(ValueError, match="хотя бы один"):
+        asyncio.run(_main(args))
