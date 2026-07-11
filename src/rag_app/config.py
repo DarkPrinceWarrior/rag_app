@@ -231,6 +231,14 @@ class Settings(BaseSettings):
     # альтернативные движки для сравнения, грузятся на GPU4.
     pdf_parser_backend: str = "mineru"  # mineru | dots_mocr | paddle_vl
     parser_quality_shadow_enabled: bool = False
+    # Постраничная маршрутизация пока только scaffold: off не вычисляет решения,
+    # shadow пишет обезличенные сигналы, canary в будущем ограничивается allowlist.
+    parser_page_router_mode: str = "off"  # off | shadow | canary
+    parser_page_router_owner_subs: list[str] = []
+    parser_page_router_max_pages: int = 12
+    parser_page_router_min_score: float = 0.70
+    parser_page_router_min_margin: float = 0.05
+    parser_sidecar_timeout_s: int = 180
     # dots.mocr: постоянный vLLM-сервис на GPU4 (deploy/dots-mocr.service) + CLI parser.py
     dots_url: str = "http://127.0.0.1:8120"
     dots_model_name: str = "model"

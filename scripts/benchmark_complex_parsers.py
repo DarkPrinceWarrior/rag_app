@@ -13,7 +13,13 @@ from typing import Any
 
 from rag_app.db.models import SegmentKind
 from rag_app.pipeline.paddle_vl import paddle_to_segments, run_paddle
-from rag_app.pipeline.parse import backfill_text_layer, load_content_list, pdf_info, run_mineru
+from rag_app.pipeline.parse import (
+    backfill_text_layer,
+    load_content_list,
+    pdf_info,
+    read_pdf_text_by_page,
+    run_mineru,
+)
 from rag_app.pipeline.parse_quality import evaluate_parse, quality_metadata
 from rag_app.pipeline.segments import SegmentDraft, content_list_to_segments
 
@@ -105,6 +111,9 @@ async def _run_backend(
     output_dir: Path,
 ) -> dict[str, Any]:
     n_pages, has_text = await asyncio.to_thread(pdf_info, pdf)
+    native_text_by_page = (
+        await asyncio.to_thread(read_pdf_text_by_page, pdf) if has_text else None
+    )
     backend_dir = output_dir / backend / pdf.stem
     shutil.rmtree(backend_dir, ignore_errors=True)
     backend_dir.mkdir(parents=True)
@@ -116,7 +125,12 @@ async def _run_backend(
         raw_drafts = list(drafts)
         backfilled_pages: list[int] = []
         if has_text:
-            drafts, backfilled_pages = await asyncio.to_thread(backfill_text_layer, pdf, drafts)
+            drafts, backfilled_pages = await asyncio.to_thread(
+                backfill_text_layer,
+                pdf,
+                drafts,
+                native_text_by_page=native_text_by_page,
+            )
     elif backend == "paddle_vl":
         await run_paddle(pdf, backend_dir)
         drafts = paddle_to_segments(backend_dir)
@@ -126,8 +140,16 @@ async def _run_backend(
         raise ValueError(f"неизвестный backend: {backend}")
 
     latency_s = round(time.monotonic() - started, 3)
-    quality = evaluate_parse(drafts, n_pages=n_pages)
-    raw_quality = evaluate_parse(raw_drafts, n_pages=n_pages)
+    quality = evaluate_parse(
+        drafts,
+        n_pages=n_pages,
+        native_text_by_page=native_text_by_page,
+    )
+    raw_quality = evaluate_parse(
+        raw_drafts,
+        n_pages=n_pages,
+        native_text_by_page=native_text_by_page,
+    )
     return {
         "status": "ok",
         "latency_s": latency_s,

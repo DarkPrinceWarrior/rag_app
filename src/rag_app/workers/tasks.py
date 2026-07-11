@@ -54,6 +54,7 @@ from rag_app.pipeline.parse import (
     load_block_geometry,
     load_content_list,
     pdf_info,
+    read_pdf_text_by_page,
     run_mineru,
 )
 from rag_app.pipeline.parse_quality import evaluate_parse, quality_metadata
@@ -174,6 +175,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
     quality_backend: str | None = None
     raw_parser_drafts: list[SegmentDraft] | None = None
     backfilled_pages: list[int] = []
+    native_text_by_page: dict[int, str] | None = None
     try:
         ext = Path(doc.filename).suffix.lower().lstrip(".")
         artifact_key: str | None = None
@@ -195,6 +197,10 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                     kind = DocumentKind.pdf_text
                     drafts = await _vlm_segments(backend, local_file, out_dir)
                     raw_parser_drafts = list(drafts)
+                    if settings.parser_quality_shadow_enabled:
+                        native_text_by_page = await asyncio.to_thread(
+                            read_pdf_text_by_page, local_file
+                        )
                     # PaddleOCR-VL вырезает рисунки в файлы (dots — нет) → грузим в
                     # img_s3, чтобы они появились в текст-просмотре (как у MinerU)
                     if backend == "paddle_vl":
@@ -223,8 +229,14 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                     # достраиваем их абзацами из текстового слоя (истина для PDF
                     # с текстом), дедуп против VLM. Сканам слой не поможет (no-op).
                     if kind == DocumentKind.pdf_text:
+                        native_text_by_page = await asyncio.to_thread(
+                            read_pdf_text_by_page, local_file
+                        )
                         drafts, backfilled_pages = await asyncio.to_thread(
-                            backfill_text_layer, local_file, drafts
+                            backfill_text_layer,
+                            local_file,
+                            drafts,
+                            native_text_by_page=native_text_by_page,
                         )
                         if backfilled_pages:
                             logger.info(
@@ -310,8 +322,16 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
             assert n_pages is not None
             assert raw_parser_drafts is not None
             assert quality_backend is not None
-            quality = evaluate_parse(drafts, n_pages=n_pages)
-            raw_quality = evaluate_parse(raw_parser_drafts, n_pages=n_pages)
+            quality = evaluate_parse(
+                drafts,
+                n_pages=n_pages,
+                native_text_by_page=native_text_by_page,
+            )
+            raw_quality = evaluate_parse(
+                raw_parser_drafts,
+                n_pages=n_pages,
+                native_text_by_page=native_text_by_page,
+            )
             quality_payload = quality_metadata(
                 quality,
                 backend=quality_backend,

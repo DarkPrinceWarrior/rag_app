@@ -13,11 +13,12 @@ import os
 import re
 import sys
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import pypdfium2 as pdfium
+import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
 from rag_app.config import settings
 from rag_app.db.models import SegmentKind
@@ -49,6 +50,20 @@ def pdf_info(path: Path, sample_pages: int = 5) -> tuple[int, bool]:
                 if chars > 100:
                     return n_pages, True
             return n_pages, chars > 100
+        finally:
+            doc.close()
+
+
+def read_pdf_text_by_page(path: Path) -> dict[int, str]:
+    """Извлечь нативный текст всех физических страниц под общим pdfium-lock."""
+
+    with PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(str(path))
+        try:
+            return {
+                page_idx: doc[page_idx].get_textpage().get_text_bounded() or ""
+                for page_idx in range(len(doc))
+            }
         finally:
             doc.close()
 
@@ -114,7 +129,8 @@ async def run_mineru(
             raise RuntimeError(f"mineru: код {proc.returncode}\n{out.decode(errors='replace')[-3000:]}")
         candidates = sorted(out_dir.rglob("*_content_list.json"))
         if not candidates:
-            raise RuntimeError(f"mineru: content_list.json не найден в {out_dir}\n{out.decode(errors='replace')[-2000:]}")
+            tail = out.decode(errors="replace")[-2000:]
+            raise RuntimeError(f"mineru: content_list.json не найден в {out_dir}\n{tail}")
         return candidates[0]
 
     be = backend or settings.mineru_backend
@@ -220,7 +236,10 @@ def _paragraphs_from_page(raw: str) -> list[str]:
 
 
 def backfill_text_layer(
-    pdf_path: Path, drafts: list[SegmentDraft]
+    pdf_path: Path,
+    drafts: list[SegmentDraft],
+    *,
+    native_text_by_page: Mapping[int, str] | None = None,
 ) -> tuple[list[SegmentDraft], list[int]]:
     """pdf_text: VLM-парсер местами роняет/прореживает целые страницы (пустые /
     «тонкие»). Текстовый слой PDF — истина: достраиваем такие страницы абзацами
@@ -230,13 +249,12 @@ def backfill_text_layer(
     список физических страниц, которые достроили). Если достраивать нечего —
     исходный список без изменений.
     """
-    with PDFIUM_LOCK:
-        pdf = pdfium.PdfDocument(str(pdf_path))
-        try:
-            n_pages = len(pdf)
-            page_text = [pdf[i].get_textpage().get_text_bounded() or "" for i in range(n_pages)]
-        finally:
-            pdf.close()
+    if native_text_by_page is None:
+        native_text_by_page = read_pdf_text_by_page(pdf_path)
+    n_pages = len(native_text_by_page)
+    if set(native_text_by_page) != set(range(n_pages)):
+        raise ValueError("native_text_by_page must contain dense zero-based page indices")
+    page_text = [native_text_by_page[page_idx] for page_idx in range(n_pages)]
     # VLM repetition-collapse: гигантские повторяющиеся блобы мусора выкидываем.
     # Они ломают перевод (выходят за контекст модели) и маскируют «непокрытую»
     # страницу от добора ниже — после удаления страница до-заполнится из слоя.
