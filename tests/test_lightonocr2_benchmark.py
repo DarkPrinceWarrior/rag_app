@@ -32,3 +32,13 @@ def test_quality_signals_ignores_invalid_boxes() -> None:
     module = _module()
     signals = module._quality_signals("image<500,500,100,100>")
     assert signals["image_bbox_count"] == 0
+
+
+def test_quality_signals_accepts_bbox_variant_output_format() -> None:
+    module = _module()
+    signals = module._quality_signals(
+        "![image](image_1.png)80,100,914,430\n"
+        "![image](image_2.png)80,520,914,820"
+    )
+
+    assert signals["image_bbox_count"] == 2

@@ -16,7 +16,13 @@ from typing import Any
 _MODEL = "lightonai/LightOnOCR-2-1B"
 _REVISION = "c97bd377f04481830395218fa8951df9deaba756"
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-_IMAGE_BOX_RE = re.compile(r"image\s*<?\s*(\d+),(\d+),(\d+),(\d+)\s*>?", re.I)
+_IMAGE_BOX_PATTERNS = (
+    re.compile(r"image\s*<?\s*(\d+),(\d+),(\d+),(\d+)\s*>?", re.I),
+    re.compile(
+        r"!\[image\]\(image_\d+\.png\)\s*(\d+),(\d+),(\d+),(\d+)",
+        re.I,
+    ),
+)
 
 
 def _sha256(path: Path) -> str:
@@ -53,10 +59,11 @@ def _quality_signals(text: str) -> dict[str, Any]:
     lines = text.splitlines()
     nonempty_lines = [line for line in lines if line.strip()]
     image_boxes = []
-    for match in _IMAGE_BOX_RE.finditer(text):
-        values = tuple(int(value) for value in match.groups())
-        if 0 <= values[0] < values[2] <= 1000 and 0 <= values[1] < values[3] <= 1000:
-            image_boxes.append(values)
+    for pattern in _IMAGE_BOX_PATTERNS:
+        for match in pattern.finditer(text):
+            values = tuple(int(value) for value in match.groups())
+            if 0 <= values[0] < values[2] <= 1000 and 0 <= values[1] < values[3] <= 1000:
+                image_boxes.append(values)
     longest_run = 0
     current_run = 0
     previous = ""
