@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -248,6 +249,16 @@ class Settings(BaseSettings):
     parser_sidecar_timeout_s: int = 180
     structured_sidecar_queue_name: str = "arq:structured-sidecar"
     structured_sidecar_health_check_interval_s: int = 30
+    # Granite KIE исполняется только отдельным worker и по умолчанию выключен.
+    structured_extraction_enabled: bool = False
+    structured_model_base_url: str = "http://127.0.0.1:8132/v1"
+    structured_model_api_key: str = "local"
+    structured_model_name: str = "ibm-granite/granite-vision-4.1-4b"
+    structured_model_revision: str = "82472ca3a4905fff5e4daa481c0b9cd530859c79"
+    structured_model_timeout_s: int = 150
+    structured_model_max_tokens: int = 4096
+    structured_job_lease_s: int = 240
+    structured_job_max_attempts: int = 3
     # dots.mocr: постоянный vLLM-сервис на GPU4 (deploy/dots-mocr.service) + CLI parser.py
     dots_url: str = "http://127.0.0.1:8120"
     dots_model_name: str = "model"
@@ -351,6 +362,50 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("structured sidecar timing values must be positive")
         return value
+
+    @field_validator("structured_model_base_url")
+    @classmethod
+    def validate_structured_model_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.path != "/v1"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("structured model endpoint must be loopback /v1 without credentials")
+        return normalized
+
+    @field_validator("structured_model_revision")
+    @classmethod
+    def validate_structured_model_revision(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise ValueError("structured model revision must be a full commit SHA")
+        return value
+
+    @field_validator(
+        "structured_model_timeout_s",
+        "structured_model_max_tokens",
+        "structured_job_lease_s",
+        "structured_job_max_attempts",
+    )
+    @classmethod
+    def validate_structured_positive_limits(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("structured extraction limits must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def validate_structured_job_timing(self) -> Settings:
+        if self.structured_model_timeout_s >= self.parser_sidecar_timeout_s:
+            raise ValueError("structured model timeout must be below sidecar job timeout")
+        if self.structured_job_lease_s <= self.parser_sidecar_timeout_s:
+            raise ValueError("structured job lease must exceed sidecar job timeout")
+        return self
 
 
 settings = Settings()
