@@ -304,25 +304,25 @@ def _iter_shape_units(shapes: Any, s_i: int):
                 for c, cell in enumerate(row.cells):
                     loc = {"slide": s_i, "shape": shape.shape_id, "row": r, "col": c}
 
-                    def _get(cell=cell) -> str:
+                    def _get_cell(cell=cell) -> str:
                         return cell.text
 
-                    def _set(text: str, cell=cell) -> None:
+                    def _set_cell(text: str, cell=cell) -> None:
                         cell.text = text
 
-                    yield loc, _get, _set
+                    yield loc, _get_cell, _set_cell
             continue
         if getattr(shape, "has_text_frame", False):
             for p_i, p in enumerate(shape.text_frame.paragraphs):
                 loc = {"slide": s_i, "shape": shape.shape_id, "para": p_i}
 
-                def _get(p=p) -> str:
+                def _get_paragraph(p=p) -> str:
                     return _para_text(p)
 
-                def _set(text: str, p=p) -> None:
+                def _set_paragraph(text: str, p=p) -> None:
                     _set_para(p, text)
 
-                yield loc, _get, _set
+                yield loc, _get_paragraph, _set_paragraph
 
 
 def _pptx_units(prs: Any):

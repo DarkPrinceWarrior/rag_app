@@ -74,7 +74,7 @@ def _latex_to_text(s: str) -> str:
 # mathtext (шрифт Computer Modern — вид LaTeX), встраиваем картинкой. On-prem,
 # без texlive/браузера. Кэш по формуле — в deeplearningbook $m$/$n$/$x_i$ повторяются.
 _MATH_SPLIT = re.compile(r"(\$[^$]+\$)")
-_MATH_CACHE: dict[str, tuple[bytes, float] | None] = {}
+_MATH_CACHE: dict[str, tuple[bytes, float, float] | None] = {}
 
 
 def _strip_math_delims(s: str) -> str:

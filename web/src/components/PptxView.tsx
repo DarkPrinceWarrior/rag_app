@@ -39,7 +39,9 @@ function Blocks({
   side: 'orig' | 'ru'
 }) {
   const title = side === 'orig' ? slide.title : slide.title_ru
-  let titleSkipped = false
+  const titleBlockIndex = title
+    ? slide.blocks.findIndex((block) => block.type === 'text' && block.lines?.some((line) => line.orig === slide.title))
+    : -1
   return (
     <article className="space-y-2 px-5 py-4 text-sm">
       {title && <h2 className="text-lg font-semibold leading-snug">{title}</h2>}
@@ -73,15 +75,13 @@ function Blocks({
           )
         }
         if (b.type === 'text' && b.lines) {
+          const titleLineIndex = i === titleBlockIndex ? b.lines.findIndex((line) => line.orig === slide.title) : -1
           return (
             <div key={i} className="space-y-1">
               {b.lines.map((ln, j) => {
                 const txt = side === 'orig' ? ln.orig : ln.ru
                 // заголовок слайда уже показан как <h2> — не дублируем
-                if (!titleSkipped && title && ln.orig === slide.title) {
-                  titleSkipped = true
-                  return null
-                }
+                if (title && i === titleBlockIndex && j === titleLineIndex) return null
                 return (
                   <p
                     key={j}

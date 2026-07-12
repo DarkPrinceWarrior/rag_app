@@ -13,6 +13,7 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
+from langfuse import Langfuse, propagate_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +22,10 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 _enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
-_client = None
+_client: Langfuse | None = None
 
 if _enabled:
     try:
-        from langfuse import Langfuse
-
         _client = Langfuse()
         logger.info("langfuse: трейсинг включён (%s)", os.getenv("LANGFUSE_HOST"))
     except Exception:
@@ -60,17 +59,18 @@ def log_chat_trace(
     session_id: str,
     user_sub: str | None,
 ) -> None:
-    if not _enabled:
+    client = _client
+    if not _enabled or client is None:
         return
     try:
-        from langfuse import propagate_attributes
-
         with propagate_attributes(
             user_id=user_sub or "anonymous", session_id=session_id, trace_name="rag-chat"
         ):
-            with _client.start_as_current_observation(name="rag-chat") as span:
+            with client.start_as_current_observation(name="rag-chat", as_type="span") as span:
                 span.update(input={"question": question})
-                with span.start_as_current_observation(name="retrieve") as retr:
+                with client.start_as_current_observation(
+                    name="retrieve", as_type="retriever"
+                ) as retr:
                     retr.update(
                         output=[
                             {
@@ -81,7 +81,9 @@ def log_chat_trace(
                             for c in chunks
                         ]
                     )
-                with span.start_as_current_generation(name="answer", model=model) as gen:
+                with client.start_as_current_observation(
+                    name="answer", as_type="generation", model=model
+                ) as gen:
                     gen.update(output=answer[:4000], metadata={"latency_ms": ms})
                 span.update(output={"answer": answer[:2000], "citations": len(chunks)})
     except Exception:
@@ -100,15 +102,14 @@ def log_agent_trace(
     user_sub: str | None,
 ) -> None:
     """Трасса agentic-цикла (§ 5 п.7): шаги tool-вызовов + стоп-условие."""
-    if not _enabled:
+    client = _client
+    if not _enabled or client is None:
         return
     try:
-        from langfuse import propagate_attributes
-
         with propagate_attributes(
             user_id=user_sub or "anonymous", session_id=session_id, trace_name="rag-agent"
         ):
-            with _client.start_as_current_observation(name="rag-agent") as span:
+            with client.start_as_current_observation(name="rag-agent", as_type="agent") as span:
                 span.update(
                     input={"question": question, "mode": mode},
                     output={
@@ -128,13 +129,14 @@ def log_agent_trace(
 def log_translate_trace(
     doc_id: str, filename: str, kind: str, segments: int, seconds: float, model: str
 ) -> None:
-    if not _enabled:
+    client = _client
+    if not _enabled or client is None:
         return
     try:
-        from langfuse import propagate_attributes
-
         with propagate_attributes(trace_name="translate-document", metadata={"kind": kind}):
-            with _client.start_as_current_observation(name="translate-document") as span:
+            with client.start_as_current_observation(
+                name="translate-document", as_type="span"
+            ) as span:
                 span.update(
                     input={"document_id": doc_id, "filename": filename},
                     output={"segments": segments, "seconds": round(seconds, 1)},

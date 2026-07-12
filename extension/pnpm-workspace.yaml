@@ -1,0 +1,10 @@
+allowBuilds:
+  esbuild: true
+  spawn-sync: false
+
+minimumReleaseAge: 1440
+enableGlobalVirtualStore: false
+verifyDepsBeforeRun: warn
+
+overrides:
+  nanoid: 3.3.15

@@ -5,27 +5,27 @@ description = "Корпоративный инструмент перевода 
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.34",
-    "python-multipart>=0.0.20",
-    "pydantic>=2.10",
-    "pydantic-settings>=2.7",
-    "sqlalchemy[asyncio]>=2.0.36",
-    "asyncpg>=0.30",
-    "arq>=0.26",
-    "minio>=7.2",
-    "openai>=1.60",
-    "httpx>=0.28",
-    "python-docx>=1.1",
-    "pypdfium2>=4.30",
+    "fastapi>=0.139.0",
+    "uvicorn[standard]>=0.51.0",
+    "python-multipart>=0.0.32",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "sqlalchemy[asyncio]>=2.0.51",
+    "asyncpg>=0.31.0",
+    "arq>=0.28.0",
+    "minio>=7.2.20",
+    "openai>=2.45.0",
+    "httpx>=0.28.1",
+    "python-docx>=1.2.0",
+    "pypdfium2>=5.10.1,<6",
     "openpyxl>=3.1.5",
     "python-pptx>=1.0.2",
-    "pillow>=12.2.0",
-    "pgvector>=0.4.2",
+    "pillow>=12.3.0",
+    "pgvector>=0.5.0",
     "pyjwt[crypto]>=2.13.0",
-    "langfuse>=4.7.1",
-    "prometheus-fastapi-instrumentator>=7.0",
-    "sentry-sdk[fastapi]>=2.20",
+    "langfuse>=4.14.0",
+    "prometheus-fastapi-instrumentator>=7.1.0",
+    "sentry-sdk[fastapi]>=2.64.0",
     "matplotlib>=3.11.0",
 ]
 
@@ -35,20 +35,21 @@ dependencies = [
 # transformers. torch-backend=auto при установке (ABI-совместимость vLLM/CUDA).
 [project.optional-dependencies]
 parse = [
-    # MinerU 3.3.1 пинит vllm <0.22 (vllm 0.23/torch 2.12 несовместимы с её
-    # VLM-движком) → берём максимум допустимого: vllm 0.21.x (тянет torch 2.11).
-    "mineru[core,pipeline,vllm]>=3.3.1",
+    # MinerU 3.4.4 пинит vllm <0.22; новые standalone-модели обслуживаются
+    # отдельным vLLM 0.25, не смешанным с окружением MinerU.
+    "mineru[core,pipeline,vllm]>=3.4.4,<3.5",
     "vllm>=0.21,<0.22",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
-    "ruff>=0.9",
-    "mypy>=1.14",
-    "reportlab>=4.2",
-    "alembic>=1.18.4",
+    "pytest>=9.1.1",
+    "ruff>=0.15.21",
+    "mypy>=2.2.0",
+    "reportlab>=5.0.0",
+    "alembic>=1.18.5",
     "pytest-asyncio>=1.4.0",
+    "types-openpyxl>=3.1.5.20260518",
 ]
 
 [build-system]
@@ -68,3 +69,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
+ignore_missing_imports = true

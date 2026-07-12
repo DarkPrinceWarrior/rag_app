@@ -12,9 +12,10 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from rag_app.config import settings
 from rag_app.llm.vision import _cap_image
@@ -98,7 +99,7 @@ def build_context_block(chunks: list[RetrievedChunk]) -> str:
     # Бюджет контекста: multi-hop собирает много фрагментов — без лимита промпт
     # перерастает окно модели. Клеим по убыванию ранга, пока влезает; хвост
     # (низкоранговые) отбрасываем. Нумеруем ТОЛЬКО источники (без каталога).
-    parts = []
+    parts: list[str] = []
     total = 0
     for n, c in enumerate(source_chunks(chunks), 1):
         header = f"[{n}] {c.filename}"
@@ -287,7 +288,7 @@ class ChatEngine:
         _fit_context_window(messages, attached)  # §4.5: не переполнить окно модели
         stream = await self.client.chat.completions.create(
             model=settings.llm_model,
-            messages=messages,
+            messages=cast(list[ChatCompletionMessageParam], messages),
             temperature=0.2,
             top_p=0.8,
             max_tokens=2048,

@@ -18,9 +18,10 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from rag_app.config import settings
 from rag_app.rag.retrieve import RetrievedChunk
@@ -35,7 +36,14 @@ _THINK_OFF = {"chat_template_kwargs": {"enable_thinking": False}}
 # QueryRouter (§2.3.1, §15.2): один проход решает и глубину документного поиска
 # (mode), и нужна ли память. route — пять маршрутов спеки; mode выводится из него
 # (agentic_multi_step → multi_hop), needs_memory включает retrieve_memories.
-_ROUTES = ("doc_only", "memory_only", "doc_plus_memory", "agentic_multi_step", "out_of_scope", "clarification")
+_ROUTES = (
+    "doc_only",
+    "memory_only",
+    "doc_plus_memory",
+    "agentic_multi_step",
+    "out_of_scope",
+    "clarification",
+)
 
 _CLASSIFY_SCHEMA = {
     "type": "object",
@@ -229,7 +237,7 @@ class AgentLoop:
             try:
                 resp = await self.client.chat.completions.create(
                     model=settings.llm_model,
-                    messages=messages,
+                    messages=cast(list[ChatCompletionMessageParam], messages),
                     temperature=0.1,
                     max_tokens=400,
                     response_format={

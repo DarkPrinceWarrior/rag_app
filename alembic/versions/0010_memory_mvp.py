@@ -89,7 +89,12 @@ def upgrade() -> None:
         sa.Column("sensitivity", sa.Text(), nullable=False, server_default="normal"),
         sa.Column("valid_from", sa.DateTime(timezone=True), nullable=True),
         sa.Column("valid_to", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("supersedes", postgresql.UUID(as_uuid=True), sa.ForeignKey("memory_items.id"), nullable=True),
+        sa.Column(
+            "supersedes",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("memory_items.id"),
+            nullable=True,
+        ),
         sa.Column("status", sa.Text(), nullable=False, server_default="active"),
         sa.Column("fingerprint", sa.Text(), nullable=True),
         sa.Column("memory_provider", sa.Text(), nullable=False, server_default="internal"),

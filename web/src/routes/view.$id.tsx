@@ -112,6 +112,8 @@ function Viewer() {
     if (seg) {
       const s = segsQ.data.find((x) => x.id === seg)
       if (s) {
+        // URL/search state intentionally drives the imperative PDF pane position.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         if (s.page_idx != null) setPage(s.page_idx + 1)
         const h = highlightOf(s)
         if (h) setActive(h)
@@ -233,6 +235,31 @@ function Viewer() {
         setTimeout(() => setMsg(''), 8000)
       },
     })
+  }
+
+  const segs = segsQ.data ?? []
+
+  // Переведённая страница, на которой лежит контент страницы оригинала.
+  function rightPageForLeft(leftPage: number): number | null {
+    const mappedPages = segs
+      .flatMap((segment) =>
+        segment.loc_left?.page === leftPage - 1 && segment.loc_right ? [segment.loc_right.page] : [],
+      )
+      .sort((a, b) => a - b)
+    if (mappedPages.length) return mappedPages[Math.floor(mappedPages.length / 2)] + 1
+
+    let nearestPage: number | null = null
+    let nearestDistance = Infinity
+    for (const segment of segs) {
+      if (segment.loc_left && segment.loc_right) {
+        const distance = Math.abs(segment.loc_left.page - (leftPage - 1))
+        if (distance < nearestDistance) {
+          nearestDistance = distance
+          nearestPage = segment.loc_right.page
+        }
+      }
+    }
+    return nearestPage != null ? nearestPage + 1 : null
   }
 
   const isPdfDoc = !!docQ.data && PDF_KINDS.includes(docQ.data.kind)
@@ -364,8 +391,6 @@ function Viewer() {
       </div>
     )
 
-  const segs = segsQ.data ?? []
-
   // --- Кросс-навигация PDF↔PDF (pdf_text/docx): клик по фрагменту на одной панели
   // подсвечивает его на другой и листает туда (страницы НЕ синхронны — после
   // перевода объём другой). regionsFor — кликабельные сегменты текущей страницы.
@@ -390,33 +415,6 @@ function Viewer() {
       setLeftHi({ page: s.loc_left.page + 1, bbox: s.loc_left.bbox, pageSize: s.loc_left.pagesize })
     }
   }
-  // переведённая страница, на которой лежит КОНТЕНТ страницы оригинала leftPage
-  // (страницы не синхронны — RU объёмнее EN). Берём МЕДИАНУ правых страниц
-  // среди сегментов левой страницы — устойчиво к единичным мисматчам cross-loc
-  // (одиночный короткий сегмент, ошибочно найденный на чужой странице, не
-  // утягивает результат, как это делал min). null → маппинга нет.
-  const rightPageForLeft = (leftPage: number): number | null => {
-    const rs = segs
-      .flatMap((s) => (s.loc_left?.page === leftPage - 1 && s.loc_right ? [s.loc_right.page] : []))
-      .sort((a, b) => a - b)
-    if (rs.length) return rs[Math.floor(rs.length / 2)] + 1
-    // на этой странице нет смапленных сегментов (cross-loc покрывает не каждую
-    // страницу больших docx) — берём ближайший по loc_left сегмент с маппингом,
-    // чтобы не сваливаться на стр. 1
-    let best: number | null = null
-    let bestDist = Infinity
-    for (const s of segs) {
-      if (s.loc_left && s.loc_right) {
-        const d = Math.abs(s.loc_left.page - (leftPage - 1))
-        if (d < bestDist) {
-          bestDist = d
-          best = s.loc_right.page
-        }
-      }
-    }
-    return best != null ? best + 1 : null
-  }
-
   // --- «текст»-режим (Figma 41:1317): выделение сегмента с обеих сторон сразу
   // (для сравнения/навигации); правка перевода — на отдельном экране сегмента. ---
   function scrollSegIntoView(segId: string) {

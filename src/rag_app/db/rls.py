@@ -33,8 +33,8 @@ class Principal:
     service: bool = True  # доверенный контур — политика пропускает (bypass)
 
 
-_principal: contextvars.ContextVar[Principal] = contextvars.ContextVar(
-    "db_principal", default=Principal()
+_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(
+    "db_principal", default=None
 )
 
 
@@ -54,7 +54,7 @@ _SET_GUC = text(
 
 @event.listens_for(Session, "after_begin")
 def _apply_rls_guc(session, transaction, connection) -> None:  # noqa: ANN001
-    p = _principal.get()
+    p = _principal.get() or Principal()
     is_admin = "on" if (p.service or p.is_admin) else "off"
     uid = "" if p.service else (p.user_sub or "")
     try:

@@ -218,6 +218,8 @@ class Retriever:
     ) -> list[RetrievedChunk]:
         """Визуальный recall (Qwen3-VL-Embedding) + реранк (Qwen3-VL-Reranker) →
         добавить релевантные image-чанки страниц, которых текстовый поиск не поднял."""
+        if self.visual_embedder is None:
+            return result
         try:
             q_emb = await self.visual_embedder.embed_text_query(query)
             rows = (

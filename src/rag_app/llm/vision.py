@@ -14,6 +14,7 @@ import io
 import logging
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionContentPartParam, ChatCompletionMessageParam
 from PIL import Image
 
 from rag_app.config import settings
@@ -82,16 +83,17 @@ class VisionClient:
 
     async def _complete(self, system: str, prompt: str, image_png: bytes) -> str:
         b64 = base64.b64encode(_cap_image(image_png)).decode("ascii")
-        content = [
+        content: list[ChatCompletionContentPartParam] = [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
         ]
+        messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ]
         resp = await self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": content},
-            ],
+            messages=messages,
             temperature=0.2,
             max_tokens=settings.vl_max_tokens,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},

@@ -94,7 +94,9 @@ def build_scan_overlay(original_pdf: Path, segments: list[Segment]) -> tuple[byt
             x0, y0, x1, y1 = seg.meta["bbox_pt"]
             px0, py0, px1, py1 = x0 * fx, y0 * fy, x1 * fx, y1 * fy
             draw.rectangle([px0 - 2, py0 - 2, px1 + 2, py1 + 2], fill=(255, 255, 255))
-            font, lines, line_h = _fit_text(draw, seg.translated_text, px1 - px0, py1 - py0)
+            font, lines, line_h = _fit_text(
+                draw, seg.translated_text or "", px1 - px0, py1 - py0
+            )
             y = py0
             for line in lines:
                 if y > py1 + line_h:  # лёгкий выход за низ бокса допустим

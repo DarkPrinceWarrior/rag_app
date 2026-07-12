@@ -48,7 +48,11 @@ class DocumentOut(BaseModel):
         out.has_view_orig = bool(doc.s3_key_view_orig)
         out.has_view_ru = bool(doc.s3_key_view_ru)
         out.has_view = out.has_view_orig and out.has_view_ru
-        if out.has_view_orig or (doc.content_type == "application/pdf") or doc.filename.lower().endswith(".pdf"):
+        if (
+            out.has_view_orig
+            or doc.content_type == "application/pdf"
+            or doc.filename.lower().endswith(".pdf")
+        ):
             out.preview_url = f"/api/documents/{doc.id}/preview.png"
         out.exports = [
             kind

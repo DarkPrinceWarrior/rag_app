@@ -19,4 +19,11 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    files: ['src/routes/**/*.tsx', 'src/components/ui/button.tsx'],
+    rules: {
+      // TanStack Router and CVA modules intentionally export route/config helpers.
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

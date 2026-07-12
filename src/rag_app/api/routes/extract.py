@@ -57,6 +57,8 @@ class XlsxIn(BaseModel):
 async def extract_xlsx(body: XlsxIn) -> StreamingResponse:
     wb = Workbook()
     ws = wb.active
+    if ws is None:
+        raise RuntimeError("openpyxl не создал активный лист")
     ws.title = "Спецификации"
     if body.columns:
         ws.append(body.columns)

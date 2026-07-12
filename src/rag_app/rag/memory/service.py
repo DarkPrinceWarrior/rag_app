@@ -377,7 +377,7 @@ class MemoryService:
             user_id=user_id, reason="152-fz purge",
         )
         return {
-            "items": items.rowcount or 0,
-            "events": events.rowcount or 0,
-            "candidates": cand.rowcount or 0,
+            "items": getattr(items, "rowcount", 0) or 0,
+            "events": getattr(events, "rowcount", 0) or 0,
+            "candidates": getattr(cand, "rowcount", 0) or 0,
         }

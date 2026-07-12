@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Check } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, type Segment } from '@/lib/api'
 import { Markdown } from '@/components/Markdown'
 import { cn } from '@/lib/utils'
 import { PaneHeader } from './view.$id'
@@ -19,41 +19,10 @@ export const Route = createFileRoute('/view/$id_/segment/$segId')({
 
 function SegmentEditor() {
   const { id, segId } = Route.useParams()
-  const navigate = Route.useNavigate()
-  const [text, setText] = useState('')
-  const [needsReview, setNeedsReview] = useState(false)
-  const [initialized, setInitialized] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
   const segs = segsQ.data ?? []
   const target = segs.find((s) => s.id === segId)
-
-  useEffect(() => {
-    if (target && !initialized) {
-      setText(target.translated_text ?? '')
-      setNeedsReview(target.needs_review)
-      setInitialized(true)
-    }
-  }, [target, initialized])
-
-  function goBack() {
-    navigate({ to: '/view/$id', params: { id } })
-  }
-
-  async function save() {
-    setSaving(true)
-    setError('')
-    try {
-      await api.patchSegment(segId, text, needsReview)
-      goBack()
-    } catch {
-      setError('Ошибка сохранения')
-      setSaving(false)
-    }
-  }
 
   if (segsQ.isLoading || docQ.isLoading)
     return <p className="p-6 text-sm text-muted-foreground">Загрузка…</p>
@@ -68,11 +37,45 @@ function SegmentEditor() {
       </div>
     )
 
+  return <LoadedSegmentEditor key={target.id} id={id} target={target} sourceLang={docQ.data?.source_lang} />
+}
+
+function LoadedSegmentEditor({
+  id,
+  target,
+  sourceLang,
+}: {
+  id: string
+  target: Segment
+  sourceLang?: string | null
+}) {
+  const navigate = Route.useNavigate()
+  const [text, setText] = useState(target.translated_text ?? '')
+  const [needsReview, setNeedsReview] = useState(target.needs_review)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  function goBack() {
+    navigate({ to: '/view/$id', params: { id } })
+  }
+
+  async function save() {
+    setSaving(true)
+    setError('')
+    try {
+      await api.patchSegment(target.id, text, needsReview)
+      goBack()
+    } catch {
+      setError('Ошибка сохранения')
+      setSaving(false)
+    }
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-start justify-center gap-6 px-6 py-10 md:px-[168px]">
         <div className="w-full max-w-[548px]">
-          <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
+          <PaneHeader label="Оригинал" lang={sourceLang} />
           <div className="mt-2 rounded-lg bg-[#222226]/[0.02] p-3">
             <Markdown content={target.source_text} className="text-[14.3px] leading-relaxed" />
           </div>

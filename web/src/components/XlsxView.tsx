@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type SheetData } from '@/lib/api'
 
@@ -150,11 +150,12 @@ export function XlsxView({ docId }: { docId: string }) {
   // ширины столбцов по содержимому активного листа; ручное растягивание — поверх.
   const base = useMemo(() => (sheet ? baseWidths(sheet) : []), [sheet])
   const widths = base.map((w, c) => override[c] ?? w)
-  // сброс ручных ширин и выделения при смене листа
-  useEffect(() => {
+
+  function selectSheet(next: number) {
+    setActive(next)
     setOverride({})
     setSel(null)
-  }, [idx])
+  }
 
   if (q.isLoading) return <p className="p-6 text-sm text-muted-foreground">Загрузка таблицы…</p>
   if (q.isError || !q.data) return <p className="p-6 text-sm text-destructive">Не удалось загрузить таблицу.</p>
@@ -259,7 +260,7 @@ export function XlsxView({ docId }: { docId: string }) {
             {sheets.map((s, i) => (
               <button
                 key={i}
-                onClick={() => setActive(i)}
+                onClick={() => selectSheet(i)}
                 title={`${s.name}${s.name_ru && s.name_ru !== s.name ? ` · ${s.name_ru}` : ''} · ${s.total_rows.toLocaleString('ru')}×${s.total_cols}`}
                 className={
                   'max-w-[14rem] truncate whitespace-nowrap rounded-t border-x border-t px-3 py-1 text-xs ' +

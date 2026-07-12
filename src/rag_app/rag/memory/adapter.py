@@ -218,6 +218,8 @@ class InternalAdapter:
             ).scalar_one_or_none()
         if existing is not None:
             item = await session.get(MemoryItem, existing)
+            if item is None:
+                raise LookupError(f"memory item disappeared during upsert: {existing}")
             item.content = content
             item.structured = structured
             item.embedding = emb

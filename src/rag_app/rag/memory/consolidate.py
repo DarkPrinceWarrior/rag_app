@@ -206,7 +206,7 @@ async def purge_expired(session: AsyncSession, *, tenant_id: uuid.UUID) -> int:
         ),
         {"t": str(tenant_id)},
     )
-    return ev.rowcount or 0
+    return getattr(ev, "rowcount", 0) or 0
 
 
 def _decide(cand: MemoryCandidate, status: str, actor: str, now: datetime) -> None:

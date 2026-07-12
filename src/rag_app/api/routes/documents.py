@@ -336,6 +336,7 @@ _EXPORT_KINDS = {
 @router.get("/{doc_id}/download/{kind}")
 async def download(request: Request, doc_id: uuid.UUID, kind: str) -> Response:
     doc = await _get_or_404(request, doc_id)
+    key: str | None
     if kind == "original":
         bucket, key = settings.bucket_originals, doc.s3_key_original
         media = doc.content_type or "application/octet-stream"

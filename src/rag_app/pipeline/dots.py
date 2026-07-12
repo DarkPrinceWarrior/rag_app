@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -71,7 +70,8 @@ async def run_dots(pdf_path: Path, out_dir: Path) -> Path:
         # на всякий случай ищем глубже
         found = sorted(out_dir.rglob("*_page_*.json"))
         if not found:
-            raise RuntimeError(f"dots.mocr: нет *_page_*.json в {out_dir}\n{out.decode(errors='replace')[-1500:]}")
+            tail = out.decode(errors="replace")[-1500:]
+            raise RuntimeError(f"dots.mocr: нет *_page_*.json в {out_dir}\n{tail}")
         page_dir = found[0].parent
     return page_dir
 
@@ -87,15 +87,18 @@ def _page_sizes_pt(pdf_path: Path) -> list[tuple[float, float]]:
 
 def dots_to_segments(page_dir: Path, pdf_path: Path) -> list[SegmentDraft]:
     """Постраничные JSON dots → SegmentDraft (reading-order, idx по порядку)."""
+    def page_index(path: Path) -> int:
+        match = re.search(r"_page_(\d+)\.json$", path.name)
+        if match is None:
+            raise ValueError(f"dots.mocr: неожидаемое имя страницы: {path.name}")
+        return int(match.group(1))
+
     sizes = _page_sizes_pt(pdf_path)
-    files = sorted(
-        page_dir.glob("*_page_*.json"),
-        key=lambda p: int(re.search(r"_page_(\d+)\.json$", p.name).group(1)),
-    )
+    files = sorted(page_dir.glob("*_page_*.json"), key=page_index)
     drafts: list[SegmentDraft] = []
     scale = 72.0 / _DPI
     for f in files:
-        pidx = int(re.search(r"_page_(\d+)\.json$", f.name).group(1))
+        pidx = page_index(f)
         try:
             elements = json.loads(f.read_text(encoding="utf-8"))
         except Exception:

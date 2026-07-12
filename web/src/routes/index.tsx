@@ -235,6 +235,7 @@ function Library() {
       </section>
 
       <FolderModal
+        key={editFolderOpen ? (selectedFolder?.id ?? 'create') : 'closed'}
         open={editFolderOpen}
         onClose={() => setEditFolderOpen(false)}
         docs={allDocs}
@@ -360,7 +361,14 @@ function NewFolder({ docs, onCreated }: { docs: Document[]; onCreated: () => voi
         <PlusCircle className="h-4 w-4" />
         Создать папку
       </Button>
-      <FolderModal open={open} onClose={() => setOpen(false)} docs={docs} folder={null} onSaved={onCreated} />
+      <FolderModal
+        key={open ? 'create' : 'closed'}
+        open={open}
+        onClose={() => setOpen(false)}
+        docs={docs}
+        folder={null}
+        onSaved={onCreated}
+      />
     </>
   )
 }
@@ -385,22 +393,12 @@ function FolderModal({
   onRequestDelete?: (folder: Folder) => void
 }) {
   const isEdit = folder != null
-  const [name, setName] = useState('')
+  const initialDocumentIds = () =>
+    folder ? new Set(docs.filter((document) => document.folder_id === folder.id).map((document) => document.id)) : new Set<string>()
+  const [name, setName] = useState(folder?.name ?? '')
   const [docSearch, setDocSearch] = useState('')
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [initialSelected, setInitialSelected] = useState<Set<string>>(new Set())
-
-  // Пере-заполняем поля при каждом открытии: создание — пусто, редактирование —
-  // текущее имя папки + документы, которые уже в ней лежат.
-  useEffect(() => {
-    if (!open) return
-    setDocSearch('')
-    const current = folder ? new Set(docs.filter((d) => d.folder_id === folder.id).map((d) => d.id)) : new Set<string>()
-    setName(folder?.name ?? '')
-    setSelected(current)
-    setInitialSelected(current)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, folder?.id])
+  const [selected, setSelected] = useState<Set<string>>(initialDocumentIds)
+  const [initialSelected] = useState<Set<string>>(initialDocumentIds)
 
   const save = useMutation({
     mutationFn: async () => {
@@ -926,17 +924,17 @@ function AuthenticatedPreviewImage({
   alt: string
   onUnavailable: () => void
 }) {
-  const [url, setUrl] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState<{ src: string; url: string } | null>(null)
+  const url = loaded?.src === src ? loaded.url : null
   useEffect(() => {
     let obj: string | null = null
     let cancelled = false
-    setUrl(null)
     authFetch(src)
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
       .then((blob) => {
         if (cancelled) return
         obj = URL.createObjectURL(blob)
-        setUrl(obj)
+        setLoaded({ src, url: obj })
       })
       .catch(() => {
         if (!cancelled) onUnavailable()

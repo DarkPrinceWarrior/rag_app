@@ -18,11 +18,11 @@ from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
 from rag_app.config import settings
 from rag_app.db.models import ChatMessage, ChatSession
-from rag_app.rag.memory.rls import apply_scope_guc
 from rag_app.observability import log_agent_trace, log_chat_trace
 from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
 from rag_app.rag.digest import render_docx, render_md, session_digest
+from rag_app.rag.memory.rls import apply_scope_guc
 from rag_app.rag.tools import AgentTools
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
