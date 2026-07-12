@@ -48,6 +48,7 @@ dev = [
     "mypy>=1.14",
     "reportlab>=4.2",
     "alembic>=1.18.4",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [build-system]
@@ -66,3 +67,4 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "strict"

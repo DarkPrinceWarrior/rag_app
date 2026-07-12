@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -88,14 +87,15 @@ def test_structured_settings_reject_unsafe_timing_and_unpinned_revision() -> Non
         Settings(_env_file=None, structured_job_lease_s=180)
 
 
-def test_sends_multimodal_json_schema_request() -> None:
+@pytest.mark.asyncio
+async def test_sends_multimodal_json_schema_request() -> None:
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content='{"number":"A-1"}'), finish_reason="stop")]
     )
     completions = _Completions(response)
     client = _client(completions)
 
-    result = asyncio.run(client(_request()))
+    result = await client(_request())
 
     assert result.content == '{"number":"A-1"}'
     assert result.finish_reason == "stop"
@@ -109,15 +109,17 @@ def test_sends_multimodal_json_schema_request() -> None:
     assert completions.kwargs["response_format"]["json_schema"]["schema"] == _request().schema
 
 
-def test_maps_sdk_timeout_to_bounded_executor_error() -> None:
+@pytest.mark.asyncio
+async def test_maps_sdk_timeout_to_bounded_executor_error() -> None:
     error = APITimeoutError(request=httpx.Request("POST", "http://127.0.0.1:8132/v1"))
     client = _client(_Completions(error=error))
 
     with pytest.raises(TransientInferenceError, match="APITimeoutError"):
-        asyncio.run(client(_request()))
+        await client(_request())
 
 
-def test_rejects_missing_content_and_multiple_choices() -> None:
+@pytest.mark.asyncio
+async def test_rejects_missing_content_and_multiple_choices() -> None:
     invalid = (
         SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=None), finish_reason="stop")]
@@ -126,4 +128,4 @@ def test_rejects_missing_content_and_multiple_choices() -> None:
     )
     for response in invalid:
         with pytest.raises(ValueError):
-            asyncio.run(_client(_Completions(response))(_request()))
+            await _client(_Completions(response))(_request())
