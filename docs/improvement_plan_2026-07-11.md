@@ -132,7 +132,7 @@ Production не используется как место первичного 
 
 | № | Пункт | Статус | Текущий результат |
 |---:|---|---|---|
-| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Локально: 312 тестов, Ruff, mypy и ESLint проходят; SPA/расширение собираются. Self-hosted CI реализован и защищен от fork-PR, требуется первый фактический runner-run |
+| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **завершен** | 312 тестов, Ruff, mypy, ESLint, Alembic, SPA и extension проходят локально/A100; self-hosted run `29208255226` успешен, production smoke и SHA-синхронизация выполнены |
 | 2 | Fail-closed RLS и тесты изоляции | не начат | Риск и критерии описаны |
 | 3 | Секреты, лицензии, Keycloak, резервное копирование и восстановление | исследование | Найдено обязательство атрибуции MinerU; нужна юридическая проверка и репетиция восстановления |
 | 4 | Эталонный набор документов и вопросов | **в работе** | На A100 проверены SHA 150 сложных VAREX; для 138 лицензионно однозначных входов добавлен offline-manifest, до byte verification он маркируется metadata-only; нужен закрытый доменный набор |
@@ -373,6 +373,14 @@ pnpm 11.12, суточный minimum release age и allowlist install-скрип
 объединенное локальное дерево после добавления KIE job: **312 passed**, Ruff,
 mypy по 75 модулям, Alembic, web и extension прошли. Пункт 1 закрывается только
 после первого успешного запуска на фактическом self-hosted runner.
+
+Первый фактический run выявил отсутствие генерируемого TanStack
+`routeTree.gen.ts` в чистом checkout; production build переставлен в порядок
+Vite route generation -> TypeScript check. Повторный self-hosted run
+`29208255226` завершился успешно за 2 мин 5 с. На A100 SHA
+`27431f5ae9fcad526af60c58f9d13ba20e6a9675` дал **312 passed**, Ruff и mypy
+без ошибок; Alembic показывает `0024 (head)`, внутренний health — `ok`, запрос
+без токена — 401, публичные `/healthz` и `/` — HTTP 200. Пункт 1 завершен.
 
 ### 4.2. Перевести RLS в fail-closed
 
