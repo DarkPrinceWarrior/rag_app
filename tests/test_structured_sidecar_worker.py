@@ -27,14 +27,23 @@ class _Storage:
         self.buckets_ready = True
 
 
-def test_worker_uses_isolated_queue_with_probe_only() -> None:
+class _Client:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_worker_uses_isolated_queue_and_registers_bounded_kie_job() -> None:
     worker = structured_sidecar.WorkerSettings
 
     assert worker.queue_name == settings.structured_sidecar_queue_name
     assert worker.queue_name != default_queue_name
-    assert worker.functions == [structured_sidecar.health_probe]
+    assert worker.functions == [structured_sidecar.health_probe, structured_sidecar.run_structured_kie]
     assert worker.cron_jobs == []
     assert worker.max_jobs == 1
+    assert worker.max_tries == settings.structured_job_max_attempts
     assert worker.job_timeout == settings.parser_sidecar_timeout_s
     assert worker.health_check_interval == settings.structured_sidecar_health_check_interval_s
     assert worker.health_check_key == f"{worker.queue_name}:health-check"
@@ -43,7 +52,10 @@ def test_worker_uses_isolated_queue_with_probe_only() -> None:
         return create_worker(worker, burst=True)
 
     instance = asyncio.run(build_worker())
-    assert [function.name for function in instance.functions.values()] == ["health_probe"]
+    assert [function.name for function in instance.functions.values()] == [
+        "health_probe",
+        "run_structured_kie",
+    ]
 
 
 @pytest.mark.parametrize("queue_name", ["", "arq:queue", "sidecar", "arq:structured-sidecar:BAD"])
@@ -93,6 +105,25 @@ def test_startup_and_shutdown_use_shared_infrastructure(monkeypatch) -> None:
     assert storage.buckets_ready is True
 
     asyncio.run(structured_sidecar.shutdown(ctx))
+    assert engine.disposed is True
+
+
+def test_enabled_startup_owns_and_closes_pinned_model_client(monkeypatch) -> None:
+    engine = _Engine()
+    storage = _Storage()
+    client = _Client()
+    monkeypatch.setattr(settings, "structured_extraction_enabled", True)
+    monkeypatch.setattr(structured_sidecar, "create_engine", lambda: engine)
+    monkeypatch.setattr(structured_sidecar, "create_sessionmaker", lambda value: object())
+    monkeypatch.setattr(structured_sidecar, "Storage", lambda: storage)
+    monkeypatch.setattr(structured_sidecar, "GraniteStructuredClient", lambda **kwargs: client)
+    ctx: dict = {}
+
+    asyncio.run(structured_sidecar.startup(ctx))
+
+    assert ctx["structured_client"] is client
+    asyncio.run(structured_sidecar.shutdown(ctx))
+    assert client.closed is True
     assert engine.disposed is True
 
 

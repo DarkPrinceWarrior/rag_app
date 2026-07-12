@@ -132,7 +132,7 @@ Production не используется как место первичного 
 
 | № | Пункт | Статус | Текущий результат |
 |---:|---|---|---|
-| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Локально: 303 backend-теста, Ruff по `src/tests/alembic`, mypy по 74 модулям и ESLint проходят; SPA и расширение собираются. Остались A100-проверка и self-hosted CI |
+| 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **в работе** | Локально: 312 тестов, Ruff, mypy и ESLint проходят; SPA/расширение собираются. Self-hosted CI реализован и защищен от fork-PR, требуется первый фактический runner-run |
 | 2 | Fail-closed RLS и тесты изоляции | не начат | Риск и критерии описаны |
 | 3 | Секреты, лицензии, Keycloak, резервное копирование и восстановление | исследование | Найдено обязательство атрибуции MinerU; нужна юридическая проверка и репетиция восстановления |
 | 4 | Эталонный набор документов и вопросов | **в работе** | На A100 проверены SHA 150 сложных VAREX; для 138 лицензионно однозначных входов добавлен offline-manifest, до byte verification он маркируется metadata-only; нужен закрытый доменный набор |
@@ -147,7 +147,7 @@ Production не используется как место первичного 
 | 13 | Память переводов | не начат | В production только 9 ручных правок |
 | 14 | Защита чисел, единиц, стандартов и терминов | не начат | Детерминированный контур спроектирован |
 | 15 | Дообучение Hy-MT2 после накопления данных | отложен | До 1000-3000 проверенных пар обучение не выполнять |
-| 16 | Разделение ARQ-очередей и идемпотентность | **в работе** | Добавлен изолированный structured-sidecar worker только с health-probe: своя очередь, health key и `max_jobs=1`; основная очередь не изменена |
+| 16 | Разделение ARQ-очередей и идемпотентность | **в работе** | Structured-sidecar получил bounded KIE job, отдельную очередь, claim/lease/retry/conditional publish и `max_jobs=1`; флаг выключен, producer заявок еще не подключен, основная очередь не изменена |
 | 17 | API и воркеры под systemd | не начат | Требования к процессам описаны |
 | 18 | Наблюдаемость, SLO и оповещения | не начат | Набор обязательных метрик описан |
 | 19 | Frontend: lint, lazy loading, Playwright и доступность | **в работе** | Обновлены Vite 8.1.4/React 19.2.7/pnpm 11.12, устранены 36 ошибок ESLint; lint и обе production-сборки проходят. Lazy loading, E2E и a11y еще не выполнены |
@@ -347,6 +347,32 @@ production parse-extra использует 0.21, а vLLM 0.25 тестируе�
 mypy без ошибок по 74 модулям, ESLint без ошибок, сборки SPA и WXT проходят.
 Self-hosted CI и серверная проверка на A100 остаются обязательными до закрытия
 пункта 1.
+
+**12.07.2026, A100 и production.** Коммиты `654346c` и hotfix `2564ebd`
+доставлены на A100. Полное окружение синхронизировано с `--extra parse`:
+FastAPI 0.136.3, OpenAI 2.45.0, Langfuse 4.14.0, SQLAlchemy 2.0.51,
+pypdfium2 5.10.1, MinerU 3.4.4 и vLLM 0.21.0. Серверный полный набор дал
+**304 passed**. Миграция 0024 применена с 0023 на пустой таблице structured
+artifacts после schema-only backup
+`/root/parser_trials/rag_schema_before_0024_2026-07-12.sql` размером 45547 байт.
+
+Первый smoke обнаружил 500 на защищённых маршрутах с FastAPI 0.139.0:
+instrumentator 7.1 обращался к отсутствующему `_IncludedRouter.path`. API был
+немедленно возвращен на 0.136.3; добавлен regression-тест связки included router
+и Prometheus middleware. После hotfix внутренний `/healthz` возвращает `ok`,
+защищённый `/api/documents` без токена — 401, публичные `/healthz` и `/` — 200,
+worker запущен с прежними `quality shadow` и `page router shadow`; KIE-флаг и
+пользовательский parser fallback остаются выключены.
+
+Добавлен self-hosted GitHub Actions workflow для Python 3.13/uv, pytest, Ruff,
+mypy, Alembic single-head и полного offline upgrade, frozen pnpm install,
+ESLint/SPA build, WXT compile/build и `git diff --check`. Fork-PR не исполняет
+код на частном runner; checkout read-only без credentials, выгрузки артефактов,
+SSH/A100/production-доступа и внешнего model cache нет. Policy checker закрепляет
+pnpm 11.12, суточный minimum release age и allowlist install-скриптов. Полное
+объединенное локальное дерево после добавления KIE job: **312 passed**, Ruff,
+mypy по 75 модулям, Alembic, web и extension прошли. Пункт 1 закрывается только
+после первого успешного запуска на фактическом self-hosted runner.
 
 ### 4.2. Перевести RLS в fail-closed
 
@@ -1551,9 +1577,21 @@ value-полей, повторяемыми anchor-полями, строгим �
 структурированных артефактов: идемпотентный get-or-create, claim/lease,
 ограниченные повторы, условная публикация по revision, supersede и sweeper
 зависших заданий. Изолированный локальный клиент vLLM принимает только localhost
-и по умолчанию выключен. Пользовательский API и production-маршрутизация еще не
-подключены; следующий шаг — worker job, затем A100 A/B Qwen3-VL-8B против
-Granite и закрытый canary.
+и по умолчанию выключен. Bounded KIE job зарегистрирован только в
+structured-sidecar: до claim проверяет feature flag, валидирует SHA изображения
+и pinned contract, выбирает nested/table executor, пишет attempt-unique candidate
+и публикует его только при совпадении claim token и текущей parse revision.
+Stale/error candidate удаляется; сырой ответ модели в БД и журналы не попадает.
+Локально 21 профильный тест, Ruff и mypy прошли. Producer заявок и
+пользовательский API не подключены.
+
+Для будущего A/B закреплен безопасный профиль Qwen3-VL-8B: отдельный контейнер
+vLLM 0.25.0, BF16 без квантизации, TP=1, контекст 16384, `max_num_seqs=1`, одно
+изображение 256-1280 visual tokens, `gpu_memory_utilization=0.85`, eager и
+loopback-порт 18009. Веса занимают 16,33 GiB, BF16 KV на 16K — около 2,25 GiB.
+GPU2 использовать нельзя: он отдан Alma; запуск допустим только после
+фактического выделения другой A100 и проверки отсутствия чужого процесса.
+Следующий шаг — одинаковый A/B Qwen против Granite, затем закрытый canary.
 
 ## 7. Этап P1: поиск и RAG
 

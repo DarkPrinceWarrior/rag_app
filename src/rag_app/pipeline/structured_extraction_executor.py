@@ -35,6 +35,10 @@ class StructuredExtractionExecutionError(RuntimeError):
     """Model attempts exhausted without a fully validated result."""
 
 
+class RetryableStructuredExtractionError(StructuredExtractionExecutionError):
+    """All bounded attempts failed only because the model transport was unavailable."""
+
+
 class TransientInferenceError(RuntimeError):
     """Retryable transport/server failure (408/429/5xx)."""
 
@@ -227,7 +231,7 @@ async def execute_nested_extraction(
                 )
                 if transport_attempt == 1:
                     continue
-                raise StructuredExtractionExecutionError(
+                raise RetryableStructuredExtractionError(
                     f"transient inference retry exhausted for {logical_id}"
                 ) from None
             except Exception as exc:
@@ -606,7 +610,7 @@ async def execute_table_extraction(
                 )
                 if transport_attempt == 1:
                     continue
-                raise StructuredExtractionExecutionError(
+                raise RetryableStructuredExtractionError(
                     f"transient inference retry exhausted for {logical_id}"
                 ) from None
             except Exception as exc:
