@@ -160,11 +160,13 @@ class _LightOnOCR:
 
 
 class _VLLMOCR:
-    def __init__(self, endpoint: str, model: str) -> None:
+    def __init__(self, endpoint: str, model: str, *, temperature: float, top_p: float) -> None:
         import httpx
 
         self._client = httpx.Client(base_url=endpoint, timeout=600.0)
         self._model = model
+        self._temperature = temperature
+        self._top_p = top_p
         response = self._client.get("/version")
         response.raise_for_status()
         self.runtime = f"vllm={response.json()['version']}"
@@ -186,8 +188,8 @@ class _VLLMOCR:
                     }
                 ],
                 "max_tokens": max_new_tokens,
-                "temperature": 0.2,
-                "top_p": 0.9,
+                "temperature": self._temperature,
+                "top_p": self._top_p,
                 "seed": 0,
             },
         )
@@ -214,6 +216,8 @@ def main() -> None:
     parser.add_argument("--max-image-dimension", type=int, default=1540)
     parser.add_argument("--max-new-tokens", type=int, default=4096)
     parser.add_argument("--endpoint", default="")
+    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--top-p", type=float, default=0.9)
     args = parser.parse_args()
     if not _COMMIT_RE.fullmatch(args.revision):
         parser.error("--revision должен быть полным lowercase commit SHA")
@@ -223,6 +227,10 @@ def main() -> None:
         parser.error("--max-image-dimension должен быть в диапазоне 512..4096")
     if not 1 <= args.max_new_tokens <= 32768:
         parser.error("--max-new-tokens должен быть в диапазоне 1..32768")
+    if not 0 <= args.temperature <= 2:
+        parser.error("--temperature должен быть в диапазоне 0..2")
+    if not 0 < args.top_p <= 1:
+        parser.error("--top-p должен быть в диапазоне (0, 1]")
     for path in args.pdf:
         if path.is_symlink() or not path.is_file() or path.suffix.lower() != ".pdf":
             parser.error(f"небезопасный или отсутствующий PDF: {path}")
@@ -233,10 +241,15 @@ def main() -> None:
     started = time.monotonic()
     inference: _VLLMOCR | _LightOnOCR
     if args.endpoint:
-        inference = _VLLMOCR(args.endpoint, args.model)
+        inference = _VLLMOCR(
+            args.endpoint,
+            args.model,
+            temperature=args.temperature,
+            top_p=args.top_p,
+        )
         runtime = inference.runtime
         backend = "vllm_openai"
-        sampling = {"temperature": 0.2, "top_p": 0.9, "seed": 0}
+        sampling = {"temperature": args.temperature, "top_p": args.top_p, "seed": 0}
     else:
         from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
 
