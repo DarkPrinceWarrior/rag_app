@@ -143,6 +143,45 @@ def test_rejects_embedded_resources_and_active_html(value: str) -> None:
         validate_structured_artifact(payload)
 
 
+def test_kie_v2_preserves_exact_nested_result() -> None:
+    payload = _base(
+        "kie",
+        {
+            "schema_sha256": "b" * 64,
+            "result": {
+                "contract": {
+                    "number": "A-1",
+                    "amounts": [{"value": 10.5, "unit": "USD"}],
+                }
+            },
+        },
+    )
+    payload["schema_version"] = 2
+
+    artifact = validate_structured_artifact(payload)
+    encoded = canonical_artifact_bytes(artifact)
+
+    assert b'"schema_version":2' in encoded
+    assert artifact.payload.result == payload["payload"]["result"]
+
+
+def test_kie_version_and_representation_must_match() -> None:
+    exact_v1 = _base("kie", {"schema_sha256": "b" * 64, "result": {"number": "A-1"}})
+    flat_v2 = _base("kie", {"fields": []})
+    flat_v2["schema_version"] = 2
+    for payload in (exact_v1, flat_v2):
+        with pytest.raises(ValidationError, match="schema_version"):
+            validate_structured_artifact(payload)
+
+
+def test_kie_v2_rejects_nested_active_content_and_non_finite_numbers() -> None:
+    for result in ({"value": "<script>alert(1)</script>"}, {"value": float("inf")}):
+        payload = _base("kie", {"schema_sha256": "b" * 64, "result": result})
+        payload["schema_version"] = 2
+        with pytest.raises(ValidationError):
+            validate_structured_artifact(payload)
+
+
 def test_artifact_key_is_revision_and_page_scoped() -> None:
     key = build_artifact_key(
         document_id=_DOC_ID,

@@ -73,7 +73,58 @@ class KIEField(_StrictModel):
 
 
 class KIEPayload(_StrictModel):
-    fields: list[KIEField] = Field(max_length=1000)
+    fields: list[KIEField] = Field(default_factory=list, max_length=1000)
+    schema_sha256: str | None = None
+    result: dict[str, Any] | None = None
+
+    @field_validator("schema_sha256")
+    @classmethod
+    def validate_schema_hash(cls, value: str | None) -> str | None:
+        if value is not None and not _SHA256_RE.fullmatch(value):
+            raise ValueError("schema_sha256 must be lowercase hexadecimal")
+        return value
+
+    @field_validator("result")
+    @classmethod
+    def validate_exact_result(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        stack: list[tuple[Any, int]] = [(value, 0)]
+        visited = 0
+        while stack:
+            node, depth = stack.pop()
+            visited += 1
+            if visited > 20_000 or depth > 64:
+                raise ValueError("KIE result exceeds structural limits")
+            if isinstance(node, dict):
+                for key, child in node.items():
+                    if not isinstance(key, str) or not key or len(key) > 256:
+                        raise ValueError("KIE result keys must be bounded strings")
+                    if _UNSAFE_TEXT_RE.search(key):
+                        raise ValueError("embedded resources and active HTML are not allowed")
+                    stack.append((child, depth + 1))
+            elif isinstance(node, list):
+                stack.extend((child, depth + 1) for child in node)
+            elif isinstance(node, str):
+                if len(node) > 16_384:
+                    raise ValueError("KIE result string is too long")
+                if _UNSAFE_TEXT_RE.search(node):
+                    raise ValueError("embedded resources and active HTML are not allowed")
+            elif isinstance(node, float):
+                if not math.isfinite(node):
+                    raise ValueError("KIE result numbers must be finite")
+            elif node is not None and not isinstance(node, int | bool):
+                raise ValueError("KIE result contains a non-JSON value")
+        return value
+
+    @model_validator(mode="after")
+    def validate_representation(self) -> Self:
+        exact = self.result is not None
+        if exact and (self.schema_sha256 is None or self.fields):
+            raise ValueError("exact KIE result requires schema hash and no flat fields")
+        if not exact and self.schema_sha256 is not None:
+            raise ValueError("flat KIE fields cannot carry an exact schema hash")
+        return self
 
 
 class ChartAxis(_StrictModel):
@@ -143,7 +194,7 @@ class DiagramPayload(_StrictModel):
 
 
 class _ArtifactEnvelope(_StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: int = Field(default=1, ge=1, le=2)
     artifact_id: uuid.UUID
     document_id: uuid.UUID
     parse_revision: int = Field(ge=0)
@@ -173,13 +224,22 @@ class KIEArtifact(_ArtifactEnvelope):
     artifact_type: Literal[ArtifactType.kie]
     payload: KIEPayload
 
+    @model_validator(mode="after")
+    def validate_kie_version(self) -> Self:
+        expected = 2 if self.payload.result is not None else 1
+        if self.schema_version != expected:
+            raise ValueError(f"KIE payload requires schema_version={expected}")
+        return self
+
 
 class ChartArtifact(_ArtifactEnvelope):
+    schema_version: Literal[1] = 1
     artifact_type: Literal[ArtifactType.chart]
     payload: ChartPayload
 
 
 class DiagramArtifact(_ArtifactEnvelope):
+    schema_version: Literal[1] = 1
     artifact_type: Literal[ArtifactType.diagram]
     payload: DiagramPayload
 

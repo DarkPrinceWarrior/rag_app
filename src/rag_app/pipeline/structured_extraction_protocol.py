@@ -1180,6 +1180,71 @@ def _validate_table_value(
                 )
 
 
+def validate_nested_prediction(
+    value: Any,
+    schema: Mapping[str, Any],
+    *,
+    max_value_bytes: int = 4 * 1024 * 1024,
+) -> None:
+    """Проверить точный экземпляр поддерживаемой Flat/Nested-схемы."""
+
+    if max_value_bytes <= 0:
+        raise ValueError("max_value_bytes must be positive")
+
+    def visit(node: Any, node_schema: Mapping[str, Any], path: str, depth: int) -> None:
+        if depth > 32:
+            raise TablePredictionError(f"prediction nesting is too deep at {path}")
+        raw_type = node_schema.get("type")
+        allowed_types = (
+            {raw_type}
+            if isinstance(raw_type, str)
+            else set(raw_type)
+            if isinstance(raw_type, list)
+            else set()
+        )
+        if node is None:
+            if "null" not in allowed_types:
+                raise TablePredictionError(f"null is not allowed at {path}")
+            return
+        non_null_types = allowed_types - {"null"}
+        expected_type = next(iter(non_null_types), None)
+        if expected_type != "object":
+            _validate_table_value(
+                node,
+                node_schema,
+                path=path,
+                max_cell_bytes=max_value_bytes,
+                depth=depth,
+            )
+            return
+        if not isinstance(node, Mapping):
+            raise TablePredictionError(f"expected object at {path}")
+        properties = node_schema.get("properties", {})
+        if not isinstance(properties, Mapping):
+            raise StructuredExtractionProtocolError(f"object properties are invalid at {path}")
+        expected_keys = set(properties)
+        actual_keys = set(node)
+        if actual_keys != expected_keys:
+            missing = sorted(expected_keys - actual_keys)
+            extra = sorted(actual_keys - expected_keys)
+            raise TablePredictionError(
+                f"object keys mismatch at {path}: missing={missing} extra={extra}"
+            )
+        for key in sorted(expected_keys):
+            child_schema = properties[key]
+            if not isinstance(child_schema, Mapping):
+                raise StructuredExtractionProtocolError(f"property schema is invalid at {path}/{key}")
+            visit(node[key], child_schema, f"{path}/{_encode_pointer_token(key)}", depth + 1)
+
+    try:
+        payload_size = len(canonical_json_bytes(value))
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise TablePredictionError("prediction is not canonical JSON") from exc
+    if payload_size > max_value_bytes:
+        raise TablePredictionError("prediction exceeds byte limit")
+    visit(value, schema, "", 0)
+
+
 def _table_prediction_rows(
     chunk: TableSchemaChunk,
     prediction: Any,
