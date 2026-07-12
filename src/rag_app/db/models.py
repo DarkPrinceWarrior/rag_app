@@ -245,6 +245,45 @@ class DocumentStructuredArtifact(Base):
             name="ck_structured_source_hash",
         ),
         CheckConstraint(
+            "schema_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_structured_schema_hash",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(request_schema) = 'object'",
+            name="ck_structured_request_schema_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(request_options) = 'object'",
+            name="ck_structured_request_options_object",
+        ),
+        CheckConstraint(
+            "length(model_revision) > 0 AND length(protocol_version) > 0"
+            " AND length(source_key) > 0",
+            name="ck_structured_request_identity",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts BETWEEN 1 AND 10"
+            " AND attempt_count <= max_attempts",
+            name="ck_structured_attempt_bounds",
+        ),
+        CheckConstraint(
+            "status <> 'running' OR (claim_token IS NOT NULL AND claimed_at IS NOT NULL"
+            " AND lease_expires_at IS NOT NULL AND lease_expires_at > claimed_at)",
+            name="ck_structured_running_lease",
+        ),
+        CheckConstraint(
+            "status = 'running' OR (claim_token IS NULL AND lease_expires_at IS NULL)",
+            name="ck_structured_nonrunning_claim",
+        ),
+        CheckConstraint(
+            "next_attempt_at IS NULL OR status = 'queued'",
+            name="ck_structured_next_attempt_status",
+        ),
+        CheckConstraint(
+            "((status IN ('ready', 'error', 'superseded')) = (finished_at IS NOT NULL))",
+            name="ck_structured_finished_status",
+        ),
+        CheckConstraint(
             "content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_structured_content_hash",
         ),
@@ -270,6 +309,12 @@ class DocumentStructuredArtifact(Base):
             "status",
             "page_idx",
         ),
+        Index(
+            "ix_structured_artifact_sweep",
+            "status",
+            "next_attempt_at",
+            "lease_expires_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -284,8 +329,21 @@ class DocumentStructuredArtifact(Base):
     prompt_version: Mapped[str] = mapped_column(String(32))
     schema_version: Mapped[int] = mapped_column(Integer, default=1)
     request_hash: Mapped[str] = mapped_column(String(64))
+    request_schema: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    schema_sha256: Mapped[str] = mapped_column(String(64))
+    model_revision: Mapped[str] = mapped_column(String(128))
+    protocol_version: Mapped[str] = mapped_column(String(32))
+    request_options: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    source_key: Mapped[str] = mapped_column(String(1024))
     source_sha256: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     artifact_key: Mapped[str | None] = mapped_column(String(1024), unique=True, default=None)
     content_sha256: Mapped[str | None] = mapped_column(String(64), default=None)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
