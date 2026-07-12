@@ -26,8 +26,6 @@ jobs:
       CI: "true"
       UV_PYTHON_DOWNLOADS: never
       UV_NO_PROGRESS: "true"
-      UV_CACHE_DIR: ${{ runner.temp }}/rag-app-uv-cache
-      PNPM_STORE_DIR: ${{ runner.temp }}/rag-app-pnpm-store
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       DO_NOT_TRACK: "1"
