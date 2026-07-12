@@ -186,7 +186,9 @@ class _VLLMOCR:
                     }
                 ],
                 "max_tokens": max_new_tokens,
-                "temperature": 0,
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "seed": 0,
             },
         )
         response.raise_for_status()
@@ -234,6 +236,7 @@ def main() -> None:
         inference = _VLLMOCR(args.endpoint, args.model)
         runtime = inference.runtime
         backend = "vllm_openai"
+        sampling = {"temperature": 0.2, "top_p": 0.9, "seed": 0}
     else:
         from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
 
@@ -243,6 +246,7 @@ def main() -> None:
         inference = _LightOnOCR(snapshot)
         runtime = _runtime(("transformers", "torch", "pillow", "pypdfium2"))
         backend = "transformers_direct"
+        sampling = {"do_sample": False}
     load_latency = round(time.monotonic() - started, 3)
     summary: dict[str, Any] = {
         "schema_version": 1,
@@ -250,6 +254,7 @@ def main() -> None:
         "revision": args.revision,
         "runtime": runtime,
         "backend": backend,
+        "sampling": sampling,
         "dpi": args.dpi,
         "max_image_dimension": args.max_image_dimension,
         "max_new_tokens": args.max_new_tokens,
