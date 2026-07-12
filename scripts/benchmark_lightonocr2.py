@@ -79,7 +79,7 @@ def _quality_signals(text: str) -> dict[str, Any]:
     }
 
 
-def _render_pdf(pdf_path: Path, dpi: int):
+def _render_pdf(pdf_path: Path, dpi: int, max_image_dimension: int):
     import pypdfium2 as pdfium  # type: ignore[import-untyped]
 
     document = pdfium.PdfDocument(pdf_path.read_bytes())
@@ -89,6 +89,7 @@ def _render_pdf(pdf_path: Path, dpi: int):
         page = document[0]
         try:
             image = page.render(scale=dpi / 72).to_pil().convert("RGB")
+            image.thumbnail((max_image_dimension, max_image_dimension))
         finally:
             page.close()
     finally:
@@ -105,7 +106,11 @@ class _LightOnOCR:
         )
 
         self._torch = torch
-        self._processor = LightOnOcrProcessor.from_pretrained(snapshot, local_files_only=True)
+        self._processor = LightOnOcrProcessor.from_pretrained(
+            snapshot,
+            local_files_only=True,
+            fix_mistral_regex=True,
+        )
         self._model = LightOnOcrForConditionalGeneration.from_pretrained(
             snapshot,
             dtype=torch.bfloat16,
@@ -153,12 +158,15 @@ def main() -> None:
     parser.add_argument("--model", default=_MODEL)
     parser.add_argument("--revision", default=_REVISION)
     parser.add_argument("--dpi", type=int, default=200)
-    parser.add_argument("--max-new-tokens", type=int, default=8192)
+    parser.add_argument("--max-image-dimension", type=int, default=1540)
+    parser.add_argument("--max-new-tokens", type=int, default=4096)
     args = parser.parse_args()
     if not _COMMIT_RE.fullmatch(args.revision):
         parser.error("--revision должен быть полным lowercase commit SHA")
     if not 72 <= args.dpi <= 300:
         parser.error("--dpi должен быть в диапазоне 72..300")
+    if not 512 <= args.max_image_dimension <= 4096:
+        parser.error("--max-image-dimension должен быть в диапазоне 512..4096")
     if not 1 <= args.max_new_tokens <= 32768:
         parser.error("--max-new-tokens должен быть в диапазоне 1..32768")
     for path in args.pdf:
@@ -180,6 +188,7 @@ def main() -> None:
         "revision": args.revision,
         "runtime": _runtime(),
         "dpi": args.dpi,
+        "max_image_dimension": args.max_image_dimension,
         "max_new_tokens": args.max_new_tokens,
         "load_latency_s": load_latency,
         "results": {},
@@ -189,7 +198,7 @@ def main() -> None:
         result: dict[str, Any]
         try:
             render_started = time.monotonic()
-            image = _render_pdf(pdf_path, args.dpi)
+            image = _render_pdf(pdf_path, args.dpi, args.max_image_dimension)
             render_latency = round(time.monotonic() - render_started, 3)
             inference_started = time.monotonic()
             text = inference.generate(image, max_new_tokens=args.max_new_tokens)
