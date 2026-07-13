@@ -90,8 +90,10 @@ API и воркер не должны переходить в состояние
 - текущая роль не `SUPERUSER`, не `BYPASSRLS` и не является участником роли с
   этими привилегиями;
 - все 16 таблиц существуют, API не владеет ни одной из них;
-- `ENABLE` и `FORCE` включены, `row_security_active(table)=true`, политика
-  существует для каждой таблицы.
+- `ENABLE` и `FORCE` включены, `row_security_active(table)=true`;
+- на каждой таблице ровно одна политика с ожидаемым именем, одновременно
+  содержащая `USING` и `WITH CHECK`; дополнительная политика считается drift и
+  блокирует запуск.
 
 Проверка воркера подтверждает `NOSUPERUSER` и `BYPASSRLS`. Владелец, точный состав
 политик, строгий `NULL`, DML-права и ревизия Alembic проверяются миграционными
@@ -176,7 +178,7 @@ WHERE c.oid IS NULL
    OR pg_get_userbyid(c.relowner) <> 'rag'
    OR NOT c.relrowsecurity
    OR NOT c.relforcerowsecurity
-   OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid)
+   OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid) <> 1
 ORDER BY e.table_name;
 SQL
 ```
@@ -184,6 +186,11 @@ SQL
 Первый запрос должен показать 16 строк, owner=`rag`, RLS=true и policy для каждой
 таблицы. Второй запрос должен вернуть ноль строк. `rls_forced=true` обязателен для
 всего защищённого набора.
+
+Права `SELECT/INSERT/UPDATE/DELETE` должны быть у `rag_worker` на всём наборе.
+У `rag_api` они также обязательны, кроме `UPDATE/DELETE` для append-only
+`audit_log`; для `memory_audit_log_id_seq` обеим ролям нужны `USAGE` и `SELECT`.
+Это проверяет PostgreSQL integration test, а не только startup gate.
 
 ### 3. Состав политик без вывода пользовательских данных
 

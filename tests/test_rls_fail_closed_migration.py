@@ -55,6 +55,15 @@ def test_upgrade_installs_strict_forced_policies() -> None:
     assert "user_id IS NULL" not in upgrade_sql
     assert "RLS preflight failed" in upgrade_sql
     assert "IS DISTINCT FROM" in upgrade_sql
+    assert "sv.document_id IS DISTINCT FROM s.document_id" in upgrade_sql
+    for table in (
+        "memory_events",
+        "memory_items",
+        "memory_candidates",
+        "memory_audit_log",
+    ):
+        assert table in migration._GRANT_TABLES
+    assert "GRANT USAGE, SELECT ON SEQUENCE memory_audit_log_id_seq" in upgrade_sql
 
 
 def test_upgrade_covers_new_user_scoped_tables() -> None:

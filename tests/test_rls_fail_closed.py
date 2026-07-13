@@ -223,7 +223,10 @@ def _safe_table_rows() -> list[dict[str, object]]:
             "relrowsecurity": True,
             "relforcerowsecurity": True,
             "rls_active": True,
-            "has_policy": True,
+            "policy_count": 1,
+            "policy_name": rls.EXPECTED_POLICIES[table],
+            "has_using": True,
+            "has_with_check": True,
         }
         for table in PROTECTED_TABLES
     ]
@@ -272,6 +275,26 @@ async def test_api_role_gate_rejects_missing_or_unforced_table(
 ) -> None:
     rows = _safe_table_rows()[1:]
     rows[0]["relforcerowsecurity"] = False
+
+    async def read_state(engine: AsyncEngine):
+        return {
+            "rolname": "rag_api",
+            "rolsuper": False,
+            "rolbypassrls": False,
+            "privileged_membership": False,
+        }, rows
+
+    monkeypatch.setattr(rls, "_read_role_state", read_state)
+    with pytest.raises(RuntimeError, match="unsafe API RLS schema"):
+        await rls.assert_api_rls_role(cast(AsyncEngine, object()), required=True)
+
+
+@pytest.mark.asyncio
+async def test_api_role_gate_rejects_extra_policy_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _safe_table_rows()
+    rows[0]["policy_count"] = 2
 
     async def read_state(engine: AsyncEngine):
         return {

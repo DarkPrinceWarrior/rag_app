@@ -42,6 +42,13 @@ _ALL_TABLES = (
     *_VIA_CHAT_SESSION,
     "memory_item_sources",
 )
+_GRANT_TABLES = (
+    *_ALL_TABLES,
+    "memory_events",
+    "memory_items",
+    "memory_candidates",
+    "memory_audit_log",
+)
 
 _ADMIN = "current_setting('app.is_admin', true) = 'on'"
 _USER = "current_setting('app.user_id', true)"
@@ -72,7 +79,7 @@ def _document_predicate(table: str, *, allow_null_owner: bool = False) -> str:
 
 
 def _grant_if_role_exists(role: str) -> None:
-    tables = ", ".join(_ALL_TABLES)
+    tables = ", ".join(_GRANT_TABLES)
     op.execute(
         f"""
         DO $grant$
@@ -82,6 +89,18 @@ def _grant_if_role_exists(role: str) -> None:
           END IF;
         END
         $grant$;
+        """
+    )
+    op.execute(
+        f"""
+        DO $sequence_grant$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}')
+             AND to_regclass('memory_audit_log_id_seq') IS NOT NULL THEN
+            EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE memory_audit_log_id_seq TO {role}';
+          END IF;
+        END
+        $sequence_grant$;
         """
     )
 
@@ -114,6 +133,8 @@ def upgrade() -> None:
                WHERE cs.owner_sub IS DISTINCT FROM d.owner_sub)
             + (SELECT count(*) FROM chat_sessions cs JOIN folders f ON f.id = cs.folder_id
                WHERE cs.owner_sub IS DISTINCT FROM f.owner_sub)
+            + (SELECT count(*) FROM segment_versions sv JOIN segments s ON s.id = sv.segment_id
+               WHERE sv.document_id IS DISTINCT FROM s.document_id)
           INTO mismatches;
           IF mismatches > 0 THEN
             RAISE EXCEPTION
@@ -249,3 +270,15 @@ def downgrade() -> None:
 
     for table in ("documents", "folders", "chat_sessions"):
         op.execute(f"ALTER TABLE {table} ALTER COLUMN owner_sub DROP NOT NULL")
+
+    op.execute(
+        """
+        DO $audit_grant$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rag_api') THEN
+            EXECUTE 'GRANT UPDATE, DELETE ON TABLE audit_log TO rag_api';
+          END IF;
+        END
+        $audit_grant$;
+        """
+    )

@@ -33,6 +33,7 @@ from rag_app.db.models import (
     SegmentKind,
     SegmentVersion,
 )
+from rag_app.db.rls import PROTECTED_TABLES
 
 _ADMIN_URL_ENV = "RAG_RLS_TEST_ADMIN_URL"
 _ROLE = "rag_api"
@@ -944,6 +945,37 @@ async def _run_postgres_rls_test(admin_url: str) -> None:
                     )
                 ).one_or_none()
                 assert api_role == (False, False), "rag_api must exist and must not bypass RLS"
+                worker_role = (
+                    await conn.execute(
+                        text(
+                            "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                            "WHERE rolname = 'rag_worker'"
+                        )
+                    )
+                ).one_or_none()
+                assert worker_role == (False, True)
+                for role in ("rag_api", "rag_worker"):
+                    for table in PROTECTED_TABLES:
+                        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                            granted = await conn.scalar(
+                                text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                                {"role": role, "table": table, "privilege": privilege},
+                            )
+                            expected = not (
+                                role == "rag_api"
+                                and table == "audit_log"
+                                and privilege in {"UPDATE", "DELETE"}
+                            )
+                            assert bool(granted) is expected, (
+                                f"unexpected {role} {privilege} privilege on {table}"
+                            )
+                    assert await conn.scalar(
+                        text(
+                            "SELECT has_sequence_privilege"
+                            "(:role, 'memory_audit_log_id_seq', 'USAGE')"
+                        ),
+                        {"role": role},
+                    )
 
                 nullable_owner_columns = await conn.scalar(
                     text(

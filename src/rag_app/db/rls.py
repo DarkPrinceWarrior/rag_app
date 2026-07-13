@@ -84,6 +84,19 @@ PROTECTED_TABLES: tuple[str, ...] = (
     "memory_audit_log",
     "memory_item_sources",
 )
+EXPECTED_POLICIES: dict[str, str] = {
+    table: (
+        f"p_{table}_scope"
+        if table in {
+            "memory_events",
+            "memory_items",
+            "memory_candidates",
+            "memory_audit_log",
+        }
+        else f"{table}_owner"
+    )
+    for table in PROTECTED_TABLES
+}
 
 _ROLE_STATE = text(
     """
@@ -109,13 +122,16 @@ _TABLE_STATE = text(
            c.relrowsecurity,
            c.relforcerowsecurity,
            row_security_active(c.oid) AS rls_active,
-           EXISTS (
-               SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
-           ) AS has_policy
+           count(p.oid)::integer AS policy_count,
+           coalesce(min(p.polname), '') AS policy_name,
+           coalesce(bool_and(p.polqual IS NOT NULL), false) AS has_using,
+           coalesce(bool_and(p.polwithcheck IS NOT NULL), false) AS has_with_check
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_policy p ON p.polrelid = c.oid
     WHERE n.nspname = current_schema()
       AND c.relname = ANY(CAST(:tables AS text[]))
+    GROUP BY c.oid, c.relname, c.relowner, c.relrowsecurity, c.relforcerowsecurity
     """
 )
 
@@ -148,7 +164,10 @@ async def assert_api_rls_role(engine: AsyncEngine, *, required: bool) -> None:
         or not row["relrowsecurity"]
         or not row["relforcerowsecurity"]
         or not row["rls_active"]
-        or not row["has_policy"]
+        or row["policy_count"] != 1
+        or row["policy_name"] != EXPECTED_POLICIES[name]
+        or not row["has_using"]
+        or not row["has_with_check"]
     )
     if missing or unsafe:
         raise RuntimeError(
