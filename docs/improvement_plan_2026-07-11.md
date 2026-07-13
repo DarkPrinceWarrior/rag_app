@@ -135,7 +135,7 @@ Production не используется как место первичного 
 | 1 | Зеленые тесты, Ruff, mypy, ESLint и self-hosted CI | **завершен** | 312 тестов, Ruff, mypy, ESLint, Alembic, SPA и extension проходят локально/A100; self-hosted run `29208255226` успешен, production smoke и SHA-синхронизация выполнены |
 | 2 | Fail-closed RLS и тесты изоляции | **завершен** | Миграция `0025`, строгий принципал, проверка запуска и FORCE RLS на 16 таблицах развернуты; SQL-запрет по умолчанию и A/B/admin HTTP-canary проходят без утечек |
 | 3 | Секреты, лицензии, Keycloak, резервное копирование и восстановление | отложен | 2026-07-13 владелец отложил security-работы; read-only аудит и отдельный dump Keycloak выполнены, production-конфигурация и учетные записи не изменены |
-| 4 | Эталонный набор документов и вопросов | **в работе** | A100 release выпущен: 236/268 полностью автоматизированно проверенных кейсов, 1:1 private sidecar, все обязательные языки/hop/content/challenge ≥5 и no-answer 23,3%. Остался строгий read-only baseline production direct-RAG из чистого Git SHA и итоговая синхронизация |
+| 4 | Эталонный набор документов и вопросов | **завершен** | A100 release: 236/268 полностью автоматически проверенных кейсов и private sidecar 1:1. Строгий read-only component baseline production direct-RAG зафиксирован с полным provenance: Recall@10 0,9586, точность определения наличия ответа 0,8983, p95 3,370 с; production не изменялся, WSL/A100 синхронизированы |
 | 5 | Автоматический выпускной шлюз качества моделей | не начат | Определены общие условия приемки |
 | 6 | A/B MinerU 3.4 | исследование | Подтвержден выпуск 3.4; сервер пока на 3.3.1 |
 | 7 | A/B MinerU-Popo и дерево документа | исследование | Подтверждены назначение и MIT-лицензия |
@@ -182,12 +182,40 @@ probes; все артефакты имеют режим `0600`. Корпус pro
 `standards`, `prompt_injection` и `leakage`. Порог не снижался и плохие кейсы не
 исправлялись вручную. Хеш-связанный supplement добавил 28 новых сложных случаев,
 после чего финальный review v5 принял 236/268 и атомарно выпустил release с
-парным sidecar. Release содержит RU/EN/ZH = 82/73/81; no-answer = 55 (23,3%);
+парным sidecar. Release содержит RU/EN/ZH = 82/73/81; 55 явных no-answer и
+12 leakage-задач, поэтому baseline ожидает отказ в 67/236 случаях;
 `standards` = 9, `prompt_injection` = 13, `leakage` = 12; минимум каждого
-content type = 7. SHA-256: report `31f028d0...7f48`, release
-`c5ac4752...1578`, sidecar `1635d3a5...c717`. Пункт остаётся в работе до
-строгого read-only component baseline production Retriever + direct ChatEngine,
-фиксации Git SHA и синхронизации WSL/A100.
+content type = 7. SHA-256: review
+`31f028d0c2786270f9f7a0232bd1a5634db3768abe1422aebd34263acd287f48`, release
+`c5ac4752dba3f7303832847c6caa5e4aa21f262ab5be1fe2768ac17be8ef1578`, sidecar
+`1635d3a59465fd6b4f9b9ca56c97bbc091a1f1c7c4e7c46c707a1272924ec717`.
+
+Строгий read-only component baseline выполнен одним непрерывным запуском на
+production Retriever + direct `ChatEngine` из чистого Git SHA
+`9ef2f7cc2ac395af61b14969bbb6aa71f7f9a546`. Это не проверка полного
+`AgentLoop`: она фиксирует отдельно retrieval, прямой ответ, цитаты и
+числа/единицы. Результат: answerability accuracy 0,8983; Recall@1/5/10 =
+0,6420/0,9320/0,9586; MRR@1/5/10 = 0,9231/0,9558/0,9567;
+nDCG@1/5/10 = 0,9231/0,9179/0,9292; citation precision/recall =
+0,7926/0,8343; quantity+unit accuracy/recall = 0,2297/0,7905;
+unsupported-number rate = 0,3973; total latency mean/p50/p95 =
+1,776/1,613/3,370 с. Ожидаемый отказ корректен в 65/67 случаях; для ответных
+вопросов модель не отказалась в 147/169. Слабые сегменты базовой линии:
+ZH answerability 0,8148 и cross-document 0,8362, несмотря на Recall@10
+0,9917 и 0,8673 соответственно. Это исходные показатели для пунктов 5, 9--12
+и 14, а не заявление об улучшении качества.
+
+Отчёт `baseline_component.json` имеет SHA-256
+`ef79566abdb340d4d7a1504cfea6f7839f08c68d8046320a78ecc0ce374bf336` и режим
+`0600`; сериализованные ответы и найденные фрагменты в него не входят. Provenance
+содержит чистый Git SHA, хеши release/sidecar, снимок двух областей и десяти
+документов, точную конфигурацию/промпт/seed, runtime-версии/командные строки и
+полные манифесты весов: LLM
+`bb25801552a81d9015823e17c08f88d3b9aa04eedf7ae9b061ecaac716c14f9b`,
+embedding `9ef582abafbbe95f0e6cb976bb52524b9b95aff97e9d71919d11c4b47713a71a`,
+reranker `23113c952832597ed1c026248624fca63202d1cc3a63110f596538dde5e598e9`.
+До и после запуска снимки корпуса и моделей совпали; production-трафик и данные
+не менялись. Публичные `/healthz` и `/` вернули 200, auth остался включён.
 
 #### Журнал пункта 8: парсинг и fallback
 
