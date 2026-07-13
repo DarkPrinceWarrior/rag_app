@@ -403,14 +403,14 @@ async def _seed(conn: AsyncConnection, ids: dict[str, Any], tenant_id: uuid.UUID
                     id=ids["event_a"],
                     tenant_id=tenant_id,
                     user_id="owner-a",
-                    event_type="rls_test",
+                    event_type="tool_call",
                     payload={},
                 ),
                 MemoryEvent(
                     id=ids["event_b"],
                     tenant_id=tenant_id,
                     user_id="owner-b",
-                    event_type="rls_test",
+                    event_type="tool_call",
                     payload={},
                 ),
                 MemoryItem(
@@ -763,7 +763,7 @@ async def _assert_forbidden_inserts(
             id=uuid.uuid4(),
             tenant_id=ids["tenant"],
             user_id="owner-b",
-            event_type="rls_test",
+            event_type="tool_call",
             payload={},
         ),
     )
