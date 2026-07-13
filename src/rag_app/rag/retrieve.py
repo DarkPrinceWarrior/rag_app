@@ -32,7 +32,7 @@ FROM page_embeddings p JOIN documents d ON d.id = p.document_id
 WHERE (CAST(:doc_id AS uuid) IS NULL OR p.document_id = :doc_id)
   AND (CAST(:doc_ids AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:doc_ids AS uuid[])))
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
-  AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner OR d.owner_sub IS NULL)
+  AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner)
   AND d.status = 'done'
 ORDER BY p.emb <=> CAST(:qe AS vector)
 LIMIT :k
@@ -65,7 +65,7 @@ _SCOPE = """
   AND (CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id)
   AND (CAST(:doc_ids AS uuid[]) IS NULL OR c.document_id = ANY(CAST(:doc_ids AS uuid[])))
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
-  AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner OR d.owner_sub IS NULL)
+  AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner)
   AND d.status = 'done'
 """
 

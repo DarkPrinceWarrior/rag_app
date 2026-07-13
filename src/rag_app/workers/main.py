@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 
 from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
+from rag_app.db.rls import assert_worker_rls_role
 from rag_app.llm.client import Translator
 from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.fast import HyMTDocTranslator
@@ -37,6 +38,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 async def startup(ctx: dict) -> None:
     ctx["engine"] = create_engine()
+    try:
+        await assert_worker_rls_role(ctx["engine"])
+    except Exception:
+        await ctx["engine"].dispose()
+        raise
     ctx["sessionmaker"] = create_sessionmaker(ctx["engine"])
     ctx["storage"] = Storage()
     await ctx["storage"].ensure_buckets()

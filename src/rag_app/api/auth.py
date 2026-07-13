@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 import httpx
@@ -16,7 +17,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 
 from rag_app.config import settings
-from rag_app.db.rls import set_principal
+from rag_app.db.rls import reset_principal, set_principal
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,9 @@ class _JwksCache:
 _jwks = _JwksCache()
 
 
-async def get_current_user(request: Request) -> User:
-    """FastAPI-зависимость: пользователь запроса (или 401)."""
+async def _authenticate_user(request: Request) -> User:
+    """Authenticate the request without mutating the database principal."""
     if not settings.auth_enabled:
-        request.state.user = _DEV_USER
-        set_principal(_DEV_USER.sub, _DEV_USER.is_admin)  # RLS-контекст (§4.7.1)
         return _DEV_USER
 
     auth_header = request.headers.get("Authorization", "")
@@ -92,17 +91,29 @@ async def get_current_user(request: Request) -> User:
     azp = claims.get("azp")
     if azp not in (settings.oidc_client_id, "rag-extension"):
         raise HTTPException(401, f"токен выписан не нашему клиенту ({azp})")
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject.strip():
+        raise HTTPException(401, "в токене отсутствует subject")
 
     user = User(
-        sub=claims["sub"],
-        username=claims.get("preferred_username", claims["sub"]),
+        sub=subject,
+        username=claims.get("preferred_username", subject),
         roles=set(claims.get("realm_access", {}).get("roles", [])) & {"user", "admin"},
     )
     if not user.roles:
         raise HTTPException(403, "нет ролей rag-app (user/admin)")
-    request.state.user = user
-    set_principal(user.sub, user.is_admin)  # RLS-контекст (§4.7.1)
     return user
+
+
+async def get_current_user(request: Request) -> AsyncIterator[User]:
+    """Keep the authenticated RLS principal scoped to the full response."""
+    user = await _authenticate_user(request)
+    request.state.user = user
+    token = set_principal(user.sub, user.is_admin)
+    try:
+        yield user
+    finally:
+        reset_principal(token)
 
 
 require_user = Depends(get_current_user)

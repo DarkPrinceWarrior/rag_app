@@ -13,6 +13,7 @@ from arq.connections import RedisSettings
 
 from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
+from rag_app.db.rls import assert_worker_rls_role
 from rag_app.llm.structured import GraniteStructuredClient
 from rag_app.storage.s3 import Storage
 from rag_app.workers.structured_kie import run_structured_kie
@@ -22,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 async def startup(ctx: dict) -> None:
     engine = create_engine()
+    try:
+        await assert_worker_rls_role(engine)
+    except Exception:
+        await engine.dispose()
+        raise
     storage = Storage()
     ctx["engine"] = engine
     ctx["sessionmaker"] = create_sessionmaker(engine)

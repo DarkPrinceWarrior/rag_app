@@ -30,8 +30,8 @@ async def list_folders(request: Request) -> list[dict]:
             .group_by(Folder.id)
             .order_by(Folder.name)
         )
-        if not user.is_admin:  # RBAC §4.7.1: свои папки + dev-папки (owner NULL)
-            stmt = stmt.where((Folder.owner_sub == user.sub) | (Folder.owner_sub.is_(None)))
+        if not user.is_admin:
+            stmt = stmt.where(Folder.owner_sub == user.sub)
         rows = (await db.execute(stmt)).all()
     return [
         {"id": str(f.id), "name": f.name, "documents": count}
@@ -64,9 +64,7 @@ async def rename_folder(request: Request, folder_id: uuid.UUID, body: FolderIn) 
     name = body.name.strip()
     async with request.app.state.sessionmaker() as db:
         folder = await db.get(Folder, folder_id)
-        if folder is None or (
-            not user.is_admin and folder.owner_sub is not None and folder.owner_sub != user.sub
-        ):
+        if folder is None or (not user.is_admin and folder.owner_sub != user.sub):
             raise HTTPException(404, "папка не найдена")
         folder.name = name
         await db.commit()
@@ -82,16 +80,14 @@ async def move_document(request: Request, doc_id: uuid.UUID, body: DocumentFolde
     user: User = request.state.user
     async with request.app.state.sessionmaker() as db:
         doc = await db.get(Document, doc_id)
-        if doc is None or (
-            not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub
-        ):
+        if doc is None or (not user.is_admin and doc.owner_sub != user.sub):
             raise HTTPException(404, "документ не найден")  # не раскрываем существование
         if body.folder_id is not None:
             folder = await db.get(Folder, body.folder_id)
-            if folder is None or (
-                not user.is_admin and folder.owner_sub is not None and folder.owner_sub != user.sub
-            ):
+            if folder is None or (not user.is_admin and folder.owner_sub != user.sub):
                 raise HTTPException(404, "папка не найдена")
+            if folder.owner_sub != doc.owner_sub:
+                raise HTTPException(409, "папка и документ принадлежат разным пользователям")
         await db.execute(
             update(Document).where(Document.id == doc_id).values(folder_id=body.folder_id)
         )
@@ -106,9 +102,7 @@ async def delete_folder(request: Request, folder_id: uuid.UUID) -> None:
     user: User = request.state.user
     async with request.app.state.sessionmaker() as db:
         folder = await db.get(Folder, folder_id)
-        if folder is None or (
-            not user.is_admin and folder.owner_sub is not None and folder.owner_sub != user.sub
-        ):
+        if folder is None or (not user.is_admin and folder.owner_sub != user.sub):
             raise HTTPException(404, "папка не найдена")
         await db.delete(folder)
         await db.commit()
@@ -138,7 +132,7 @@ async def search_visual(
     sql_text = """
         SELECT p.document_id, d.filename, p.page_idx, 1 - (p.emb <=> CAST(:qe AS vector)) AS score
         FROM page_embeddings p JOIN documents d ON d.id = p.document_id
-        WHERE (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner OR d.owner_sub IS NULL)
+        WHERE (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner)
         ORDER BY p.emb <=> CAST(:qe AS vector)
         LIMIT :k
     """
@@ -177,7 +171,7 @@ async def search(
         # набор документов под фильтры (тип/дата/папка/документ + владелец)
         dstmt = select(Document.id, Document.filename, Document.kind)
         if not user.is_admin:
-            dstmt = dstmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
+            dstmt = dstmt.where(Document.owner_sub == user.sub)
         if document_id:
             dstmt = dstmt.where(Document.id == document_id)
         if folder_id:

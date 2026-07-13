@@ -84,9 +84,7 @@ async def list_segments(
     user: User = request.state.user
     async with request.app.state.sessionmaker() as session:
         doc = await session.get(Document, doc_id)
-        if doc is None or (  # RBAC §4.7.1: app-level паритет с RLS-контуром
-            not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub
-        ):
+        if doc is None or (not user.is_admin and doc.owner_sub != user.sub):
             raise HTTPException(404, "документ не найден")
         segments = (
             (
@@ -108,7 +106,7 @@ async def _segment_or_404(session, segment_id: uuid.UUID, user: User) -> Segment
     if seg is None:
         raise HTTPException(404, "сегмент не найден")
     doc = await session.get(Document, seg.document_id)  # RBAC §4.7.1
-    if doc is not None and not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub:
+    if doc is None or (not user.is_admin and doc.owner_sub != user.sub):
         raise HTTPException(404, "сегмент не найден")
     return seg
 
@@ -171,9 +169,10 @@ async def segment_versions(request: Request, segment_id: uuid.UUID) -> list[dict
 @router.post("/documents/{doc_id}/reexport")
 async def reexport_document(request: Request, doc_id: uuid.UUID) -> dict:
     """Пересборка экспортов после ручных правок сегментов."""
+    user: User = request.state.user
     async with request.app.state.sessionmaker() as session:
         doc = await session.get(Document, doc_id)
-        if doc is None:
+        if doc is None or (not user.is_admin and doc.owner_sub != user.sub):
             raise HTTPException(404, "документ не найден")
         if doc.status not in (DocumentStatus.done, DocumentStatus.error):
             raise HTTPException(409, f"документ в работе (статус {doc.status.value})")

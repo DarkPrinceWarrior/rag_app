@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.dialects import postgresql
 
+from rag_app.api.auth import User
 from rag_app.api.routes.documents import _queue_reparse
 from rag_app.db.models import DocumentStatus
 from rag_app.workers.tasks import _claim_parse
@@ -73,7 +74,8 @@ def test_reparse_uses_monotonic_revision_as_job_identity() -> None:
     session = _Session(result=4)
     arq = _Arq()
     request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(sessionmaker=lambda: session, arq=arq))
+        state=SimpleNamespace(user=User(sub="user-a", username="user-a", roles={"user"})),
+        app=SimpleNamespace(state=SimpleNamespace(sessionmaker=lambda: session, arq=arq)),
     )
     doc_id = uuid.uuid4()
 
@@ -89,6 +91,7 @@ def test_reparse_uses_monotonic_revision_as_job_identity() -> None:
     ]
     sql_text, params = _compiled(session.statements[0])
     assert "documents.status IN" in sql_text
+    assert "documents.owner_sub =" in sql_text
     assert "documents.parse_revision +" in sql_text
     status_values = next(value for value in params.values() if isinstance(value, list))
     assert status_values == [DocumentStatus.error, DocumentStatus.done]

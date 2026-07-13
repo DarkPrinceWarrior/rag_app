@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from arq.constants import default_queue_name
@@ -91,11 +92,14 @@ def test_startup_and_shutdown_use_shared_infrastructure(monkeypatch) -> None:
     storage = _Storage()
     sessionmaker = object()
     monkeypatch.setattr(structured_sidecar, "create_engine", lambda: engine)
+    role_check = AsyncMock()
+    monkeypatch.setattr(structured_sidecar, "assert_worker_rls_role", role_check)
     monkeypatch.setattr(structured_sidecar, "create_sessionmaker", lambda value: sessionmaker)
     monkeypatch.setattr(structured_sidecar, "Storage", lambda: storage)
     ctx: dict = {}
 
     asyncio.run(structured_sidecar.startup(ctx))
+    role_check.assert_awaited_once_with(engine)
 
     assert ctx == {
         "engine": engine,
@@ -114,12 +118,15 @@ def test_enabled_startup_owns_and_closes_pinned_model_client(monkeypatch) -> Non
     client = _Client()
     monkeypatch.setattr(settings, "structured_extraction_enabled", True)
     monkeypatch.setattr(structured_sidecar, "create_engine", lambda: engine)
+    role_check = AsyncMock()
+    monkeypatch.setattr(structured_sidecar, "assert_worker_rls_role", role_check)
     monkeypatch.setattr(structured_sidecar, "create_sessionmaker", lambda value: object())
     monkeypatch.setattr(structured_sidecar, "Storage", lambda: storage)
     monkeypatch.setattr(structured_sidecar, "GraniteStructuredClient", lambda **kwargs: client)
     ctx: dict = {}
 
     asyncio.run(structured_sidecar.startup(ctx))
+    role_check.assert_awaited_once_with(engine)
 
     assert ctx["structured_client"] is client
     asyncio.run(structured_sidecar.shutdown(ctx))

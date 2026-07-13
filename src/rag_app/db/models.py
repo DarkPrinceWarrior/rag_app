@@ -135,8 +135,8 @@ class Document(Base):
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("folders.id", ondelete="SET NULL"), default=None
     )
-    # RBAC (этап 5): sub владельца из OIDC-токена; NULL — документы dev-периода
-    owner_sub: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    # RBAC (этап 5): обязательный sub владельца из OIDC-токена.
+    owner_sub: Mapped[str] = mapped_column(String(64), index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -364,8 +364,7 @@ class Folder(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(256))
-    # NULL — папки dev-периода (видны всем не-админам, как dev-документы)
-    owner_sub: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    owner_sub: Mapped[str] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -421,9 +420,9 @@ class ChatSession(Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), default=None
     )
-    # RBAC + субстрат памяти (Этап 0): владелец сессии (OIDC sub; NULL — dev-период)
+    # RBAC + субстрат памяти (Этап 0): обязательный OIDC sub владельца сессии
     # и папка библиотеки (project scope треда для слоя памяти, §15.0).
-    owner_sub: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    owner_sub: Mapped[str] = mapped_column(String(64), index=True)
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("folders.id", ondelete="SET NULL"), default=None
     )

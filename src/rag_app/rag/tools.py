@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import or_, select
 
 from rag_app.config import settings
-from rag_app.db.models import ChatMessage, Chunk, Document, DocumentStatus
+from rag_app.db.models import ChatMessage, ChatSession, Chunk, Document, DocumentStatus
 from rag_app.rag.retrieve import RetrievedChunk, Retriever
 
 # Номер рисунка/таблицы из запроса: "9.1", "3", "12-4" (допускаем точку/дефис/двоеточие
@@ -134,9 +134,7 @@ class AgentTools:
             elif self.folder_id is not None:
                 stmt = stmt.where(Document.folder_id == self.folder_id)
             if self.owner_sub is not None:  # RBAC §4.7.1: раздел только своих документов
-                stmt = stmt.where(
-                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
-                )
+                stmt = stmt.where(Document.owner_sub == self.owner_sub)
             return stmt.order_by(Chunk.idx).limit(settings.agent_max_context_chunks)
 
         async with self.sessionmaker() as db:
@@ -173,9 +171,7 @@ class AgentTools:
                 .where(Chunk.document_id == doc, Chunk.kind == "table")
             )
             if self.owner_sub is not None:  # RBAC §4.7.1: таблицы только своих документов
-                stmt = stmt.where(
-                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
-                )
+                stmt = stmt.where(Document.owner_sub == self.owner_sub)
             rows = (await db.execute(stmt.order_by(Chunk.idx))).all()
         if not rows:
             return "get_tables: таблиц в документе не найдено."
@@ -231,10 +227,8 @@ class AgentTools:
                 stmt = stmt.where(Chunk.document_id == doc)
             elif self.folder_id is not None:
                 stmt = stmt.where(Document.folder_id == self.folder_id)
-            elif self.owner_sub is not None:  # RBAC: свои + dev-документы (owner NULL)
-                stmt = stmt.where(
-                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
-                )
+            if self.owner_sub is not None:
+                stmt = stmt.where(Document.owner_sub == self.owner_sub)
             rows = (await db.execute(stmt.order_by(Chunk.idx).limit(8))).all()
 
         if not rows:
@@ -268,10 +262,8 @@ class AgentTools:
                 stmt = stmt.where(Document.id == self.document_id)
             elif self.folder_id is not None:
                 stmt = stmt.where(Document.folder_id == self.folder_id)
-            if self.owner_sub is not None:  # RBAC поверх области: свои + dev (owner NULL)
-                stmt = stmt.where(
-                    (Document.owner_sub == self.owner_sub) | (Document.owner_sub.is_(None))
-                )
+            if self.owner_sub is not None:
+                stmt = stmt.where(Document.owner_sub == self.owner_sub)
             rows = (
                 (await db.execute(stmt.order_by(Document.created_at.desc()).limit(200)))
                 .scalars()
@@ -299,12 +291,17 @@ class AgentTools:
 
     async def get_chat_history(self) -> str:
         async with self.sessionmaker() as db:
+            stmt = (
+                select(ChatMessage)
+                .join(ChatSession, ChatSession.id == ChatMessage.session_id)
+                .where(ChatMessage.session_id == self.session_id)
+            )
+            if self.owner_sub is not None:
+                stmt = stmt.where(ChatSession.owner_sub == self.owner_sub)
             rows = (
                 (
                     await db.execute(
-                        select(ChatMessage)
-                        .where(ChatMessage.session_id == self.session_id)
-                        .order_by(ChatMessage.created_at)
+                        stmt.order_by(ChatMessage.created_at)
                     )
                 )
                 .scalars()

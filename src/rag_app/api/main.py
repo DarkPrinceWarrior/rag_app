@@ -24,6 +24,7 @@ from rag_app.api.routes.segments import router as segments_router
 from rag_app.api.routes.widget import router as widget_router
 from rag_app.config import settings
 from rag_app.db.engine import create_engine, create_sessionmaker
+from rag_app.db.rls import assert_api_rls_role
 from rag_app.llm.client import Translator
 from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.fast import FastTranslator, HyMTDocTranslator
@@ -43,6 +44,11 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.engine = create_engine()
+    try:
+        await assert_api_rls_role(app.state.engine, required=settings.auth_enabled)
+    except Exception:
+        await app.state.engine.dispose()
+        raise
     app.state.sessionmaker = create_sessionmaker(app.state.engine)
     app.state.storage = Storage()
     await app.state.storage.ensure_buckets()

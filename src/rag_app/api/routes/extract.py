@@ -34,6 +34,7 @@ class ExtractIn(BaseModel):
 async def extract_table_route(request: Request, body: ExtractIn) -> dict:
     if not body.query.strip():
         raise HTTPException(422, "пустой запрос")
+    user = request.state.user
     async with request.app.state.sessionmaker() as db:
         return await extract_table(
             request.app.state.chat_engine.client,
@@ -43,6 +44,7 @@ async def extract_table_route(request: Request, body: ExtractIn) -> dict:
             document_id=body.document_id,
             folder_id=body.folder_id,
             document_ids=body.document_ids or None,
+            owner_sub=None if user.is_admin else user.sub,
         )
 
 

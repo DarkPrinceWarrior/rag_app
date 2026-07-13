@@ -17,7 +17,7 @@ from sqlalchemy import text as sql
 from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
 from rag_app.config import settings
-from rag_app.db.models import ChatMessage, ChatSession
+from rag_app.db.models import ChatMessage, ChatSession, Document, Folder
 from rag_app.observability import log_agent_trace, log_chat_trace
 from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
@@ -46,8 +46,34 @@ def _sse(payload: dict) -> str:
 
 
 def _owner_ok(session: ChatSession, user: User) -> bool:
-    """RBAC: admin — любой чат; user — свои + сессии dev-периода (owner NULL)."""
-    return user.is_admin or session.owner_sub is None or session.owner_sub == user.sub
+    """RBAC: admin — любой чат; user — только сессии точного владельца."""
+    return user.is_admin or session.owner_sub == user.sub
+
+
+async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> None:
+    """Reject foreign document/folder scopes before starting the SSE response."""
+    if user.is_admin:
+        return
+    document_ids = set(body.document_ids or ())
+    if body.document_id is not None:
+        document_ids.add(body.document_id)
+    async with request.app.state.sessionmaker() as db:
+        if document_ids:
+            visible = set(
+                (
+                    await db.execute(
+                        select(Document.id).where(
+                            Document.id.in_(document_ids), Document.owner_sub == user.sub
+                        )
+                    )
+                ).scalars()
+            )
+            if visible != document_ids:
+                raise HTTPException(404, "документ не найден")
+        if body.folder_id is not None:
+            folder = await db.get(Folder, body.folder_id)
+            if folder is None or folder.owner_sub != user.sub:
+                raise HTTPException(404, "папка не найдена")
 
 
 @router.post("")
@@ -56,6 +82,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
         raise HTTPException(422, "пустой вопрос")
     app = request.app
     user: User = request.state.user
+    await _validate_chat_scope(request, body, user)
     # временный чат (?memory=off): не пишем/не читаем память (§9, Этап 3)
     mem_on = memory and settings.memory_enabled
     await audit(
@@ -277,10 +304,7 @@ async def list_sessions(request: Request) -> list[dict]:
     user: User = request.state.user
     stmt = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(100)
     if not user.is_admin:
-        # свои сессии + сессии dev-периода (owner NULL), как _owner_filter в documents.py
-        stmt = stmt.where(
-            (ChatSession.owner_sub == user.sub) | (ChatSession.owner_sub.is_(None))
-        )
+        stmt = stmt.where(ChatSession.owner_sub == user.sub)
     async with request.app.state.sessionmaker() as db:
         rows = (await db.execute(stmt)).scalars().all()
     return [

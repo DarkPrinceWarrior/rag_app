@@ -37,15 +37,15 @@ async def _enqueue_parse_job(request: Request, doc_id: uuid.UUID, parse_revision
         )
     except Exception as exc:
         async with request.app.state.sessionmaker() as session:
-            await session.execute(
-                update(Document)
-                .where(
+            stmt = update(Document).where(
                     Document.id == doc_id,
                     Document.parse_revision == parse_revision,
                     Document.status == DocumentStatus.uploaded,
                 )
-                .values(status=DocumentStatus.error, error=f"очередь парсинга: {exc}")
+            stmt = _owner_filter(stmt, request.state.user).values(
+                status=DocumentStatus.error, error=f"очередь парсинга: {exc}"
             )
+            await session.execute(stmt)
             await session.commit()
         raise HTTPException(503, "не удалось поставить документ в очередь парсинга") from None
 
@@ -57,15 +57,18 @@ async def _queue_reparse(
 ) -> int:
     """Атомарно создать следующую ревизию парсинга для свободного документа."""
 
+    user: User = request.state.user
     async with request.app.state.sessionmaker() as session:
+        stmt = _owner_filter(
+            update(Document).where(
+                Document.id == doc_id,
+                Document.status.in_((DocumentStatus.error, DocumentStatus.done)),
+            ),
+            user,
+        )
         revision = (
             await session.execute(
-                update(Document)
-                .where(
-                    Document.id == doc_id,
-                    Document.status.in_((DocumentStatus.error, DocumentStatus.done)),
-                )
-                .values(
+                stmt.values(
                     status=DocumentStatus.uploaded,
                     error=None,
                     parse_quality=None,
@@ -77,7 +80,7 @@ async def _queue_reparse(
         ).scalar_one_or_none()
         if revision is None:
             doc = await session.get(Document, doc_id)
-            if doc is None:
+            if doc is None or (not user.is_admin and doc.owner_sub != user.sub):
                 raise HTTPException(404, "документ не найден")
             raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
         await session.commit()
@@ -87,10 +90,10 @@ async def _queue_reparse(
 
 
 def _owner_filter(stmt, user: User):
-    """RBAC: admin видит всё; user — свои + документы dev-периода (owner NULL)."""
+    """RBAC: admin видит всё; user — только документы точного владельца."""
     if user.is_admin:
         return stmt
-    return stmt.where((Document.owner_sub == user.sub) | (Document.owner_sub.is_(None)))
+    return stmt.where(Document.owner_sub == user.sub)
 
 
 _PREVIEW_RENDER_WIDTH = 900
@@ -190,7 +193,7 @@ async def upload_document(
     async with request.app.state.sessionmaker() as session:
         doc = Document(
             id=doc_id,
-            owner_sub=request.state.user.sub if settings.auth_enabled else None,
+            owner_sub=request.state.user.sub,
             filename=filename,
             content_type=content_type,
             size_bytes=len(data),
@@ -863,6 +866,6 @@ async def _get_or_404(request: Request, doc_id: uuid.UUID) -> Document:
     if doc is None:
         raise HTTPException(404, "документ не найден")
     user: User = request.state.user
-    if not user.is_admin and doc.owner_sub is not None and doc.owner_sub != user.sub:
+    if not user.is_admin and doc.owner_sub != user.sub:
         raise HTTPException(404, "документ не найден")  # не раскрываем существование
     return doc
