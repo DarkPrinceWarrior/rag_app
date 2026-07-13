@@ -475,9 +475,9 @@ async def _seed(conn: AsyncConnection, ids: dict[str, Any], tenant_id: uuid.UUID
         text(
             "INSERT INTO memory_audit_log "
             "(id, tenant_id, user_id, action, actor) OVERRIDING SYSTEM VALUE VALUES "
-            "(:id_a, :tenant, 'owner-a', 'rls_test', 'test'), "
-            "(:id_b, :tenant, 'owner-b', 'rls_test', 'test'), "
-            "(:id_null, :tenant, NULL, 'rls_test', 'system')"
+            "(:id_a, :tenant, 'owner-a', 'create', 'user'), "
+            "(:id_b, :tenant, 'owner-b', 'create', 'user'), "
+            "(:id_null, :tenant, NULL, 'create', 'system')"
         ),
         {
             "id_a": ids["memory_audit_a"],
@@ -624,9 +624,14 @@ async def _assert_foreign_update_delete_hidden(
             continue
         foreign_key = next(key for key in spec.keys if key.endswith("_b"))
         params = {"foreign_id": ids[foreign_key]}
+        assignment = (
+            "action = action"
+            if spec.table == "memory_audit_log"
+            else f"{spec.key_column} = {spec.key_column}"
+        )
         updated = await conn.execute(
             text(
-                f"UPDATE {spec.table} SET {spec.key_column} = {spec.key_column} "
+                f"UPDATE {spec.table} SET {assignment} "
                 f"WHERE {spec.key_column} = :foreign_id"
             ),
             params,
@@ -798,7 +803,7 @@ async def _assert_forbidden_inserts(
         statement=(
             "INSERT INTO memory_audit_log "
             "(id, tenant_id, user_id, action, actor) OVERRIDING SYSTEM VALUE "
-            "VALUES (:id, :tenant, 'owner-b', 'rls_test', 'test')"
+            "VALUES (:id, :tenant, 'owner-b', 'create', 'user')"
         ),
         params={"id": -(uuid.uuid4().int % 1_000_000_000 + 10), "tenant": ids["tenant"]},
     )
