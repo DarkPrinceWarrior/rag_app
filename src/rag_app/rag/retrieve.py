@@ -137,6 +137,7 @@ class Retriever:
         top_k: int | None = None,
         document_ids: list[uuid.UUID] | None = None,
         owner_sub: str | None = None,
+        allow_rerank_fallback: bool = True,
     ) -> list[RetrievedChunk]:
         top_k = top_k or settings.rag_context_top_k
         # пустой список = нет фильтра (трактуем как None)
@@ -193,6 +194,8 @@ class Retriever:
                 )
                 return []
         except Exception as exc:  # reranker недоступен → порядок RRF
+            if not allow_rerank_fallback:
+                raise RuntimeError("reranker failed while fallback was disabled") from None
             logger.warning("reranker недоступен (%s) — отдаю RRF-порядок", exc)
             for c in candidates:
                 c.score = scores[c.id]

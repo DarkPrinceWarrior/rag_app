@@ -1,0 +1,310 @@
+{
+  "$defs": {
+    "DocumentSnapshot": {
+      "additionalProperties": false,
+      "description": "Immutable corpus document version; titles and file paths are deliberately omitted.",
+      "properties": {
+        "document_ref": {
+          "pattern": "^doc-sha256:[0-9a-f]{64}$",
+          "title": "Document Ref",
+          "type": "string"
+        },
+        "page_count": {
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Page Count",
+          "type": "integer"
+        },
+        "parsed_content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Parsed Content Sha256",
+          "type": "string"
+        },
+        "source_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_ref",
+        "source_sha256",
+        "parsed_content_sha256",
+        "page_count"
+      ],
+      "title": "DocumentSnapshot",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "description": "Stable evidence locator without a private excerpt.",
+      "properties": {
+        "bbox": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bbox"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "content_type": {
+          "enum": [
+            "text",
+            "table",
+            "formula",
+            "figure",
+            "scan"
+          ],
+          "title": "Content Type",
+          "type": "string"
+        },
+        "document_ref": {
+          "pattern": "^doc-sha256:[0-9a-f]{64}$",
+          "title": "Document Ref",
+          "type": "string"
+        },
+        "evidence_id": {
+          "pattern": "^ev-sha256:[0-9a-f]{64}:p[1-9][0-9]*:(?:text|table|formula|figure|scan):[0-9a-f]{64}$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "page": {
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "relevance_grade": {
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Relevance Grade",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "document_ref",
+        "page",
+        "content_type",
+        "content_sha256",
+        "relevance_grade",
+        "bbox"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "ReviewMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "case_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Case Sha256",
+          "type": "string"
+        },
+        "reviewed_at": {
+          "format": "date-time",
+          "title": "Reviewed At",
+          "type": "string"
+        },
+        "reviewer_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$",
+          "title": "Reviewer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reviewer_id",
+        "reviewed_at",
+        "case_sha256"
+      ],
+      "title": "ReviewMetadata",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One JSONL record. Cross-record release constraints are validated separately.",
+  "properties": {
+    "answerable": {
+      "title": "Answerable",
+      "type": "boolean"
+    },
+    "case_id": {
+      "pattern": "^ragq-[a-z0-9][a-z0-9._-]{7,63}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "challenge_tags": {
+      "items": {
+        "enum": [
+          "numbers",
+          "units",
+          "standards",
+          "prompt_injection",
+          "leakage"
+        ],
+        "type": "string"
+      },
+      "maxItems": 5,
+      "title": "Challenge Tags",
+      "type": "array"
+    },
+    "content_types": {
+      "items": {
+        "enum": [
+          "text",
+          "table",
+          "formula",
+          "figure",
+          "scan"
+        ],
+        "type": "string"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Content Types",
+      "type": "array"
+    },
+    "document_scope": {
+      "items": {
+        "$ref": "#/$defs/DocumentSnapshot"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "title": "Document Scope",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "maxItems": 16,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "hop_type": {
+      "enum": [
+        "single",
+        "multi",
+        "cross_document"
+      ],
+      "title": "Hop Type",
+      "type": "string"
+    },
+    "language": {
+      "enum": [
+        "ru",
+        "en",
+        "zh"
+      ],
+      "title": "Language",
+      "type": "string"
+    },
+    "question": {
+      "maxLength": 4000,
+      "minLength": 8,
+      "title": "Question",
+      "type": "string"
+    },
+    "question_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Question Sha256",
+      "type": "string"
+    },
+    "reference_answer": {
+      "anyOf": [
+        {
+          "maxLength": 16000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reference Answer"
+    },
+    "reference_answer_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reference Answer Sha256"
+    },
+    "review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "const": "rag-gold-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scope_id": {
+      "pattern": "^scope-sha256:[0-9a-f]{64}$",
+      "title": "Scope Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "candidate",
+        "reviewed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "case_id",
+    "status",
+    "scope_id",
+    "language",
+    "question",
+    "question_sha256",
+    "answerable",
+    "reference_answer",
+    "reference_answer_sha256",
+    "hop_type",
+    "content_types",
+    "challenge_tags",
+    "document_scope",
+    "evidence",
+    "review"
+  ],
+  "title": "GoldRecord",
+  "type": "object"
+}

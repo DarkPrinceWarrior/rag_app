@@ -233,6 +233,10 @@ class ChatEngine:
         summary: str | None = None,
         memory_block: str | None = None,
         route: str = "doc_only",
+        temperature: float = 0.2,
+        top_p: float = 0.8,
+        max_tokens: int = 2048,
+        seed: int | None = None,
     ) -> AsyncIterator[str]:
         # Выбор промпта: есть фрагменты → строгий doc-only; out_of_scope (перевод/
         # действие/не-вопрос) → общий ассистент; иначе (memory_only / пустой поиск,
@@ -289,9 +293,10 @@ class ChatEngine:
         stream = await self.client.chat.completions.create(
             model=settings.llm_model,
             messages=cast(list[ChatCompletionMessageParam], messages),
-            temperature=0.2,
-            top_p=0.8,
-            max_tokens=2048,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            seed=seed,
             stream=True,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )

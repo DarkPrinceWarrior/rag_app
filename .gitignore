@@ -62,3 +62,6 @@ docs/ТЗ_*.docx
 docs/*.docx
 .serena/memories/
 samples/
+
+# Приватные наборы и результаты автоматической проверки RAG
+.private/
