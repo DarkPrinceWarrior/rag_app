@@ -20,6 +20,8 @@ ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
     --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' \
     --host 127.0.0.1 \
     --port 8003 \
+    --enforce-eager \
+    --seed 0 \
     --gpu-memory-utilization 0.35 \
     --max-model-len 8192
 Restart=always
