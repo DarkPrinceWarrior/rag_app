@@ -6,10 +6,8 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 import re
 import subprocess
-import tempfile
 import time
 import uuid
 from collections import defaultdict
@@ -43,17 +41,25 @@ from rag_app.eval.gold_set import (
     GoldRecord,
     bytes_sha256,
     ensure_private_gold_path,
-    load_gold_set,
     make_document_ref,
     make_scope_id,
+    parse_gold_set_bytes,
     parsed_chunks_sha256,
     text_sha256,
 )
+from rag_app.eval.private_artifacts import read_private_bytes, write_private_json_fresh
 from rag_app.eval.private_sidecar import (
     PrivateSidecarRecord,
     RetrievalProbe,
     bind_gold_sidecar,
-    load_private_sidecar,
+    parse_private_sidecar_bytes,
+)
+from rag_app.eval.report_attestation import (
+    atomic_write_attestation,
+    build_case_attestations,
+    create_report_attestation,
+    load_hmac_key,
+    verify_report_attestation,
 )
 from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.visual import VisualEmbedder
@@ -275,8 +281,8 @@ def _runtime_model_revision(
     if metadata.get("id") != model:
         raise BaselineEvaluationError("runtime model identity mismatch")
     root_value = metadata.get("root")
-    config_digest, weight_digest, weight_count, weight_bytes, local_revision = (
-        _local_model_artifact_evidence(root_value)
+    config_digest, weight_digest, weight_count, weight_bytes, local_revision = _local_model_artifact_evidence(
+        root_value
     )
     declared_revision = _safe_declared_revision(metadata.get("revision")) or local_revision
     stable_metadata = {
@@ -563,9 +569,7 @@ def _runtime_scope_digest(
             for row in page_rows
         ],
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class ProductionBaselineRunner:
@@ -833,9 +837,7 @@ class ProductionBaselineRunner:
             ],
             "case_bindings": case_bindings,
         }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     async def run_case(
         self,
@@ -890,30 +892,12 @@ class ProductionBaselineRunner:
         )
 
 
-def _atomic_write_report(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    content = (
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    except BaseException:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
+def _atomic_write_report(path: Path, payload: dict[str, Any]) -> bytes:
+    content = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if not path.parent.exists():
+        raise BaselineEvaluationError("baseline report parent must already exist")
+    write_private_json_fresh(path, content)
+    return content
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -923,26 +907,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("candidate", "release"), default="release")
     parser.add_argument("--top-k", type=int, default=10, choices=range(10, 65))
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--attestation", type=Path)
+    parser.add_argument("--attestation-key", type=Path)
     return parser
 
 
 async def async_main() -> int:
     args = build_parser().parse_args()
     try:
-        gold_path = ensure_private_gold_path(args.gold, REPOSITORY_ROOT)
-        report_path = (
-            ensure_private_gold_path(args.report, REPOSITORY_ROOT)
-            if args.report is not None
-            else None
-        )
-        records, _ = load_gold_set(
-            gold_path, mode=args.mode, repository_root=REPOSITORY_ROOT
-        )
-        sidecars = load_private_sidecar(args.sidecar, repository_root=REPOSITORY_ROOT)
+        if (args.attestation is None) != (args.attestation_key is None):
+            raise BaselineEvaluationError("--attestation and --attestation-key must be provided together")
+        if args.attestation is not None and args.report is None:
+            raise BaselineEvaluationError("--attestation requires --report")
+        if args.mode == "release" and args.attestation is None:
+            raise BaselineEvaluationError("release mode requires signed report attestation")
+        ensure_private_gold_path(args.gold, REPOSITORY_ROOT)
+        ensure_private_gold_path(args.sidecar, REPOSITORY_ROOT)
+        report_path = args.report.expanduser() if args.report is not None else None
+        if report_path is not None:
+            ensure_private_gold_path(report_path, REPOSITORY_ROOT)
+        attestation_path = args.attestation.expanduser() if args.attestation is not None else None
+        if attestation_path is not None:
+            ensure_private_gold_path(attestation_path, REPOSITORY_ROOT)
+        gold_artifact = read_private_bytes(args.gold, max_bytes=256 * 1024 * 1024)
+        sidecar_artifact = read_private_bytes(args.sidecar, max_bytes=256 * 1024 * 1024)
+        records, _ = parse_gold_set_bytes(gold_artifact.raw_bytes, mode=args.mode)
+        sidecars = parse_private_sidecar_bytes(sidecar_artifact.raw_bytes)
         bound = bind_gold_sidecar(records, sidecars)
-        sidecar_path = args.sidecar.expanduser().resolve()
-        gold_artifact_sha256 = _artifact_sha256(gold_path)
-        sidecar_artifact_sha256 = _artifact_sha256(sidecar_path)
+        gold_artifact_sha256 = gold_artifact.sha256
+        sidecar_artifact_sha256 = sidecar_artifact.sha256
         git_sha, git_dirty = _git_state(REPOSITORY_ROOT)
         if args.mode == "release" and (git_sha is None or git_dirty is not False):
             raise BaselineEvaluationError("release baseline requires a clean Git revision")
@@ -977,14 +970,34 @@ async def async_main() -> int:
                 raise BaselineEvaluationError("runtime model changed during evaluation")
         finally:
             await runner.close()
-        if (
-            _artifact_sha256(gold_path) != gold_artifact_sha256
-            or _artifact_sha256(sidecar_path) != sidecar_artifact_sha256
-        ):
-            raise BaselineEvaluationError("evaluation artifact changed during run")
         payload = report.model_dump(mode="json")
         if report_path is not None:
+            report_bytes = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+            if attestation_path is not None:
+                key = load_hmac_key(args.attestation_key, REPOSITORY_ROOT)
+                cases = build_case_attestations(records, bound)
+                attestation = create_report_attestation(
+                    report_bytes=report_bytes,
+                    gold_bytes=gold_artifact.raw_bytes,
+                    sidecar_bytes=sidecar_artifact.raw_bytes,
+                    cases=cases,
+                    key=key,
+                    repository_root=REPOSITORY_ROOT,
+                )
+                verify_report_attestation(
+                    attestation,
+                    report_bytes=report_bytes,
+                    gold_bytes=gold_artifact.raw_bytes,
+                    sidecar_bytes=sidecar_artifact.raw_bytes,
+                    expected_cases=cases,
+                    key=key,
+                    repository_root=REPOSITORY_ROOT,
+                )
             _atomic_write_report(report_path, payload)
+            if attestation_path is not None:
+                atomic_write_attestation(attestation_path, attestation)
     except Exception as error:  # noqa: BLE001 - fail closed without leaking DB/private values
         print(f"baseline rejected: {type(error).__name__}")
         return 2

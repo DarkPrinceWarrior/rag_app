@@ -192,9 +192,19 @@ def load_private_sidecar(
     if stat.S_IMODE(info.st_mode) != 0o600:
         raise PrivateSidecarError(["sidecar permissions must be exactly 0600"])
     try:
-        text = resolved_source.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+        raw = resolved_source.read_bytes()
+    except OSError as error:
         raise PrivateSidecarError([f"unable to read sidecar ({type(error).__name__})"]) from None
+    return parse_private_sidecar_bytes(raw)
+
+
+def parse_private_sidecar_bytes(raw: bytes) -> list[PrivateSidecarRecord]:
+    """Validate an already captured sidecar JSONL byte snapshot."""
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise PrivateSidecarError(["unable to read sidecar (UnicodeDecodeError)"]) from None
     if text.startswith("\ufeff"):
         raise PrivateSidecarError(["sidecar UTF-8 BOM is not allowed"])
     lines = text.splitlines()
@@ -329,4 +339,5 @@ __all__ = [
     "SidecarQuantities",
     "bind_gold_sidecar",
     "load_private_sidecar",
+    "parse_private_sidecar_bytes",
 ]

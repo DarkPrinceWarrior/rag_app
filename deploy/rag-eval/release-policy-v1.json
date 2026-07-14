@@ -1,0 +1,147 @@
+{
+  "allowed_model_roles": [
+    "llm"
+  ],
+  "allowed_spdx_licenses": [
+    "Apache-2.0"
+  ],
+  "approved_model_licenses": [],
+  "attestation_key_id": "458435f7621c8615e88bc90b1ef6f206457a479de1ee6ffedc79685f5c502cf5",
+  "bootstrap_samples": 20000,
+  "bootstrap_seed": 2026071305,
+  "configuration_sha256": "324c5b405c0558b5cc521138f0cff7ca1ce2365bfc82e84539ca23fc33f579b5",
+  "corpus_fingerprint_sha256": "ed449c84f84ee0e132f617703928ee69a61ad73d32d92a69d86b640cfc1948db",
+  "familywise_alpha": 0.05,
+  "gold_artifact_sha256": "c5ac4752dba3f7303832847c6caa5e4aa21f262ab5be1fe2768ac17be8ef1578",
+  "load_max_p95_regression": 0.1,
+  "load_min_concurrency": 10,
+  "load_min_requests": 200,
+  "load_min_throughput_ratio": 0.9,
+  "long_context_max_window_utilization": 0.95,
+  "long_context_min_cases": 30,
+  "long_context_min_window_utilization": 0.85,
+  "metrics": [
+    {
+      "absolute_noninferiority_margin": 0.02,
+      "direction": "higher",
+      "minimum": 0.85,
+      "name": "answerability_accuracy",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.02,
+      "direction": "higher",
+      "minimum": null,
+      "name": "recall_at_1",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.01,
+      "direction": "higher",
+      "minimum": null,
+      "name": "recall_at_5",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.01,
+      "direction": "higher",
+      "minimum": null,
+      "name": "recall_at_10",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.01,
+      "direction": "higher",
+      "minimum": null,
+      "name": "mrr_at_10",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.01,
+      "direction": "higher",
+      "minimum": null,
+      "name": "ndcg_at_10",
+      "practical_improvement": 0.01,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.02,
+      "direction": "higher",
+      "minimum": null,
+      "name": "citation_precision",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.02,
+      "direction": "higher",
+      "minimum": null,
+      "name": "citation_recall",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.02,
+      "direction": "higher",
+      "minimum": null,
+      "name": "quantity_unit_accuracy",
+      "practical_improvement": 0.02,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.02,
+      "direction": "higher",
+      "minimum": null,
+      "name": "quantity_unit_recall",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 0.01,
+      "direction": "lower",
+      "maximum": 0.4,
+      "name": "unsupported_number_rate",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": null
+    },
+    {
+      "absolute_noninferiority_margin": 250.0,
+      "direction": "lower",
+      "maximum": null,
+      "name": "latency_p95_ms",
+      "practical_improvement": 0.0,
+      "relative_noninferiority_margin": 0.1
+    }
+  ],
+  "min_case_count": 200,
+  "policy_id": "docragenslate-direct-rag-model-v1",
+  "qualification_max_age_hours": 24,
+  "reference_git_sha": "9ef2f7cc2ac395af61b14969bbb6aa71f7f9a546",
+  "reference_report_sha256": "ef79566abdb340d4d7a1504cfea6f7839f08c68d8046320a78ecc0ce374bf336",
+  "rollback_max_seconds": 600.0,
+  "rollback_min_smoke_cases": 10,
+  "runtime_corpus_snapshot_sha256": "83e2c7098f58fd405955553131f3b2072cbe4d95dd53d54fea88e6eccaeaa5d1",
+  "safety_min_cases": 20,
+  "schema_version": "rag-release-policy-v1",
+  "semantic_noninferiority_margin": 0.01,
+  "sidecar_artifact_sha256": "1635d3a59465fd6b4f9b9ca56c97bbc091a1f1c7c4e7c46c707a1272924ec717",
+  "slice_margin_content": 0.05,
+  "slice_margin_language_hop": 0.03,
+  "slice_min_statistical_count": 20,
+  "target_alpha": 0.05,
+  "target_metric_by_role": {
+    "llm": "quantity_unit_accuracy"
+  },
+  "trusted_judge": {
+    "config_sha256": "2e88ddeeea9d1da6fb9d9be3f239cdd9a9dc8727f5a9c8e50c9605a3ddaff7f3",
+    "declared_revision": "weight-manifest-bb25801552a81d90",
+    "model": "qwen3.5-35b-a3b",
+    "prompt_sha256": "ef552f94a18edf069bbf87adc43db4e76652f69f52bacd7ba5ce1b2ee5be22ba",
+    "weight_manifest_sha256": "bb25801552a81d9015823e17c08f88d3b9aa04eedf7ae9b061ecaac716c14f9b"
+  }
+}

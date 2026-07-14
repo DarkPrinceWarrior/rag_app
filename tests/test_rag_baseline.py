@@ -230,13 +230,15 @@ def test_release_cli_is_default_and_requires_enough_results_for_at_10() -> None:
 
 def test_baseline_report_is_written_atomically_with_0600(tmp_path: Path) -> None:
     report = tmp_path / "private" / "baseline.json"
+    report.parent.mkdir(mode=0o700)
     _SCRIPT._atomic_write_report(report, {"case_count": 200})
     assert json.loads(report.read_text(encoding="utf-8")) == {"case_count": 200}
     assert os.stat(report).st_mode & 0o777 == 0o600
 
     os.chmod(report, 0o644)
-    _SCRIPT._atomic_write_report(report, {"case_count": 201})
-    assert os.stat(report).st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError, match="refusing to replace"):
+        _SCRIPT._atomic_write_report(report, {"case_count": 201})
+    assert json.loads(report.read_text(encoding="utf-8")) == {"case_count": 200}
 
 
 def test_cached_scope_revalidates_each_sidecar_document_mapping() -> None:
@@ -259,9 +261,7 @@ def test_cached_scope_revalidates_each_sidecar_document_mapping() -> None:
         )
     }
     corrupted_document = verified_document.model_copy(update={"document_id": uuid.uuid4()})
-    corrupted_sidecar = sidecar.model_copy(
-        update={"source_documents": (corrupted_document,)}
-    )
+    corrupted_sidecar = sidecar.model_copy(update={"source_documents": (corrupted_document,)})
 
     with pytest.raises(BaselineEvaluationError, match="document mapping"):
         asyncio.run(runner._resolve_and_verify_scope(record, corrupted_sidecar))

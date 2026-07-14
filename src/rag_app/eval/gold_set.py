@@ -468,9 +468,22 @@ def load_gold_set(
     source = ensure_private_gold_path(path, repository_root or Path.cwd())
     try:
         raw = source.read_bytes()
-        text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+    except OSError as error:
         raise GoldSetValidationError([f"unable to read private JSONL ({type(error).__name__})"]) from None
+    return parse_gold_set_bytes(raw, mode=mode)
+
+
+def parse_gold_set_bytes(
+    raw: bytes,
+    *,
+    mode: GoldMode = "candidate",
+) -> tuple[list[GoldRecord], GoldSetReport]:
+    """Validate an already captured Gold JSONL byte snapshot."""
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise GoldSetValidationError(["unable to read private JSONL (UnicodeDecodeError)"]) from None
     if text.startswith("\ufeff"):
         raise GoldSetValidationError(["UTF-8 BOM is not allowed"])
 
@@ -528,6 +541,7 @@ __all__ = [
     "make_evidence_id",
     "make_scope_id",
     "normalize_text_content",
+    "parse_gold_set_bytes",
     "parsed_chunks_sha256",
     "text_sha256",
     "validate_gold_set",

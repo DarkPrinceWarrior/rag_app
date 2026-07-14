@@ -7,13 +7,14 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_PNPM = "pnpm@11.12.0"
 MINIMUM_RELEASE_AGE_MINUTES = 1440
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     raise SystemExit(f"CI policy error: {message}")
 
 
@@ -91,10 +92,17 @@ def _check_workflow() -> None:
         "doc-rag-translate",
         "bucket_originals",
     )
-    lowered = workflow.lower()
-    for value in forbidden:
-        if value in lowered:
-            _fail(f"CI workflow contains forbidden external/production operation {value!r}")
+    workflow_dir = path.parent
+    workflow_paths = sorted({*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")})
+    if workflow_paths != [path]:
+        relative_paths = [str(item.relative_to(ROOT)) for item in workflow_paths]
+        _fail(f"only the audited CI workflow is allowed, got {relative_paths}")
+    for workflow_path in workflow_paths:
+        lowered = workflow_path.read_text(encoding="utf-8").lower()
+        for value in forbidden:
+            if value in lowered:
+                relative = workflow_path.relative_to(ROOT)
+                _fail(f"{relative} contains forbidden external/production operation {value!r}")
 
 
 def main() -> None:

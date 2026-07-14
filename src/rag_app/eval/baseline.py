@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import json
 import math
 import re
 import statistics
@@ -160,6 +162,15 @@ class BaselineProvenance(_StrictModel):
     def validate_evaluated_at(self) -> BaselineProvenance:
         if self.evaluated_at.tzinfo is None or self.evaluated_at.utcoffset() is None:
             raise ValueError("evaluated_at must be timezone-aware")
+        expected_configuration_sha256 = hashlib.sha256(
+            json.dumps(
+                self.configuration.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        if self.configuration_sha256 != expected_configuration_sha256:
+            raise ValueError("configuration_sha256 does not match configuration")
         return self
 
 
