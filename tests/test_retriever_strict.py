@@ -27,7 +27,7 @@ class EqualReranker:
 
 class NearEqualReranker:
     async def rerank(self, query: str, texts: list[str]) -> list[float]:
-        return [0.5000003, 0.5000004]
+        return [0.50003, 0.50004]
 
 
 class Result:

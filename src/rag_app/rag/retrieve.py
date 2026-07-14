@@ -31,7 +31,7 @@ type SparseEngine = Literal["postgres_fts", "pg_textsearch_ru", "pg_textsearch_e
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u052f]")
 _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
-_RERANK_SCORE_DIGITS = 6
+_RERANK_SCORE_DIGITS = 4
 
 
 @dataclass(frozen=True, slots=True)
