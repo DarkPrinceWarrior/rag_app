@@ -98,6 +98,9 @@ class Qwen3RerankerRuntime:
         torch.use_deterministic_algorithms(True)
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_math_sdp(True)
         torch.set_float32_matmul_precision("highest")
 
         self._tokenizer = AutoTokenizer.from_pretrained(
