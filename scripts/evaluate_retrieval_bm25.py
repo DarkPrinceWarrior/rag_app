@@ -1998,6 +1998,7 @@ async def _execute_case(
     pool_orders: dict[PoolName, list[tuple[uuid.UUID, ...]]] = defaultdict(list)
     pool_latencies: dict[PoolName, list[float]] = defaultdict(list)
     repeat_hashes: list[str] = []
+    rerank_score_snapshots: list[dict[uuid.UUID, float]] = []
     sparse_engines: set[str] = set()
     reranker_fallback = False
     record = binding.record
@@ -2033,6 +2034,7 @@ async def _execute_case(
             raise RetrievalEvaluationError("retriever escaped the verified owner scope")
         sparse_engines.add(trace.sparse_engine)
         reranker_fallback = reranker_fallback or trace.reranker_fallback
+        rerank_score_snapshots.append({chunk.id: chunk.score for chunk in trace.reranked})
         order_payload: dict[str, list[str]] = {}
         for pool, rows in _pool_rows(trace).items():
             order = tuple(chunk.id for chunk in rows)
@@ -2045,8 +2047,20 @@ async def _execute_case(
     deterministic = len(set(repeat_hashes)) == 1
     if not deterministic:
         unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
+        shared_reranked = set.intersection(*(set(snapshot) for snapshot in rerank_score_snapshots))
+        max_score_delta = max(
+            (
+                max(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+                - min(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+                for chunk_id in shared_reranked
+            ),
+            default=0.0,
+        )
+        final_sets_stable = len({frozenset(order) for order in pool_orders["final"]}) == 1
         raise RetrievalEvaluationError(
-            f"repeated retrieval ordering is not deterministic (stages={unstable})"
+            "repeated retrieval ordering is not deterministic "
+            f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
+            f"max_score_delta={max_score_delta:.6f})"
         )
     if reranker_fallback:
         raise RetrievalEvaluationError("reranker fallback occurred during qualification")
