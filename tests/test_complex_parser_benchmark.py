@@ -13,9 +13,11 @@ _BENCHMARK = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "benchma
 _aggregates = _BENCHMARK["_aggregates"]
 _atomic_write_json = _BENCHMARK["_atomic_write_json"]
 _benchmark_proxies = _BENCHMARK["_benchmark_proxies"]
+_load_runtime_provenance = _BENCHMARK["_load_runtime_provenance"]
 _main = _BENCHMARK["_main"]
 _parse_prediction_spec = _BENCHMARK["_parse_prediction_spec"]
 _prediction_to_drafts = _BENCHMARK["_prediction_to_drafts"]
+_stats = _BENCHMARK["_stats"]
 
 
 def _prediction() -> dict[str, Any]:
@@ -96,7 +98,9 @@ def test_aggregates_count_structural_pages() -> None:
         "completed_pages": 2,
         "latency_mean_s": 2.0,
         "latency_median_s": 2.0,
+        "latency_p95_s": 2.0,
         "source_chars": 200,
+        "raw_source_chars": 200,
         "segments": 6,
         "tables": 1,
         "table_cells": 150,
@@ -105,6 +109,11 @@ def test_aggregates_count_structural_pages() -> None:
         "images": 1,
         "empty_text_pages": 0,
         "quality_mean": 1.0,
+        "raw_quality_mean": 1.0,
+        "backfilled_pages": 0,
+        "bbox_valid_ratio_mean": 0.0,
+        "reading_order_score_mean": 1.0,
+        "adjacent_duplicate_character_ratio_mean": 0.0,
         "table_pages_detected": 1,
         "chart_pages_with_visual": 1,
     }
@@ -128,6 +137,60 @@ def test_external_prediction_is_converted_with_provenance_and_geometry() -> None
     assert drafts[0].idx == 0
     assert drafts[0].kind.value == "table"
     assert drafts[0].meta["bbox_pt"] == [10.0, 20.0, 300.0, 400.0]
+
+
+def test_stats_bind_text_geometry_and_reading_order_without_exposing_text() -> None:
+    drafts, _, _ = _prediction_to_drafts(
+        _prediction(),
+        source_filename="hard.pdf",
+        source_sha256="a" * 64,
+        n_pages=1,
+    )
+
+    stats = _stats(drafts)
+
+    assert len(stats["text_sha256"]) == 64
+    assert stats["bbox_valid_ratio"] == 1.0
+    assert stats["reading_order_score"] == 1.0
+    assert stats["reading_order_page_regressions"] == 0
+    assert stats["reading_order_evidence"] is False
+    assert stats["adjacent_duplicate_character_ratio"] == 0.0
+
+
+def test_stats_accepts_native_mineru_bbox_geometry() -> None:
+    drafts, _, _ = _prediction_to_drafts(
+        _prediction(),
+        source_filename="hard.pdf",
+        source_sha256="a" * 64,
+        n_pages=1,
+    )
+    drafts[0].meta = {"bbox": [10, 20, 300, 400]}
+
+    stats = _stats(drafts)
+    geometry_hash = stats["text_sha256"]
+
+    assert stats["bbox_segments"] == 1
+    assert stats["bbox_valid_ratio"] == 1.0
+
+    drafts[0].meta = {"bbox": [10, 20, 301, 400]}
+    assert _stats(drafts)["text_sha256"] != geometry_hash
+
+    drafts[0].meta = {"bbox": [0, 0, 0, 0]}
+    degenerate_stats = _stats(drafts)
+    assert degenerate_stats["bbox_segments"] == 0
+    assert degenerate_stats["bbox_valid_ratio"] == 0.0
+
+
+def test_runtime_provenance_loader_requires_small_regular_json_object(tmp_path: Path) -> None:
+    source = tmp_path / "runtime.json"
+    source.write_text('{"client":{"version":"3.4.4"}}', encoding="utf-8")
+
+    assert _load_runtime_provenance(source) == {"client": {"version": "3.4.4"}}
+
+    symlink = tmp_path / "runtime-link.json"
+    symlink.symlink_to(source)
+    with pytest.raises(ValueError, match="не найден или небезопасен"):
+        _load_runtime_provenance(symlink)
 
 
 @pytest.mark.parametrize(

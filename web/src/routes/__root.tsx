@@ -250,7 +250,7 @@ function RootLayout() {
 
   return (
     <LibrarySearchContext.Provider value={searchContext}>
-      <div className="min-h-screen bg-white">
+      <div className="flex min-h-screen flex-col bg-white">
         <header className="sticky top-0 z-20 border-b border-[#222226]/[0.12] bg-white">
           <div className="flex min-h-[57px] items-center justify-between gap-2 px-3 py-3 md:gap-4 md:px-8">
             <div className="h-10 w-10 shrink-0" aria-hidden="true" />
@@ -265,9 +265,21 @@ function RootLayout() {
             </div>
           </nav>
         </header>
-        <main>
+        <main className="flex-1">
           <Outlet />
         </main>
+        <footer className="border-t border-[#222226]/[0.10] bg-[#fafafa] px-4 py-3 text-center text-sm text-[#222226]/70 md:px-8">
+          В сервисе используется{' '}
+          <a
+            href="https://github.com/opendatalab/MinerU"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-[#222226]/85 underline decoration-[#222226]/30 underline-offset-2 transition hover:text-[#4b4ce6] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6269f3]"
+          >
+            MinerU
+          </a>{' '}
+          для обработки документов.
+        </footer>
       </div>
     </LibrarySearchContext.Provider>
   )

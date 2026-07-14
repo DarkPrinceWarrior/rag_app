@@ -13,6 +13,7 @@ import shutil
 import statistics
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ _MAX_TABLE_CELLS = 200_000
 _MAX_CELL_TEXT_CHARS = 64_000
 _BACKEND_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_RUN_LABEL = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 
 
 def _sha256_file(path: Path) -> str:
@@ -45,6 +47,23 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _adjacent_duplicate_character_ratio(drafts: list[SegmentDraft]) -> float:
+    """Оценить видимое удвоение glyph-символов без раскрытия текста в отчете."""
+
+    duplicate_pairs = 0
+    comparable_pairs = 0
+    for draft in drafts:
+        characters = [
+            character.casefold()
+            for character in unicodedata.normalize("NFC", draft.source_text)
+            if character.isalnum()
+        ]
+        for previous, current in zip(characters, characters[1:], strict=False):
+            comparable_pairs += 1
+            duplicate_pairs += previous == current
+    return round(duplicate_pairs / comparable_pairs, 6) if comparable_pairs else 0.0
 
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
@@ -72,6 +91,21 @@ def _parse_prediction_spec(spec: str) -> tuple[str, Path]:
     if not path.is_dir():
         raise ValueError(f"каталог prediction не найден: {path}")
     return name, path
+
+
+def _load_runtime_provenance(path: Path) -> dict[str, Any]:
+    source = path.expanduser()
+    if source.is_symlink() or not source.is_file():
+        raise ValueError(f"runtime provenance не найден или небезопасен: {source}")
+    if source.stat().st_size > 64 * 1024:
+        raise ValueError("runtime provenance превышает 64 KiB")
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"runtime provenance не является корректным JSON: {type(exc).__name__}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("runtime provenance должен содержать JSON-объект")
+    return value
 
 
 def _number(value: Any, *, field: str) -> float:
@@ -261,6 +295,7 @@ async def _run_prediction(
         n_pages=n_pages,
         native_text_by_page=native_text_by_page,
     )
+    stats = _stats(drafts)
     return {
         "status": "ok",
         "latency_s": round(latency_s, 3),
@@ -278,7 +313,8 @@ async def _run_prediction(
             "prediction_file": prediction_path.name,
             "source_sha256": source_sha256,
         },
-        **_stats(drafts),
+        "raw_stats": stats,
+        **stats,
     }
 
 
@@ -287,9 +323,35 @@ def _stats(drafts: list[SegmentDraft]) -> dict[str, Any]:
     table_cells = 0
     table_rows = 0
     table_nonempty_cells = 0
+    bbox_segments = 0
+    reading_order_page_regressions = 0
+    previous_page: int | None = None
+    observed_pages: set[int] = set()
+    text_manifest: list[dict[str, Any]] = []
     for draft in drafts:
         kinds[draft.kind.value] += 1
         cells = draft.meta.get("table_cells")
+        bbox_pt = draft.meta.get("bbox_pt")
+        native_bbox = draft.meta.get("bbox")
+        bbox = bbox_pt if bbox_pt is not None else native_bbox
+        bbox_valid = (
+            isinstance(bbox, list)
+            and len(bbox) == 4
+            and all(
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                for value in bbox
+            )
+            and float(bbox[2]) > float(bbox[0])
+            and float(bbox[3]) > float(bbox[1])
+        )
+        bbox_segments += bbox_valid
+        if draft.page_idx is not None:
+            observed_pages.add(draft.page_idx)
+            if previous_page is not None and draft.page_idx < previous_page:
+                reading_order_page_regressions += 1
+            previous_page = draft.page_idx
         if isinstance(cells, list):
             rows = [row for row in cells if isinstance(row, list)]
             table_rows += len(rows)
@@ -299,9 +361,38 @@ def _stats(drafts: list[SegmentDraft]) -> dict[str, Any]:
                 for row in rows
                 for cell in row
             )
+        text_manifest.append(
+            {
+                "bbox": native_bbox if isinstance(native_bbox, list) else None,
+                "bbox_pt": bbox_pt if isinstance(bbox_pt, list) else None,
+                "heading_level": draft.heading_level,
+                "idx": draft.idx,
+                "kind": draft.kind.value,
+                "page_idx": draft.page_idx,
+                "source_text": draft.source_text,
+                "table_cells": cells if isinstance(cells, list) else None,
+            }
+        )
     return {
         "segments": len(drafts),
         "source_chars": sum(len(draft.source_text) for draft in drafts),
+        "text_sha256": hashlib.sha256(
+            json.dumps(
+                text_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "adjacent_duplicate_character_ratio": _adjacent_duplicate_character_ratio(drafts),
+        "bbox_segments": bbox_segments,
+        "bbox_valid_ratio": round(bbox_segments / len(drafts), 6) if drafts else 0.0,
+        "reading_order_page_regressions": reading_order_page_regressions,
+        "reading_order_evidence": len(observed_pages) > 1,
+        "reading_order_score": round(
+            1.0 - reading_order_page_regressions / max(1, len(drafts) - 1),
+            6,
+        ),
         "kinds": kinds,
         "table_cells": table_cells,
         "table_rows": table_rows,
@@ -358,11 +449,14 @@ def _aggregates(output: dict[str, Any]) -> dict[str, Any]:
             for page in pages
             if page["category"] == "chart" and page.get(backend, {}).get("status") == "ok"
         ]
+        raw_stats = [result.get("raw_stats", result) for result in completed]
         aggregates[backend] = {
             "completed_pages": len(completed),
             "latency_mean_s": round(statistics.mean(latencies), 3),
             "latency_median_s": round(statistics.median(latencies), 3),
+            "latency_p95_s": round(sorted(latencies)[math.ceil(0.95 * len(latencies)) - 1], 3),
             "source_chars": sum(result["source_chars"] for result in completed),
+            "raw_source_chars": sum(result["source_chars"] for result in raw_stats),
             "segments": sum(result["segments"] for result in completed),
             "tables": sum(result["kinds"][SegmentKind.table.value] for result in completed),
             "table_cells": sum(result["table_cells"] for result in completed),
@@ -373,6 +467,29 @@ def _aggregates(output: dict[str, Any]) -> dict[str, Any]:
             "quality_mean": round(
                 statistics.mean(result["quality"]["score"] for result in completed),
                 4,
+            ),
+            "raw_quality_mean": round(
+                statistics.mean(
+                    result["quality"].get("raw_parser", result["quality"])["score"] for result in completed
+                ),
+                4,
+            ),
+            "backfilled_pages": sum(
+                int(result["quality"].get("backfilled_page_count", 0)) for result in completed
+            ),
+            "bbox_valid_ratio_mean": round(
+                statistics.mean(float(result.get("bbox_valid_ratio", 0.0)) for result in completed),
+                6,
+            ),
+            "reading_order_score_mean": round(
+                statistics.mean(float(result.get("reading_order_score", 1.0)) for result in completed),
+                6,
+            ),
+            "adjacent_duplicate_character_ratio_mean": round(
+                statistics.mean(
+                    float(result.get("adjacent_duplicate_character_ratio", 0.0)) for result in completed
+                ),
+                6,
             ),
             "table_pages_detected": sum(
                 bool(result["benchmark"].get("table_detected")) for result in table_results
@@ -397,9 +514,15 @@ async def _run_backend(
     started = time.monotonic()
 
     if backend == "mineru":
-        content_list = await run_mineru(pdf, backend_dir)
+        content_list = await run_mineru(pdf, backend_dir, allow_fallback=False)
         drafts = content_list_to_segments(load_content_list(content_list))
         raw_drafts = list(drafts)
+        raw_quality = evaluate_parse(
+            raw_drafts,
+            n_pages=n_pages,
+            native_text_by_page=native_text_by_page,
+        )
+        raw_stats = _stats(raw_drafts)
         backfilled_pages: list[int] = []
         if has_text:
             drafts, backfilled_pages = await asyncio.to_thread(
@@ -412,6 +535,12 @@ async def _run_backend(
         await run_paddle(pdf, backend_dir)
         drafts = paddle_to_segments(backend_dir)
         raw_drafts = list(drafts)
+        raw_quality = evaluate_parse(
+            raw_drafts,
+            n_pages=n_pages,
+            native_text_by_page=native_text_by_page,
+        )
+        raw_stats = _stats(raw_drafts)
         backfilled_pages = []
     else:
         raise ValueError(f"неизвестный backend: {backend}")
@@ -422,11 +551,7 @@ async def _run_backend(
         n_pages=n_pages,
         native_text_by_page=native_text_by_page,
     )
-    raw_quality = evaluate_parse(
-        raw_drafts,
-        n_pages=n_pages,
-        native_text_by_page=native_text_by_page,
-    )
+    final_stats = _stats(drafts)
     return {
         "status": "ok",
         "latency_s": latency_s,
@@ -438,7 +563,8 @@ async def _run_backend(
             raw_report=raw_quality,
             backfilled_pages=backfilled_pages,
         ),
-        **_stats(drafts),
+        "raw_stats": raw_stats,
+        **final_stats,
     }
 
 
@@ -476,12 +602,15 @@ async def _main(args: argparse.Namespace) -> None:
         verified_sha256[filename] = actual_sha256
 
     output: dict[str, Any] = {
+        "benchmark_schema_version": 2,
         "corpus_manifest": str(manifest_path),
         "source": manifest["source"],
         "source_revision": manifest.get("source_revision"),
         "backends": all_backends,
         "external_predictions": {backend: str(directory) for backend, directory in prediction_dirs.items()},
         "categories": args.categories,
+        "run_label": getattr(args, "run_label", None),
+        "runtime_provenance": getattr(args, "runtime_provenance", None),
         "results": {},
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -536,9 +665,27 @@ def main() -> None:
     )
     parser.add_argument("--categories", nargs="+")
     parser.add_argument("--limit", type=int, default=0, help="первые N страниц после фильтра")
+    parser.add_argument(
+        "--run-label",
+        help="устойчивая метка запуска, например mineru-3.4.4-a100",
+    )
+    parser.add_argument(
+        "--runtime-provenance",
+        type=Path,
+        help="JSON с версиями клиента, сервера, vLLM и точной ревизией модели",
+    )
     args = parser.parse_args()
     if args.limit < 0:
         parser.error("--limit должен быть >= 0")
+    if args.run_label is not None and not _RUN_LABEL.fullmatch(args.run_label):
+        parser.error("--run-label должен соответствовать [a-z0-9][a-z0-9._-]{0,127}")
+    if (args.run_label is None) != (args.runtime_provenance is None):
+        parser.error("--run-label и --runtime-provenance должны передаваться вместе")
+    if args.runtime_provenance is not None:
+        try:
+            args.runtime_provenance = _load_runtime_provenance(args.runtime_provenance)
+        except ValueError as exc:
+            parser.error(str(exc))
     predictions = dict(_parse_prediction_spec(spec) for spec in args.prediction)
     if len(predictions) != len(args.prediction):
         parser.error("имена --prediction должны быть уникальны")

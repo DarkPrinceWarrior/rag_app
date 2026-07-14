@@ -25,6 +25,7 @@ from rag_app.db.models import SegmentKind
 from rag_app.pipeline.segments import SegmentDraft
 
 logger = logging.getLogger(__name__)
+_PINNED_MINERU_BIN = Path("/root/services/mineru/current/bin/mineru")
 
 
 class NoTextLayerError(Exception):
@@ -75,32 +76,43 @@ async def run_mineru(
     backend: str | None = None,
     method: str | None = None,
     lang: str | None = None,
+    allow_fallback: bool = True,
 ) -> Path:
     """Запуск mineru CLI; возвращает путь к *_content_list.json.
 
-    backend/method/lang переопределяют дефолты (settings). Для форс-OCR битого
-    cmap используем backend="vlm-engine" (MinerU 3.3 VLM — multilingual, не нужен
-    -m/-l); pipeline-бэкенд требует -m/-l.
+    backend/method/lang переопределяют дефолты (settings). allow_fallback=False
+    запрещает штатную подмену VLM на pipeline в квалификационных прогонах. Для
+    форс-OCR битого cmap используем backend="vlm-engine" (MinerU 3.3 VLM —
+    multilingual, не нужен -m/-l); pipeline-бэкенд требует -m/-l.
 
     Девайс в MinerU 3.x задаётся только через env MINERU_DEVICE_MODE
     (флага -d в CLI больше нет).
     """
     # mineru: явный путь из настроек (изолированный venv для VLM/vllm) или сосед
     # текущего python (общий venv); PATH в tmux/systemd может бинарь не содержать
-    mineru_bin = (
-        Path(settings.mineru_bin) if settings.mineru_bin else Path(sys.executable).with_name("mineru")
-    )
+    try:
+        pinned_runtime_available = _PINNED_MINERU_BIN.exists()
+    except OSError:
+        pinned_runtime_available = False
+    if settings.mineru_bin:
+        mineru_bin = Path(settings.mineru_bin)
+    elif pinned_runtime_available:
+        mineru_bin = _PINNED_MINERU_BIN
+    else:
+        mineru_bin = Path(sys.executable).with_name("mineru")
     binpath = str(mineru_bin) if mineru_bin.exists() else "mineru"
     # vllm-движок MinerU не уважает MINERU_DEVICE_MODE и берёт cuda:0 → пиннингуем
     # карту через CUDA_VISIBLE_DEVICES. PATH с .venv/bin: vllm зовёт `ninja` для
     # JIT-компиляции — без него VLM-движок падает на инициализации.
     gpu_idx = settings.mineru_device.rsplit(":", 1)[-1]
     venv_bin = str(Path(sys.executable).parent)
+    mineru_bin_dir = str(Path(binpath).parent) if binpath != "mineru" else venv_bin
+    executable_path = os.pathsep.join(dict.fromkeys((mineru_bin_dir, venv_bin)))
     env = dict(
         os.environ,
         CUDA_VISIBLE_DEVICES=gpu_idx,
         MINERU_DEVICE_MODE="cuda:0",
-        PATH=venv_bin + os.pathsep + os.environ.get("PATH", ""),
+        PATH=executable_path + os.pathsep + os.environ.get("PATH", ""),
     )
 
     def build(be: str) -> list[str]:
@@ -139,7 +151,7 @@ async def run_mineru(
     except Exception as exc:
         # VLM-сервер недоступен/упал → не блокируем документ, парсим pipeline'ом
         # (sorted() предпочтёт «auto/» над «vlm/», если остался частичный вывод)
-        if be != "pipeline" and "pipeline" not in (backend or ""):
+        if allow_fallback and be != "pipeline" and "pipeline" not in (backend or ""):
             logger.warning("mineru backend=%s упал (%s) — фолбэк на pipeline", be, exc)
             return await _run(build("pipeline"))
         raise
