@@ -239,6 +239,10 @@ class Settings(BaseSettings):
     # Постраничная маршрутизация пока только scaffold: off не вычисляет решения,
     # shadow пишет обезличенные сигналы, canary в будущем ограничивается allowlist.
     parser_page_router_mode: Literal["off", "shadow", "canary"] = "off"
+    # Версионированное дерево документа: off не строит/не читает артефакт,
+    # shadow считает альтернативные чанки без переключения RAG, active выбирает
+    # их только после полной локальной валидации с откатом на плоский чанкинг.
+    document_tree_mode: Literal["off", "shadow", "active"] = "off"
     parser_page_router_owner_subs: list[str] = []
     parser_page_router_max_pages: int = 12
     parser_page_router_min_score: float = 0.70
