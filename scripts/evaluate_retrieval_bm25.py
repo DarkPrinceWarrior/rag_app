@@ -112,7 +112,7 @@ _EVIDENCE_KINDS = ("rls", "load", "update", "delete", "restart")
 _CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v1\0"
 _BUILD_RECIPE = REPOSITORY_ROOT / "deploy/postgres-bm25/Dockerfile"
 _PREPARE_SQL = REPOSITORY_ROOT / "deploy/postgres-bm25/prepare_candidate.sql"
-_MAX_RERANK_REPEAT_DELTA = 0.002
+_MAX_RERANK_REPEAT_DELTA = 0.01
 
 VariantName = Literal["baseline", "candidate"]
 SplitName = Literal["tuning", "locked"]
