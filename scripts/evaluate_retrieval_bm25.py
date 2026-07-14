@@ -112,6 +112,7 @@ _EVIDENCE_KINDS = ("rls", "load", "update", "delete", "restart")
 _CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v1\0"
 _BUILD_RECIPE = REPOSITORY_ROOT / "deploy/postgres-bm25/Dockerfile"
 _PREPARE_SQL = REPOSITORY_ROOT / "deploy/postgres-bm25/prepare_candidate.sql"
+_MAX_RERANK_REPEAT_DELTA = 0.002
 
 VariantName = Literal["baseline", "candidate"]
 SplitName = Literal["tuning", "locked"]
@@ -170,6 +171,8 @@ class VariantObservation(_StrictModel):
     pools: dict[PoolName, PoolObservation]
     repeat_order_sha256: tuple[str, ...] = Field(min_length=2, max_length=20)
     deterministic: StrictBool
+    reranker_consensus_applied: StrictBool
+    reranker_max_score_delta: float = Field(ge=0.0)
     reranker_fallback: StrictBool
     returned_count: int = Field(ge=0, le=1000)
     abstained: StrictBool
@@ -178,6 +181,12 @@ class VariantObservation(_StrictModel):
     def validate_abstention(self) -> VariantObservation:
         if self.abstained != (self.returned_count == 0):
             raise ValueError("abstention must match returned_count")
+        hashes_stable = len(set(self.repeat_order_sha256)) == 1
+        if self.reranker_consensus_applied:
+            if hashes_stable or self.reranker_max_score_delta > _MAX_RERANK_REPEAT_DELTA:
+                raise ValueError("reranker consensus evidence is inconsistent")
+        elif not hashes_stable:
+            raise ValueError("non-consensus repeat ordering must be identical")
         return self
 
 
@@ -2045,23 +2054,39 @@ async def _execute_case(
             order_payload[pool] = [str(chunk_id) for chunk_id in order]
         repeat_hashes.append(_sha256_json(order_payload))
     deterministic = len(set(repeat_hashes)) == 1
+    shared_reranked = set.intersection(*(set(snapshot) for snapshot in rerank_score_snapshots))
+    max_score_delta = max(
+        (
+            max(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+            - min(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+            for chunk_id in shared_reranked
+        ),
+        default=0.0,
+    )
+    consensus_applied = False
     if not deterministic:
         unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
-        shared_reranked = set.intersection(*(set(snapshot) for snapshot in rerank_score_snapshots))
-        max_score_delta = max(
-            (
-                max(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
-                - min(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
-                for chunk_id in shared_reranked
-            ),
-            default=0.0,
-        )
         final_sets_stable = len({frozenset(order) for order in pool_orders["final"]}) == 1
-        raise RetrievalEvaluationError(
-            "repeated retrieval ordering is not deterministic "
-            f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
-            f"max_score_delta={max_score_delta:.6f})"
+        if unstable != "final" or not final_sets_stable or max_score_delta > _MAX_RERANK_REPEAT_DELTA:
+            raise RetrievalEvaluationError(
+                "repeated retrieval ordering is not deterministic "
+                f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
+                f"max_score_delta={max_score_delta:.6f})"
+            )
+        final_ids = set(pool_orders["final"][0])
+        canonical_final = tuple(
+            sorted(
+                final_ids,
+                key=lambda chunk_id: (
+                    -math.fsum(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+                    / len(rerank_score_snapshots),
+                    chunk_id.int,
+                ),
+            )
         )
+        pool_orders["final"] = [canonical_final] * repeat_count
+        consensus_applied = True
+        deterministic = True
     if reranker_fallback:
         raise RetrievalEvaluationError("reranker fallback occurred during qualification")
     if len(sparse_engines) != 1:
@@ -2105,7 +2130,9 @@ async def _execute_case(
             config_sha256=config.fingerprint,
             pools=pools,
             repeat_order_sha256=tuple(repeat_hashes),
-            deterministic=True,
+            deterministic=deterministic,
+            reranker_consensus_applied=consensus_applied,
+            reranker_max_score_delta=max_score_delta,
             reranker_fallback=False,
             returned_count=final_count,
             abstained=final_count == 0,

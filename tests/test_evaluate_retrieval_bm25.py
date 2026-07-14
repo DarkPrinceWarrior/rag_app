@@ -257,17 +257,26 @@ class _Session:
 
 
 class _FakeRetriever:
-    def __init__(self, chunk: RetrievedChunk, *, flip: bool = False) -> None:
+    def __init__(
+        self,
+        chunk: RetrievedChunk,
+        *,
+        flip: bool = False,
+        reorder_chunk: RetrievedChunk | None = None,
+    ) -> None:
         self.chunk = chunk
         self.flip = flip
+        self.reorder_chunk = reorder_chunk
         self.calls = 0
 
     async def retrieve_with_trace(self, session, query, **kwargs):
         del session, query
         assert current_principal().user_sub == "owner-a"
         self.calls += 1
-        rows = (self.chunk,)
+        rows = (self.chunk,) if self.reorder_chunk is None else (self.chunk, self.reorder_chunk)
         final = () if self.flip and self.calls % 2 == 0 else rows
+        if self.reorder_chunk is not None and self.calls % 2 == 0:
+            final = tuple(reversed(final))
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
             sparse_engine=(
@@ -311,7 +320,13 @@ class _LoadRetriever(_FakeRetriever):
             self.active -= 1
 
 
-def _execute_artifact(*, index: int = 1, answerable: bool = True, flip: bool = False):
+def _execute_artifact(
+    *,
+    index: int = 1,
+    answerable: bool = True,
+    flip: bool = False,
+    reorder: bool = False,
+):
     record, sidecar, chunk_id, _ = _case(index, owner="owner-a", answerable=answerable)
     binding = runner.build_case_bindings([record], {record.case_id: sidecar})[record.case_id]
     document_id = sidecar.source_documents[0].document_id
@@ -339,10 +354,30 @@ def _execute_artifact(*, index: int = 1, answerable: bool = True, flip: bool = F
             corpus_sha256="a" * 64,
         ),
     )
+    reorder_chunk = (
+        RetrievedChunk(
+            id=uuid.uuid5(uuid.NAMESPACE_URL, f"chunk:owner-a:{index}:rerank-tie"),
+            document_id=document_id,
+            filename="private.pdf",
+            heading_path="Synthetic",
+            kind="section",
+            page_start=0,
+            page_end=0,
+            text_en="private alternate body",
+            text_ru="",
+            meta={},
+        )
+        if reorder
+        else None
+    )
     return (
         asyncio.run(
             runner._execute_case(
-                retriever=_FakeRetriever(chunk, flip=flip),
+                retriever=_FakeRetriever(
+                    chunk,
+                    flip=flip,
+                    reorder_chunk=reorder_chunk,
+                ),
                 sessionmaker=lambda: _Session(),
                 binding=binding,
                 scope=scope,
@@ -374,6 +409,17 @@ def test_case_execution_sets_principal_and_serializes_no_content() -> None:
 def test_case_execution_fails_on_nondeterministic_order() -> None:
     with pytest.raises(runner.RetrievalEvaluationError, match="not deterministic"):
         _execute_artifact(flip=True)
+
+
+def test_case_execution_applies_bounded_reranker_consensus() -> None:
+    artifact, _, _ = _execute_artifact(reorder=True)
+
+    assert artifact.observation.deterministic is True
+    assert artifact.observation.reranker_consensus_applied is True
+    assert artifact.observation.reranker_max_score_delta == 0.0
+    assert len(set(artifact.observation.repeat_order_sha256)) == 2
+    final_ids = artifact.observation.pools["final"].ranked_chunk_ids
+    assert final_ids == tuple(sorted(final_ids, key=lambda chunk_id: chunk_id.int))
 
 
 def test_no_answer_aggregation_reports_returned_and_abstained_counts() -> None:
