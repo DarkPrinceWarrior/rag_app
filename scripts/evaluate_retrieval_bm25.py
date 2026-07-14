@@ -114,6 +114,7 @@ _BUILD_RECIPE = REPOSITORY_ROOT / "deploy/postgres-bm25/Dockerfile"
 _PREPARE_SQL = REPOSITORY_ROOT / "deploy/postgres-bm25/prepare_candidate.sql"
 _MAX_RERANK_REPEAT_DELTA = 0.01
 _SCORE_EPSILON = 1e-12
+_MIN_RERANK_RANK_AGREEMENT = 0.9
 _QUERY_EMBEDDING_PROTOCOL: Literal["single-live-vector-per-question-v1"] = (
     "single-live-vector-per-question-v1"
 )
@@ -177,6 +178,8 @@ class VariantObservation(_StrictModel):
     repeat_order_sha256: tuple[str, ...] = Field(min_length=2, max_length=20)
     deterministic: StrictBool
     reranker_consensus_applied: StrictBool
+    reranker_consensus_method: Literal["none", "borda-rank-v1", "mean-score-v1"]
+    reranker_min_pairwise_rank_agreement: float = Field(ge=0.0, le=1.0)
     reranker_max_score_delta: float = Field(ge=0.0)
     reranker_all_max_score_delta: float = Field(ge=0.0)
     reranker_fallback: StrictBool
@@ -187,14 +190,32 @@ class VariantObservation(_StrictModel):
     def validate_abstention(self) -> VariantObservation:
         if self.abstained != (self.returned_count == 0):
             raise ValueError("abstention must match returned_count")
+        if not self.deterministic:
+            raise ValueError("only deterministic qualification observations may be serialized")
         hashes_stable = len(set(self.repeat_order_sha256)) == 1
         if self.reranker_consensus_applied:
-            if (
-                hashes_stable
-                or self.reranker_max_score_delta > _MAX_RERANK_REPEAT_DELTA + _SCORE_EPSILON
-            ):
+            if hashes_stable or self.reranker_consensus_method == "none":
                 raise ValueError("reranker consensus evidence is inconsistent")
-        elif not hashes_stable:
+            if (
+                self.reranker_consensus_method == "mean-score-v1"
+                and self.reranker_max_score_delta > _MAX_RERANK_REPEAT_DELTA + _SCORE_EPSILON
+            ):
+                raise ValueError("mean-score reranker consensus exceeds its delta cap")
+            if (
+                self.reranker_consensus_method == "borda-rank-v1"
+                and self.reranker_min_pairwise_rank_agreement < _MIN_RERANK_RANK_AGREEMENT
+            ):
+                raise ValueError("Borda reranker consensus has insufficient rank agreement")
+            if (
+                self.reranker_consensus_method == "mean-score-v1"
+                and self.reranker_min_pairwise_rank_agreement != 0.0
+            ):
+                raise ValueError("mean-score consensus must use the rank-agreement sentinel")
+        elif (
+            not hashes_stable
+            or self.reranker_consensus_method != "none"
+            or self.reranker_min_pairwise_rank_agreement != 1.0
+        ):
             raise ValueError("non-consensus repeat ordering must be identical")
         if self.reranker_max_score_delta > self.reranker_all_max_score_delta:
             raise ValueError("output reranker delta exceeds the full candidate delta")
@@ -2116,6 +2137,45 @@ def _expected_sparse_engine(record: GoldRecord, backend: SparseBackend) -> Spars
     return expected
 
 
+def _rank_agreement(left: Sequence[uuid.UUID], right: Sequence[uuid.UUID]) -> float:
+    if len(left) != len(right) or set(left) != set(right):
+        raise RetrievalEvaluationError("rank agreement requires the same candidate set")
+    if len(left) < 2:
+        return 1.0
+    right_positions = {chunk_id: index for index, chunk_id in enumerate(right)}
+    concordant = 0
+    pair_count = len(left) * (len(left) - 1) // 2
+    for left_index, first in enumerate(left):
+        for second in left[left_index + 1 :]:
+            if right_positions[first] < right_positions[second]:
+                concordant += 1
+    return concordant / pair_count
+
+
+def _borda_rank_consensus(
+    orders: Sequence[tuple[uuid.UUID, ...]],
+) -> tuple[tuple[uuid.UUID, ...], float]:
+    if not orders or not orders[0]:
+        raise RetrievalEvaluationError("Borda consensus requires non-empty rankings")
+    candidate_set = set(orders[0])
+    if any(len(order) != len(orders[0]) or set(order) != candidate_set for order in orders):
+        raise RetrievalEvaluationError("Borda consensus requires a stable candidate set")
+    rank_sums = {chunk_id: 0 for chunk_id in candidate_set}
+    for order in orders:
+        for rank, chunk_id in enumerate(order):
+            rank_sums[chunk_id] += rank
+    canonical = tuple(sorted(candidate_set, key=lambda chunk_id: (rank_sums[chunk_id], chunk_id.int)))
+    min_pairwise_agreement = min(
+        (
+            _rank_agreement(left, right)
+            for left_index, left in enumerate(orders)
+            for right in orders[left_index + 1 :]
+        ),
+        default=1.0,
+    )
+    return canonical, min_pairwise_agreement
+
+
 async def _execute_case(
     *,
     retriever: TraceRetriever,
@@ -2208,34 +2268,43 @@ async def _execute_case(
         default=0.0,
     )
     consensus_applied = False
+    consensus_method: Literal["none", "borda-rank-v1", "mean-score-v1"] = "none"
+    min_pairwise_rank_agreement = 1.0
     if not deterministic:
         unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
         final_sets_stable = len({frozenset(order) for order in pool_orders["final"]}) == 1
         final_lengths = {len(order) for order in pool_orders["final"]}
         final_count = next(iter(final_lengths)) if len(final_lengths) == 1 else 0
-        can_apply_consensus = (
-            unstable == "final"
-            and len(final_lengths) == 1
-            and final_count > 0
-            and max_score_delta <= _MAX_RERANK_REPEAT_DELTA + _SCORE_EPSILON
-        )
+        can_apply_consensus = unstable == "final" and len(final_lengths) == 1 and final_count > 0
+        canonical_final: tuple[uuid.UUID, ...] = ()
+        if can_apply_consensus and final_sets_stable:
+            canonical_final, min_pairwise_rank_agreement = _borda_rank_consensus(
+                pool_orders["final"]
+            )
+            can_apply_consensus = min_pairwise_rank_agreement >= _MIN_RERANK_RANK_AGREEMENT
+            consensus_method = "borda-rank-v1"
+        elif can_apply_consensus:
+            can_apply_consensus = max_score_delta <= _MAX_RERANK_REPEAT_DELTA + _SCORE_EPSILON
+            consensus_method = "mean-score-v1"
+            min_pairwise_rank_agreement = 0.0
+            canonical_final = tuple(
+                sorted(
+                    output_ids,
+                    key=lambda chunk_id: (
+                        -math.fsum(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+                        / len(rerank_score_snapshots),
+                        chunk_id.int,
+                    ),
+                )[:final_count]
+            )
         if not can_apply_consensus:
             raise RetrievalEvaluationError(
                 "repeated retrieval ordering is not deterministic "
                 f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
+                f"min_pairwise_rank_agreement={min_pairwise_rank_agreement:.6f},"
                 f"max_score_delta={max_score_delta:.6f},"
                 f"all_reranker_score_delta={all_score_delta:.6f})"
             )
-        canonical_final = tuple(
-            sorted(
-                output_ids,
-                key=lambda chunk_id: (
-                    -math.fsum(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
-                    / len(rerank_score_snapshots),
-                    chunk_id.int,
-                ),
-            )[:final_count]
-        )
         pool_orders["final"] = [canonical_final] * repeat_count
         consensus_applied = True
         deterministic = True
@@ -2286,6 +2355,8 @@ async def _execute_case(
             repeat_order_sha256=tuple(repeat_hashes),
             deterministic=deterministic,
             reranker_consensus_applied=consensus_applied,
+            reranker_consensus_method=consensus_method,
+            reranker_min_pairwise_rank_agreement=min_pairwise_rank_agreement,
             reranker_max_score_delta=max_score_delta,
             reranker_all_max_score_delta=all_score_delta,
             reranker_fallback=False,

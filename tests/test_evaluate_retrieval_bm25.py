@@ -268,6 +268,8 @@ class _FakeRetriever:
         duplicate_candidate: bool = False,
         irrelevant_jitter: bool = False,
         never_final_chunk: RetrievedChunk | None = None,
+        minor_reorder_chunks: tuple[RetrievedChunk, ...] = (),
+        divergent_reorder: bool = False,
     ) -> None:
         self.chunk = chunk
         self.flip = flip
@@ -277,6 +279,8 @@ class _FakeRetriever:
         self.duplicate_candidate = duplicate_candidate
         self.irrelevant_jitter = irrelevant_jitter
         self.never_final_chunk = never_final_chunk
+        self.minor_reorder_chunks = minor_reorder_chunks
+        self.divergent_reorder = divergent_reorder
         self.calls = 0
 
     async def retrieve_with_trace(self, session, query, **kwargs):
@@ -284,12 +288,20 @@ class _FakeRetriever:
         assert current_principal().user_sub == "owner-a"
         self.calls += 1
         rows = (self.chunk,) if self.reorder_chunk is None else (self.chunk, self.reorder_chunk)
+        rows = (*rows, *self.minor_reorder_chunks)
         if self.never_final_chunk is not None:
             rows = (*rows, self.never_final_chunk)
         final = () if self.flip and self.calls % 2 == 0 else rows
         reranked = rows
         if self.reorder_chunk is not None and self.calls % 2 == 0:
             reranked = tuple(reversed(rows))
+            final = reranked
+        if self.minor_reorder_chunks and self.calls % 2 == 0:
+            reranked = (
+                (*rows[1:9], rows[0], rows[9])
+                if self.divergent_reorder
+                else (*rows[:-2], rows[-1], rows[-2])
+            )
             final = reranked
         if self.swap_boundary:
             first = self.calls % 2
@@ -372,6 +384,8 @@ def _execute_artifact(
     duplicate_candidate: bool = False,
     irrelevant_jitter: bool = False,
     never_final_tie: bool = False,
+    minor_reorder: bool = False,
+    divergent_reorder: bool = False,
 ):
     record, sidecar, chunk_id, _ = _case(index, owner="owner-a", answerable=answerable)
     binding = runner.build_case_bindings([record], {record.case_id: sidecar})[record.case_id]
@@ -437,6 +451,25 @@ def _execute_artifact(
         if never_final_tie
         else None
     )
+    minor_reorder_chunks = (
+        tuple(
+            RetrievedChunk(
+                id=uuid.uuid5(uuid.NAMESPACE_URL, f"chunk:owner-a:{index}:minor-reorder:{position}"),
+                document_id=document_id,
+                filename="private.pdf",
+                heading_path="Synthetic",
+                kind="section",
+                page_start=0,
+                page_end=0,
+                text_en=f"private alternate body {position}",
+                text_ru="",
+                meta={},
+            )
+            for position in range(9)
+        )
+        if minor_reorder or divergent_reorder
+        else ()
+    )
     return (
         asyncio.run(
             runner._execute_case(
@@ -449,6 +482,8 @@ def _execute_artifact(
                     duplicate_candidate=duplicate_candidate,
                     irrelevant_jitter=irrelevant_jitter,
                     never_final_chunk=never_final_chunk,
+                    minor_reorder_chunks=minor_reorder_chunks,
+                    divergent_reorder=divergent_reorder,
                 ),
                 sessionmaker=lambda: _Session(),
                 binding=binding,
@@ -484,15 +519,25 @@ def test_case_execution_fails_on_nondeterministic_order() -> None:
         _execute_artifact(flip=True)
 
 
-def test_case_execution_applies_bounded_reranker_consensus() -> None:
-    artifact, _, _ = _execute_artifact(reorder=True)
+def test_case_execution_rejects_low_agreement_reranker_consensus() -> None:
+    with pytest.raises(runner.RetrievalEvaluationError, match="min_pairwise_rank_agreement=0.000000"):
+        _execute_artifact(reorder=True)
+
+
+def test_case_execution_applies_high_agreement_borda_consensus() -> None:
+    artifact, _, _ = _execute_artifact(minor_reorder=True)
 
     assert artifact.observation.deterministic is True
     assert artifact.observation.reranker_consensus_applied is True
+    assert artifact.observation.reranker_consensus_method == "borda-rank-v1"
+    assert artifact.observation.reranker_min_pairwise_rank_agreement == pytest.approx(44 / 45)
     assert artifact.observation.reranker_max_score_delta == 0.0
     assert len(set(artifact.observation.repeat_order_sha256)) == 2
-    final_ids = artifact.observation.pools["final"].ranked_chunk_ids
-    assert final_ids == tuple(sorted(final_ids, key=lambda chunk_id: chunk_id.int))
+
+
+def test_case_execution_rejects_midpoint_borda_false_pass() -> None:
+    with pytest.raises(runner.RetrievalEvaluationError, match="min_pairwise_rank_agreement=0.822222"):
+        _execute_artifact(divergent_reorder=True)
 
 
 def test_case_execution_applies_consensus_at_top_k_boundary() -> None:
@@ -500,6 +545,8 @@ def test_case_execution_applies_consensus_at_top_k_boundary() -> None:
 
     assert artifact.observation.deterministic is True
     assert artifact.observation.reranker_consensus_applied is True
+    assert artifact.observation.reranker_consensus_method == "mean-score-v1"
+    assert artifact.observation.reranker_min_pairwise_rank_agreement == 0.0
     assert artifact.observation.returned_count == 1
     assert len(set(artifact.observation.repeat_order_sha256)) == 2
 
@@ -509,6 +556,7 @@ def test_case_execution_consensus_cannot_introduce_never_final_candidate() -> No
 
     final_ids = artifact.observation.pools["final"].ranked_chunk_ids
     assert artifact.observation.reranker_consensus_applied is True
+    assert artifact.observation.reranker_consensus_method == "mean-score-v1"
     assert uuid.UUID(int=1) not in final_ids
 
 
