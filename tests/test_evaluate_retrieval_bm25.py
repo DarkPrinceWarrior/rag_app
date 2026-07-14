@@ -378,6 +378,41 @@ def test_no_answer_aggregation_reports_returned_and_abstained_counts() -> None:
     assert aggregate.no_answer_false_positive_rate == 1.0
 
 
+def test_no_answer_statistical_clusters_use_generation_lineage() -> None:
+    first_record, first_sidecar, _, _ = _case(
+        1,
+        owner="owner-a",
+        answerable=False,
+    )
+    second_record, second_sidecar, _, _ = _case(
+        2,
+        owner="owner-a",
+        answerable=False,
+    )
+    shared_generation = second_sidecar.generation.model_copy(update={"seed": first_sidecar.generation.seed})
+    same_lineage = second_sidecar.model_copy(update={"generation": shared_generation})
+    same_bindings = runner.build_case_bindings(
+        [first_record, second_record],
+        {
+            first_record.case_id: first_sidecar,
+            second_record.case_id: same_lineage,
+        },
+    )
+    distinct_bindings = runner.build_case_bindings(
+        [first_record, second_record],
+        {
+            first_record.case_id: first_sidecar,
+            second_record.case_id: second_sidecar,
+        },
+    )
+
+    same_clusters = runner._statistical_cluster_ids(same_bindings)
+    distinct_clusters = runner._statistical_cluster_ids(distinct_bindings)
+
+    assert len(set(same_clusters.values())) == 1
+    assert len(set(distinct_clusters.values())) == 2
+
+
 def test_sweep_selection_uses_quality_then_latency() -> None:
     base = dict(
         answerable_cases=1,

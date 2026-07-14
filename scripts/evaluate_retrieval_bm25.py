@@ -2461,12 +2461,19 @@ def _statistical_cluster_ids(
     result: dict[str, str] = {}
     for case_id, binding in bindings.items():
         evidence_documents = sorted({item.document_ref for item in binding.sidecar.exact_evidence})
-        if not evidence_documents:
-            evidence_documents = sorted({item.document_ref for item in binding.sidecar.source_documents})
-        payload = {
-            "scope_id": binding.record.scope_id,
-            "documents": evidence_documents,
-        }
+        payload: dict[str, Any]
+        if binding.record.answerable:
+            payload = {
+                "scope_id": binding.record.scope_id,
+                "documents": evidence_documents,
+            }
+        else:
+            payload = {
+                "scope_id": binding.record.scope_id,
+                "source_documents": sorted({item.document_ref for item in binding.sidecar.source_documents}),
+                "generation_model": binding.sidecar.generation.model,
+                "generation_seed": binding.sidecar.generation.seed,
+            }
         result[case_id] = f"cluster-sha256:{_sha256_json(payload)}"
     return result
 
