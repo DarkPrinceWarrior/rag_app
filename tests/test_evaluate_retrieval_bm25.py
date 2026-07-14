@@ -354,10 +354,17 @@ class _FakeRetriever:
 
 
 class _LoadRetriever(_FakeRetriever):
-    def __init__(self, chunk: RetrievedChunk, *, fail_call: int | None = None) -> None:
+    def __init__(
+        self,
+        chunk: RetrievedChunk,
+        *,
+        reranker_tracker: Any | None = None,
+        fail_call: int | None = None,
+    ) -> None:
         super().__init__(chunk)
         self.active = 0
         self.max_active = 0
+        self.reranker_tracker = reranker_tracker
         self.fail_call = fail_call
 
     async def retrieve_with_trace(self, session, query, **kwargs):
@@ -368,7 +375,13 @@ class _LoadRetriever(_FakeRetriever):
             if self.fail_call is not None and self.calls + 1 == self.fail_call:
                 self.calls += 1
                 raise RuntimeError("synthetic load failure")
-            return await super().retrieve_with_trace(session, query, **kwargs)
+            trace = await super().retrieve_with_trace(session, query, **kwargs)
+            if self.reranker_tracker is not None:
+                await self.reranker_tracker.rerank(
+                    query,
+                    [item.text_ru or item.text_en for item in trace.hybrid_pre_rerank],
+                )
+            return trace
         finally:
             self.active -= 1
 
@@ -588,6 +601,229 @@ class _CountingEmbedder(runner.Embedder):
         return [0.25] * runner.settings.embed_dim
 
 
+class _StableReranker:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    async def rerank(self, query: str, texts: list[str]) -> list[float]:
+        self.calls.append((query, tuple(texts)))
+        return [0.9 if text[:4000].endswith("a") else 0.8 for text in texts]
+
+
+class _AlternatingReranker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def rerank(self, query: str, texts: list[str]) -> list[float]:
+        del query
+        self.calls += 1
+        scores = [0.9, 0.1]
+        return scores if self.calls % 2 else list(reversed(scores))
+
+
+class _InvalidReranker:
+    async def rerank(self, query: str, texts: list[str]) -> list[float]:
+        del query
+        return [float("nan")] * len(texts)
+
+
+def _reranker_revision() -> Any:
+    return runner.ModelEndpointRevision(
+        model=runner.settings.rerank_model,
+        declared_revision="test-revision",
+        endpoint_metadata_sha256="a" * 64,
+        runtime_version_sha256="b" * 64,
+        weight_manifest_sha256="c" * 64,
+        model_config_sha256="d" * 64,
+    )
+
+
+def _collected_rerank_set(*, query: str = "private query") -> Any:
+    return runner._CollectedRerankSet(
+        case_id="ragq-test-bm25-0001",
+        query=query,
+        config_sha256="e" * 64,
+        backend="pg_textsearch",
+        rerank_min_score=0.1,
+        final_top_k=10,
+        candidates=((uuid.UUID(int=1), "private a"), (uuid.UUID(int=2), "private b")),
+    )
+
+
+def _collected_rerank_sets(*, query: str = "private query") -> tuple[Any, Any]:
+    candidate = _collected_rerank_set(query=query)
+    baseline = runner._CollectedRerankSet(
+        case_id=candidate.case_id,
+        query=candidate.query,
+        config_sha256=candidate.config_sha256,
+        backend="postgres_fts",
+        rerank_min_score=candidate.rerank_min_score,
+        final_top_k=candidate.final_top_k,
+        candidates=candidate.candidates,
+    )
+    return baseline, candidate
+
+
+def test_paired_reranker_canonical_prewarms_then_freezes() -> None:
+    delegate = _StableReranker()
+    reranker = runner._PairedReranker(delegate)
+    evidence = asyncio.run(
+        reranker.preload(
+            _collected_rerank_sets(),
+            questions=["private query"],
+            revision=_reranker_revision(),
+            replay_count=3,
+        )
+    )
+    calls_after_prewarm = len(delegate.calls)
+
+    first = asyncio.run(reranker.rerank("private query", ["private a", "private b"]))
+    second = asyncio.run(reranker.rerank("private query", ["private b", "private a"]))
+
+    assert calls_after_prewarm == 5
+    assert len(delegate.calls) == calls_after_prewarm
+    assert first == list(reversed(second))
+    assert evidence.unique_pair_count == 2
+    assert evidence.live_pair_score_count == 6
+    assert evidence.min_replay_rank_agreement == 1.0
+    assert evidence.batch_shape_sample_count == 2
+    assert evidence.min_batch_shape_rank_agreement == 1.0
+    assert "private" not in evidence.model_dump_json()
+    assert reranker.cache_stats() == (4, 0)
+
+
+def test_paired_reranker_frozen_miss_fails_without_live_call() -> None:
+    delegate = _StableReranker()
+    reranker = runner._PairedReranker(delegate)
+    asyncio.run(
+        reranker.preload(
+            _collected_rerank_sets(),
+            questions=["private query"],
+            revision=_reranker_revision(),
+            replay_count=3,
+        )
+    )
+    calls_after_prewarm = len(delegate.calls)
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="missed a measured pair"):
+        asyncio.run(reranker.rerank("private query", ["private unseen"]))
+
+    assert len(delegate.calls) == calls_after_prewarm
+    assert reranker.cache_stats() == (0, 1)
+
+
+def test_paired_reranker_rejects_unstable_split_half_ranking() -> None:
+    reranker = runner._PairedReranker(_AlternatingReranker())
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="rank agreement"):
+        asyncio.run(
+            reranker.preload(
+                _collected_rerank_sets(),
+                questions=["private query"],
+                revision=_reranker_revision(),
+                replay_count=3,
+            )
+        )
+
+
+def test_paired_reranker_rejects_invalid_live_scores() -> None:
+    reranker = runner._PairedReranker(_InvalidReranker())
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="scores are invalid"):
+        asyncio.run(
+            reranker.preload(
+                _collected_rerank_sets(),
+                questions=["private query"],
+                revision=_reranker_revision(),
+                replay_count=3,
+            )
+        )
+
+
+def test_paired_reranker_writes_attempt_before_live_failure(tmp_path: Path) -> None:
+    reranker = runner._PairedReranker(_InvalidReranker())
+    attempt = tmp_path / "reranker-attempt.json"
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="scores are invalid"):
+        asyncio.run(
+            reranker.preload(
+                _collected_rerank_sets(),
+                questions=["private query"],
+                revision=_reranker_revision(),
+                replay_count=3,
+                attempt_output=attempt,
+            )
+        )
+
+    payload = json.loads(attempt.read_text())
+    assert payload["attempt_id"]
+    assert "private" not in attempt.read_text()
+    assert attempt.stat().st_mode & 0o777 == 0o600
+
+
+def test_paired_reranker_coalesces_identical_truncated_inputs() -> None:
+    prefix = "x" * 4000
+    candidate_set = runner._CollectedRerankSet(
+        case_id="ragq-test-bm25-0001",
+        query="private query",
+        config_sha256="e" * 64,
+        backend="pg_textsearch",
+        rerank_min_score=0.1,
+        final_top_k=10,
+        candidates=(
+            (uuid.UUID(int=1), prefix + "a"),
+            (uuid.UUID(int=2), prefix + "b"),
+        ),
+    )
+    baseline_set = runner._CollectedRerankSet(
+        case_id=candidate_set.case_id,
+        query=candidate_set.query,
+        config_sha256=candidate_set.config_sha256,
+        backend="postgres_fts",
+        rerank_min_score=candidate_set.rerank_min_score,
+        final_top_k=candidate_set.final_top_k,
+        candidates=candidate_set.candidates,
+    )
+    delegate = _StableReranker()
+    reranker = runner._PairedReranker(delegate)
+
+    evidence = asyncio.run(
+        reranker.preload(
+            [baseline_set, candidate_set],
+            questions=["private query"],
+            revision=_reranker_revision(),
+            replay_count=3,
+        )
+    )
+    scores = asyncio.run(reranker.rerank("private query", [prefix + "a", prefix + "b"]))
+
+    assert evidence.unique_pair_count == 1
+    assert [len(texts) for _, texts in delegate.calls].count(1) == 3
+    assert [len(texts) for _, texts in delegate.calls].count(2) == 2
+    assert scores == [0.8, 0.8]
+    assert reranker.cache_stats() == (2, 0)
+
+
+def test_live_counting_reranker_records_calls_and_pairs() -> None:
+    reranker = runner._LiveCountingReranker(_StableReranker())
+
+    scores = asyncio.run(reranker.rerank("private query", ["private a", "private b"]))
+
+    assert scores == [0.9, 0.8]
+    assert reranker.live_call_count == 1
+    assert reranker.live_pair_score_count == 2
+
+
+def test_live_counting_reranker_rejects_invalid_scores_without_counting() -> None:
+    reranker = runner._LiveCountingReranker(_InvalidReranker())
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="invalid load scores"):
+        asyncio.run(reranker.rerank("private query", ["private a"]))
+
+    assert reranker.live_call_count == 0
+    assert reranker.live_pair_score_count == 0
+
+
 def test_paired_query_embedder_pins_vector_and_returns_a_copy() -> None:
     delegate = _CountingEmbedder()
     embedder = runner._PairedQueryEmbedder(delegate)
@@ -663,7 +899,7 @@ def test_no_answer_statistical_clusters_use_generation_lineage() -> None:
     assert len(set(distinct_clusters.values())) == 2
 
 
-def test_sweep_selection_uses_quality_then_latency() -> None:
+def test_sweep_selection_uses_quality_then_fingerprint() -> None:
     base = dict(
         answerable_cases=1,
         no_answer_cases=0,
@@ -686,6 +922,7 @@ def test_sweep_selection_uses_quality_then_latency() -> None:
         latency_ms={"mean": 5.0, "p50": 5.0, "p95": 5.0},
     )
     assert runner.select_tuning_config({"a" * 64: weaker, "b" * 64: stronger}) == "b" * 64
+    assert runner.select_tuning_config({"a" * 64: stronger, "b" * 64: stronger}) == "a" * 64
 
 
 def test_split_ignores_single_cluster_labels_without_document_leakage() -> None:
@@ -872,21 +1109,28 @@ def _load_inputs():
     return records, bindings, {records[0][0].scope_id: scope}, chunk
 
 
+def _load_reranker_tracker() -> Any:
+    return runner._LiveCountingReranker(_StableReranker())
+
+
 def test_generate_load_evidence_bounds_concurrency_and_aggregates(tmp_path: Path) -> None:
     records, bindings, scopes, chunk = _load_inputs()
-    retriever = _LoadRetriever(chunk)
+    tracker = _load_reranker_tracker()
+    retriever = _LoadRetriever(chunk, reranker_tracker=tracker)
     output = tmp_path / "load.json"
 
     envelope = asyncio.run(
         runner.generate_load_evidence(
             output=output,
             retriever=retriever,
+            reranker_tracker=tracker,
             sessionmaker=lambda: _Session(),
             bindings=bindings,
             scopes=scopes,
             locked_case_ids=[item[0].case_id for item in records],
             config=_config(),
             corpus_snapshot_sha256="a" * 64,
+            runtime_binding_sha256=_sha("runtime-binding"),
             concurrency=2,
             requests_per_backend=4,
         )
@@ -905,17 +1149,70 @@ def test_generate_load_evidence_bounds_concurrency_and_aggregates(tmp_path: Path
 
 def test_generate_load_evidence_fails_closed_on_request_error(tmp_path: Path) -> None:
     records, bindings, scopes, chunk = _load_inputs()
+    tracker = _load_reranker_tracker()
     with pytest.raises(runner.RetrievalEvaluationError, match="failed or missing"):
         asyncio.run(
             runner.generate_load_evidence(
                 output=tmp_path / "load.json",
-                retriever=_LoadRetriever(chunk, fail_call=2),
+                retriever=_LoadRetriever(
+                    chunk,
+                    reranker_tracker=tracker,
+                    fail_call=2,
+                ),
+                reranker_tracker=tracker,
                 sessionmaker=lambda: _Session(),
                 bindings=bindings,
                 scopes=scopes,
                 locked_case_ids=[item[0].case_id for item in records],
                 config=_config(),
                 corpus_snapshot_sha256="a" * 64,
+                runtime_binding_sha256=_sha("runtime-binding"),
+                concurrency=2,
+                requests_per_backend=2,
+            )
+        )
+
+
+def test_generate_load_evidence_rejects_zero_live_reranker_calls(tmp_path: Path) -> None:
+    records, bindings, scopes, chunk = _load_inputs()
+    tracker = _load_reranker_tracker()
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="did not execute"):
+        asyncio.run(
+            runner.generate_load_evidence(
+                output=tmp_path / "load.json",
+                retriever=_LoadRetriever(chunk),
+                reranker_tracker=tracker,
+                sessionmaker=lambda: _Session(),
+                bindings=bindings,
+                scopes=scopes,
+                locked_case_ids=[item[0].case_id for item in records],
+                config=_config(),
+                corpus_snapshot_sha256="a" * 64,
+                runtime_binding_sha256=_sha("runtime-binding"),
+                concurrency=2,
+                requests_per_backend=2,
+            )
+        )
+
+
+def test_generate_load_evidence_rejects_invalid_live_reranker_scores(tmp_path: Path) -> None:
+    records, bindings, scopes, chunk = _load_inputs()
+    tracker = runner._LiveCountingReranker(_InvalidReranker())
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="did not execute"):
+        asyncio.run(
+            runner.generate_load_evidence(
+                output=tmp_path / "load.json",
+                retriever=_LoadRetriever(chunk, reranker_tracker=tracker),
+                reranker_tracker=tracker,
+                sessionmaker=lambda: _Session(),
+                bindings=bindings,
+                scopes=scopes,
+                locked_case_ids=[item[0].case_id for item in records],
+                config=_config(),
+                corpus_snapshot_sha256="a" * 64,
+                runtime_binding_sha256=_sha("runtime-binding"),
                 concurrency=2,
                 requests_per_backend=2,
             )
@@ -1050,16 +1347,19 @@ def test_load_envelope_is_recomputed_from_raw_observations(tmp_path: Path) -> No
     records, bindings, scopes, chunk = _load_inputs()
     locked_ids = [item[0].case_id for item in records]
     output = tmp_path / "load.json"
+    tracker = _load_reranker_tracker()
     asyncio.run(
         runner.generate_load_evidence(
             output=output,
-            retriever=_LoadRetriever(chunk),
+            retriever=_LoadRetriever(chunk, reranker_tracker=tracker),
+            reranker_tracker=tracker,
             sessionmaker=lambda: _Session(),
             bindings=bindings,
             scopes=scopes,
             locked_case_ids=locked_ids,
             config=_config(),
             corpus_snapshot_sha256="a" * 64,
+            runtime_binding_sha256=_sha("runtime-binding"),
             concurrency=2,
             requests_per_backend=4,
         )
@@ -1074,7 +1374,9 @@ def test_load_envelope_is_recomputed_from_raw_observations(tmp_path: Path) -> No
             output,
             config=_config(),
             locked_case_ids=locked_ids,
+            bindings=bindings,
             corpus_snapshot_sha256="a" * 64,
+            runtime_binding_sha256=_sha("runtime-binding"),
             concurrency=2,
             requests_per_backend=4,
         )
@@ -1084,16 +1386,19 @@ def test_load_raw_rejects_declared_concurrency_above_observed_peak(tmp_path: Pat
     records, bindings, scopes, chunk = _load_inputs()
     locked_ids = [item[0].case_id for item in records]
     output = tmp_path / "load.json"
+    tracker = _load_reranker_tracker()
     asyncio.run(
         runner.generate_load_evidence(
             output=output,
-            retriever=_LoadRetriever(chunk),
+            retriever=_LoadRetriever(chunk, reranker_tracker=tracker),
+            reranker_tracker=tracker,
             sessionmaker=lambda: _Session(),
             bindings=bindings,
             scopes=scopes,
             locked_case_ids=locked_ids,
             config=_config(),
             corpus_snapshot_sha256="a" * 64,
+            runtime_binding_sha256=_sha("runtime-binding"),
             concurrency=2,
             requests_per_backend=4,
         )
@@ -1109,6 +1414,26 @@ def test_load_raw_rejects_declared_concurrency_above_observed_peak(tmp_path: Pat
             {**raw_payload, "embedding_protocol": "cached"},
             strict=True,
         )
+    for required_field in (
+        "reranker_protocol",
+        "reranker_live_call_count",
+        "reranker_live_pair_score_count",
+        "runtime_binding_sha256",
+    ):
+        incomplete_payload = dict(raw_payload)
+        incomplete_payload.pop(required_field)
+        with pytest.raises(ValueError):
+            runner.RawLoadEvidence.model_validate(incomplete_payload, strict=True)
+    with pytest.raises(ValueError):
+        runner.RawLoadEvidence.model_validate(
+            {**raw_payload, "reranker_protocol": "cached"},
+            strict=True,
+        )
+    with pytest.raises(ValueError):
+        runner.RawLoadEvidence.model_validate(
+            {**raw_payload, "reranker_live_call_count": 7},
+            strict=True,
+        )
     raw_payload["concurrency"] = 3
     raw_path.write_text(json.dumps(raw_payload, sort_keys=True))
     raw_path.chmod(0o600)
@@ -1118,7 +1443,9 @@ def test_load_raw_rejects_declared_concurrency_above_observed_peak(tmp_path: Pat
             output,
             config=_config(),
             locked_case_ids=locked_ids,
+            bindings=bindings,
             corpus_snapshot_sha256="a" * 64,
+            runtime_binding_sha256=_sha("runtime-binding"),
         )
 
 
