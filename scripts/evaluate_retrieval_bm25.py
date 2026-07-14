@@ -2067,22 +2067,34 @@ async def _execute_case(
     if not deterministic:
         unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
         final_sets_stable = len({frozenset(order) for order in pool_orders["final"]}) == 1
-        if unstable != "final" or not final_sets_stable or max_score_delta > _MAX_RERANK_REPEAT_DELTA:
+        final_lengths = {len(order) for order in pool_orders["final"]}
+        reranked_sets_stable = len({frozenset(snapshot) for snapshot in rerank_score_snapshots}) == 1
+        final_count = next(iter(final_lengths)) if len(final_lengths) == 1 else 0
+        can_apply_consensus = (
+            unstable == "final"
+            and reranked_sets_stable
+            and len(final_lengths) == 1
+            and final_count > 0
+            and max_score_delta <= _MAX_RERANK_REPEAT_DELTA
+        )
+        if not can_apply_consensus:
             raise RetrievalEvaluationError(
                 "repeated retrieval ordering is not deterministic "
                 f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
                 f"max_score_delta={max_score_delta:.6f})"
             )
-        final_ids = set(pool_orders["final"][0])
+        reranked_ids = set(rerank_score_snapshots[0])
+        if any(not set(order).issubset(reranked_ids) for order in pool_orders["final"]):
+            raise RetrievalEvaluationError("final retrieval results are not a reranked subset")
         canonical_final = tuple(
             sorted(
-                final_ids,
+                reranked_ids,
                 key=lambda chunk_id: (
                     -math.fsum(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
                     / len(rerank_score_snapshots),
                     chunk_id.int,
                 ),
-            )
+            )[:final_count]
         )
         pool_orders["final"] = [canonical_final] * repeat_count
         consensus_applied = True

@@ -263,10 +263,14 @@ class _FakeRetriever:
         *,
         flip: bool = False,
         reorder_chunk: RetrievedChunk | None = None,
+        swap_boundary: bool = False,
+        change_candidates: bool = False,
     ) -> None:
         self.chunk = chunk
         self.flip = flip
         self.reorder_chunk = reorder_chunk
+        self.swap_boundary = swap_boundary
+        self.change_candidates = change_candidates
         self.calls = 0
 
     async def retrieve_with_trace(self, session, query, **kwargs):
@@ -277,6 +281,9 @@ class _FakeRetriever:
         final = () if self.flip and self.calls % 2 == 0 else rows
         if self.reorder_chunk is not None and self.calls % 2 == 0:
             final = tuple(reversed(final))
+        if self.swap_boundary:
+            final = (rows[self.calls % 2],)
+        reranked = final if self.change_candidates else rows
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
             sparse_engine=(
@@ -285,7 +292,7 @@ class _FakeRetriever:
             dense=rows,
             sparse=rows,
             hybrid_pre_rerank=rows,
-            reranked=rows,
+            reranked=reranked,
             final=final,
             stage_latency_ms={
                 "embedding": 1.0,
@@ -326,6 +333,8 @@ def _execute_artifact(
     answerable: bool = True,
     flip: bool = False,
     reorder: bool = False,
+    swap_boundary: bool = False,
+    change_candidates: bool = False,
 ):
     record, sidecar, chunk_id, _ = _case(index, owner="owner-a", answerable=answerable)
     binding = runner.build_case_bindings([record], {record.case_id: sidecar})[record.case_id]
@@ -367,7 +376,7 @@ def _execute_artifact(
             text_ru="",
             meta={},
         )
-        if reorder
+        if reorder or swap_boundary or change_candidates
         else None
     )
     return (
@@ -377,6 +386,8 @@ def _execute_artifact(
                     chunk,
                     flip=flip,
                     reorder_chunk=reorder_chunk,
+                    swap_boundary=swap_boundary,
+                    change_candidates=change_candidates,
                 ),
                 sessionmaker=lambda: _Session(),
                 binding=binding,
@@ -420,6 +431,20 @@ def test_case_execution_applies_bounded_reranker_consensus() -> None:
     assert len(set(artifact.observation.repeat_order_sha256)) == 2
     final_ids = artifact.observation.pools["final"].ranked_chunk_ids
     assert final_ids == tuple(sorted(final_ids, key=lambda chunk_id: chunk_id.int))
+
+
+def test_case_execution_applies_consensus_at_top_k_boundary() -> None:
+    artifact, _, _ = _execute_artifact(swap_boundary=True)
+
+    assert artifact.observation.deterministic is True
+    assert artifact.observation.reranker_consensus_applied is True
+    assert artifact.observation.returned_count == 1
+    assert len(set(artifact.observation.repeat_order_sha256)) == 2
+
+
+def test_case_execution_rejects_changed_reranker_candidates() -> None:
+    with pytest.raises(runner.RetrievalEvaluationError, match="not deterministic"):
+        _execute_artifact(swap_boundary=True, change_candidates=True)
 
 
 def test_no_answer_aggregation_reports_returned_and_abstained_counts() -> None:
