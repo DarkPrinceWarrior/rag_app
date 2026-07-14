@@ -109,10 +109,14 @@ _GIT_SHA_PATTERN = r"^[0-9a-f]{40,64}$"
 _CASE_ID_PATTERN = r"^ragq-[a-z0-9][a-z0-9._-]{7,63}$"
 _CONTAINER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
 _EVIDENCE_KINDS = ("rls", "load", "update", "delete", "restart")
-_CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v1\0"
+_CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v2\0"
 _BUILD_RECIPE = REPOSITORY_ROOT / "deploy/postgres-bm25/Dockerfile"
 _PREPARE_SQL = REPOSITORY_ROOT / "deploy/postgres-bm25/prepare_candidate.sql"
 _MAX_RERANK_REPEAT_DELTA = 0.01
+_QUERY_EMBEDDING_PROTOCOL: Literal["single-live-vector-per-question-v1"] = (
+    "single-live-vector-per-question-v1"
+)
+_LOAD_EMBEDDING_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
 
 VariantName = Literal["baseline", "candidate"]
 SplitName = Literal["tuning", "locked"]
@@ -191,12 +195,14 @@ class VariantObservation(_StrictModel):
 
 
 class CaseArtifact(_StrictModel):
-    schema_version: Literal["retrieval-bm25-case-v1"] = "retrieval-bm25-case-v1"
+    schema_version: Literal["retrieval-bm25-case-v2"] = "retrieval-bm25-case-v2"
     run_id: str = Field(pattern=_SHA256_PATTERN)
     split: SplitName
     case_id: str = Field(pattern=_CASE_ID_PATTERN)
     gold_case_sha256: str = Field(pattern=_SHA256_PATTERN)
     question_sha256: str = Field(pattern=_SHA256_PATTERN)
+    query_embedding_protocol: Literal["single-live-vector-per-question-v1"]
+    query_embedding_sha256: str = Field(pattern=_SHA256_PATTERN)
     scope_id: str
     language: Literal["ru", "en", "zh"]
     hop_type: Literal["single", "multi", "cross_document"]
@@ -209,7 +215,7 @@ class CaseArtifact(_StrictModel):
 
 
 class CaseArtifactHmac(_StrictModel):
-    schema_version: Literal["retrieval-bm25-case-hmac-v1"] = "retrieval-bm25-case-hmac-v1"
+    schema_version: Literal["retrieval-bm25-case-hmac-v2"] = "retrieval-bm25-case-hmac-v2"
     key_id: str = Field(pattern=_SHA256_PATTERN)
     artifact_sha256: str = Field(pattern=_SHA256_PATTERN)
     run_id: str = Field(pattern=_SHA256_PATTERN)
@@ -252,11 +258,12 @@ class _RlsEvidence(_ExternalEvidenceBase):
 
 
 class _LoadEvidence(_ExternalEvidenceBase):
-    schema_version: Literal["retrieval-load-evidence-v1"]
+    schema_version: Literal["retrieval-load-evidence-v2"]
     kind: Literal["load"]
     config_sha256: str = Field(pattern=_SHA256_PATTERN)
     locked_case_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     raw_artifact_sha256: str = Field(pattern=_SHA256_PATTERN)
+    embedding_protocol: Literal["live-per-request-v1"]
     baseline: LoadEvidence
     candidate: LoadEvidence
 
@@ -290,10 +297,11 @@ class LoadRequestObservation(_StrictModel):
 
 
 class RawLoadEvidence(_StrictModel):
-    schema_version: Literal["retrieval-load-raw-v1"] = "retrieval-load-raw-v1"
+    schema_version: Literal["retrieval-load-raw-v2"] = "retrieval-load-raw-v2"
     corpus_snapshot_sha256: str = Field(pattern=_SHA256_PATTERN)
     config_sha256: str = Field(pattern=_SHA256_PATTERN)
     locked_case_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    embedding_protocol: Literal["live-per-request-v1"]
     concurrency: int = Field(ge=1, le=1000)
     requests_per_backend: int = Field(ge=1, le=100_000)
     started_at: datetime
@@ -417,8 +425,25 @@ class ScopeEvidence(_StrictModel):
     corpus_sha256: str = Field(pattern=_SHA256_PATTERN)
 
 
+class QueryEmbeddingEvidence(_StrictModel):
+    protocol: Literal["single-live-vector-per-question-v1"]
+    cache_scope: Literal["run"]
+    reuse_scope: Literal["tuning+locked+variants+repeats"]
+    preloaded: Literal[True]
+    unique_question_count: int = Field(ge=1, le=500)
+    live_call_count: int = Field(ge=1, le=500)
+    vector_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    config_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def validate_live_calls(self) -> QueryEmbeddingEvidence:
+        if self.live_call_count != self.unique_question_count:
+            raise ValueError("query embedding live-call count must equal unique questions")
+        return self
+
+
 class RunManifest(_StrictModel):
-    schema_version: Literal["retrieval-bm25-run-v1"] = "retrieval-bm25-run-v1"
+    schema_version: Literal["retrieval-bm25-run-v2"] = "retrieval-bm25-run-v2"
     run_id: str = Field(pattern=_SHA256_PATTERN)
     mode: RunMode
     repository_sha: str = Field(pattern=_GIT_SHA_PATTERN)
@@ -435,6 +460,8 @@ class RunManifest(_StrictModel):
     model_revisions: ModelRevisionEvidence
     database: DatabaseEvidence
     external_evidence: tuple[EvidenceReference, ...]
+    query_embedding: QueryEmbeddingEvidence
+    load_embedding_protocol: Literal["live-per-request-v1"]
     repeat_count: int = Field(ge=2, le=20)
     created_at: datetime
 
@@ -454,11 +481,13 @@ class AggregateMetrics(_StrictModel):
 
 
 class FinalReport(_StrictModel):
-    schema_version: Literal["retrieval-bm25-report-v1"] = "retrieval-bm25-report-v1"
+    schema_version: Literal["retrieval-bm25-report-v2"] = "retrieval-bm25-report-v2"
     run_id: str = Field(pattern=_SHA256_PATTERN)
     manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     policy_sha256: str = Field(pattern=_SHA256_PATTERN)
     selected_candidate_config_sha256: str = Field(pattern=_SHA256_PATTERN)
+    query_embedding: QueryEmbeddingEvidence
+    load_embedding_protocol: Literal["live-per-request-v1"]
     tuning_results: dict[str, dict[PoolName, AggregateMetrics]]
     locked_results: dict[VariantName, dict[PoolName, AggregateMetrics]]
     locked_slices: dict[VariantName, dict[str, dict[PoolName, AggregateMetrics]]]
@@ -536,6 +565,90 @@ class TraceRetriever(Protocol):
         rerank_top_k: int | None = None,
         rerank_min_score: float | None = None,
     ) -> RetrievalTrace: ...
+
+
+class _PairedQueryEmbedder(Embedder):
+    """Pin one live vector per question so sparse A/B shares an exact dense input."""
+
+    def __init__(self, delegate: Embedder) -> None:
+        self._delegate = delegate
+        self._query_vectors: dict[str, tuple[float, ...]] = {}
+        self._allowed_questions: frozenset[str] | None = None
+        self._live_call_count = 0
+
+    async def embed(self, texts: list[str], batch: int | None = None) -> list[list[float]]:
+        return await self._delegate.embed(texts, batch)
+
+    async def embed_query(self, query: str) -> list[float]:
+        cached = self._query_vectors.get(query)
+        if cached is None:
+            if self._allowed_questions is not None and query not in self._allowed_questions:
+                raise RetrievalEvaluationError("query embedding cache received an unknown question")
+            vector = await self._delegate.embed_query(query)
+            if (
+                len(vector) != settings.embed_dim
+                or not all(math.isfinite(value) for value in vector)
+                or math.fsum(value * value for value in vector) <= 0.0
+            ):
+                raise RetrievalEvaluationError("query embedding is invalid")
+            cached = tuple(float(value) for value in vector)
+            self._query_vectors[query] = cached
+            self._live_call_count += 1
+        return list(cached)
+
+    async def preload(self, questions: Sequence[str]) -> None:
+        if self._allowed_questions is not None or self._query_vectors:
+            raise RetrievalEvaluationError("query embedding cache was already initialized")
+        unique = frozenset(questions)
+        if not unique:
+            raise RetrievalEvaluationError("query embedding preload set is empty")
+        self._allowed_questions = unique
+        for question in sorted(unique):
+            await self.embed_query(question)
+        if self._live_call_count != len(unique):
+            raise RetrievalEvaluationError("query embedding preload count is inconsistent")
+
+    def vector_sha256(self, query: str) -> str:
+        vector = self._query_vectors.get(query)
+        if vector is None:
+            raise RetrievalEvaluationError("query embedding was not preloaded")
+        return _sha256_json(list(vector))
+
+    def evidence(
+        self,
+        records: Sequence[GoldRecord],
+        revision: ModelEndpointRevision,
+    ) -> QueryEmbeddingEvidence:
+        if self._allowed_questions is None or set(self._query_vectors) != set(self._allowed_questions):
+            raise RetrievalEvaluationError("query embedding preload is incomplete")
+        vector_rows = [
+            {
+                "case_id": record.case_id,
+                "question_sha256": record.question_sha256,
+                "query_embedding_sha256": self.vector_sha256(record.question),
+            }
+            for record in sorted(records, key=lambda item: item.case_id)
+        ]
+        config_sha256 = _sha256_json(
+            {
+                "model": settings.embed_model,
+                "declared_revision": revision.declared_revision,
+                "model_config_sha256": revision.model_config_sha256,
+                "instruction": settings.embed_query_instruction,
+                "input_truncation_chars": 8000,
+                "embed_dim": settings.embed_dim,
+            }
+        )
+        return QueryEmbeddingEvidence(
+            protocol=_QUERY_EMBEDDING_PROTOCOL,
+            cache_scope="run",
+            reuse_scope="tuning+locked+variants+repeats",
+            preloaded=True,
+            unique_question_count=len(self._allowed_questions),
+            live_call_count=self._live_call_count,
+            vector_manifest_sha256=_sha256_json(vector_rows),
+            config_sha256=config_sha256,
+        )
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -1012,6 +1125,7 @@ def load_resumed_case(
     split: SplitName,
     variant: VariantName,
     config_sha256: str,
+    query_embedding_sha256: str,
     binding: _CaseBinding,
     hmac_key: bytes | None = None,
 ) -> CaseArtifact | None:
@@ -1031,6 +1145,8 @@ def load_resumed_case(
         record.case_id,
         binding.sidecar.gold_case_sha256,
         record.question_sha256,
+        _QUERY_EMBEDDING_PROTOCOL,
+        query_embedding_sha256,
         record.scope_id,
     )
     actual_identity = (
@@ -1041,6 +1157,8 @@ def load_resumed_case(
         artifact.case_id,
         artifact.gold_case_sha256,
         artifact.question_sha256,
+        artifact.query_embedding_protocol,
+        artifact.query_embedding_sha256,
         artifact.scope_id,
     )
     if actual_identity != expected_identity:
@@ -2003,6 +2121,7 @@ async def _execute_case(
     split: SplitName,
     run_id: str,
     repeat_count: int,
+    query_embedding_sha256: str,
 ) -> CaseArtifact:
     pool_orders: dict[PoolName, list[tuple[uuid.UUID, ...]]] = defaultdict(list)
     pool_latencies: dict[PoolName, list[float]] = defaultdict(list)
@@ -2128,6 +2247,8 @@ async def _execute_case(
         case_id=record.case_id,
         gold_case_sha256=binding.sidecar.gold_case_sha256,
         question_sha256=record.question_sha256,
+        query_embedding_protocol=_QUERY_EMBEDDING_PROTOCOL,
+        query_embedding_sha256=query_embedding_sha256,
         scope_id=record.scope_id,
         language=record.language,
         hop_type=record.hop_type,
@@ -2169,6 +2290,7 @@ async def _run_or_resume_case(
     split: SplitName,
     run_id: str,
     repeat_count: int,
+    query_embedding_sha256: str,
     hmac_key: bytes | None = None,
 ) -> CaseArtifact:
     path = _case_artifact_path(
@@ -2184,6 +2306,7 @@ async def _run_or_resume_case(
         split=split,
         variant=variant,
         config_sha256=config.fingerprint,
+        query_embedding_sha256=query_embedding_sha256,
         binding=binding,
         hmac_key=hmac_key,
     )
@@ -2200,6 +2323,7 @@ async def _run_or_resume_case(
         split=split,
         run_id=run_id,
         repeat_count=repeat_count,
+        query_embedding_sha256=query_embedding_sha256,
     )
     return load_or_write_case(path, artifact, hmac_key=hmac_key)
 
@@ -2469,6 +2593,7 @@ async def generate_load_evidence(
             corpus_snapshot_sha256=corpus_snapshot_sha256,
             config_sha256=config.fingerprint,
             locked_case_manifest_sha256=locked_manifest,
+            embedding_protocol=_LOAD_EMBEDDING_PROTOCOL,
             concurrency=concurrency,
             requests_per_backend=requests_per_backend,
             started_at=started_at,
@@ -2502,13 +2627,14 @@ async def generate_load_evidence(
         observed_peak_concurrency=observed_peak,
     )
     envelope = _LoadEvidence(
-        schema_version="retrieval-load-evidence-v1",
+        schema_version="retrieval-load-evidence-v2",
         kind="load",
         passed=True,
         corpus_snapshot_sha256=corpus_snapshot_sha256,
         config_sha256=config.fingerprint,
         locked_case_manifest_sha256=locked_manifest,
         raw_artifact_sha256=raw_artifact_sha256,
+        embedding_protocol=_LOAD_EMBEDDING_PROTOCOL,
         baseline=baseline,
         candidate=candidate,
     )
@@ -2615,6 +2741,47 @@ def _locked_metric_values(artifact: CaseArtifact) -> dict[str, float]:
     }
 
 
+def _assert_query_embedding_pairing(
+    baseline: Sequence[CaseArtifact],
+    candidate: Sequence[CaseArtifact],
+    *,
+    evidence: QueryEmbeddingEvidence | None = None,
+) -> None:
+    baseline_by_id = {item.case_id: item for item in baseline}
+    candidate_by_id = {item.case_id: item for item in candidate}
+    if (
+        len(baseline_by_id) != len(baseline)
+        or len(candidate_by_id) != len(candidate)
+        or baseline_by_id.keys() != candidate_by_id.keys()
+    ):
+        raise RetrievalEvaluationError("paired query-embedding case IDs differ")
+    rows: list[dict[str, str]] = []
+    for case_id in sorted(baseline_by_id):
+        left = baseline_by_id[case_id]
+        right = candidate_by_id[case_id]
+        if left.observation.variant != "baseline" or right.observation.variant != "candidate":
+            raise RetrievalEvaluationError("paired query-embedding variants are invalid")
+        if (
+            left.query_embedding_protocol != _QUERY_EMBEDDING_PROTOCOL
+            or right.query_embedding_protocol != _QUERY_EMBEDDING_PROTOCOL
+            or left.question_sha256 != right.question_sha256
+            or left.query_embedding_sha256 != right.query_embedding_sha256
+        ):
+            raise RetrievalEvaluationError("paired query-embedding evidence differs")
+        rows.append(
+            {
+                "case_id": case_id,
+                "question_sha256": left.question_sha256,
+                "query_embedding_sha256": left.query_embedding_sha256,
+            }
+        )
+    if evidence is not None and (
+        len({row["question_sha256"] for row in rows}) != evidence.unique_question_count
+        or _sha256_json(rows) != evidence.vector_manifest_sha256
+    ):
+        raise RetrievalEvaluationError("query-embedding manifest does not match case artifacts")
+
+
 def evaluate_locked_decision(
     baseline: Sequence[CaseArtifact],
     candidate: Sequence[CaseArtifact],
@@ -2623,6 +2790,7 @@ def evaluate_locked_decision(
     cluster_ids: Mapping[str, str],
     policy: RetrievalGatePolicy,
 ) -> LockedDecision:
+    _assert_query_embedding_pairing(baseline, candidate)
     baseline_by_id = {item.case_id: item for item in baseline}
     candidate_by_id = {item.case_id: item for item in candidate}
     if baseline_by_id.keys() != candidate_by_id.keys():
@@ -3274,6 +3442,9 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
         repeat_count = args.repeats
         if mode == "qualification" and repeat_count < policy.min_determinism_replays:
             raise RetrievalEvaluationError("determinism replay count is below policy")
+        paired_embedder = _PairedQueryEmbedder(embedder)
+        await paired_embedder.preload([record.question for record in records])
+        query_embedding = paired_embedder.evidence(records, embedding_revision)
         manifest_identity = {
             "mode": mode,
             "repository_sha": repository_sha,
@@ -3289,10 +3460,13 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             "sweep_configs": [item.model_dump(mode="json") for item in sweep],
             "model_revisions": models.model_dump(mode="json"),
             "database": database.model_dump(mode="json"),
+            "query_embedding": query_embedding.model_dump(mode="json"),
+            "load_embedding_protocol": _LOAD_EMBEDDING_PROTOCOL,
             "repeat_count": repeat_count,
         }
         run_id = _sha256_json(manifest_identity)
-        retriever = Retriever(embedder, Reranker())
+        retriever = Retriever(paired_embedder, Reranker())
+        load_retriever = Retriever(embedder, Reranker())
         tuning_set = set(split.tuning_case_ids)
         locked_set = set(split.locked_case_ids)
         tuning_cases: dict[str, list[CaseArtifact]] = {}
@@ -3313,6 +3487,9 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                         split="tuning",
                         run_id=run_id,
                         repeat_count=repeat_count,
+                        query_embedding_sha256=paired_embedder.vector_sha256(
+                            binding.record.question
+                        ),
                         hmac_key=case_hmac_key,
                     )
                 )
@@ -3350,6 +3527,33 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                         split="locked",
                         run_id=run_id,
                         repeat_count=repeat_count,
+                        query_embedding_sha256=paired_embedder.vector_sha256(
+                            binding.record.question
+                        ),
+                        hmac_key=case_hmac_key,
+                    )
+                )
+
+        baseline_tuning: list[CaseArtifact] = []
+        if mode == "qualification":
+            for case_id in sorted(tuning_set):
+                binding = bindings[case_id]
+                baseline_tuning.append(
+                    await _run_or_resume_case(
+                        retriever=retriever,
+                        sessionmaker=api_sessions,
+                        work_dir=work_dir,
+                        binding=binding,
+                        scope=scopes[binding.record.scope_id],
+                        config=selected,
+                        backend="postgres_fts",
+                        variant="baseline",
+                        split="tuning",
+                        run_id=run_id,
+                        repeat_count=repeat_count,
+                        query_embedding_sha256=paired_embedder.vector_sha256(
+                            binding.record.question
+                        ),
                         hmac_key=case_hmac_key,
                     )
                 )
@@ -3368,7 +3572,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                 raise RetrievalEvaluationError("generated load parameters are below policy")
             await generate_load_evidence(
                 output=generated_load_path,
-                retriever=retriever,
+                retriever=load_retriever,
                 sessionmaker=api_sessions,
                 bindings=bindings,
                 scopes=scopes,
@@ -3412,6 +3616,8 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                 model_revisions=models,
                 database=database,
                 external_evidence=evidence,
+                query_embedding=query_embedding,
+                load_embedding_protocol=_LOAD_EMBEDDING_PROTOCOL,
                 repeat_count=repeat_count,
                 created_at=datetime.now(UTC),
             ),
@@ -3440,30 +3646,16 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             *tuning_cases[selected_fingerprint],
         ]
         if mode == "qualification":
-            baseline_tuning: list[CaseArtifact] = []
-            for case_id in sorted(tuning_set):
-                binding = bindings[case_id]
-                baseline_tuning.append(
-                    await _run_or_resume_case(
-                        retriever=retriever,
-                        sessionmaker=api_sessions,
-                        work_dir=work_dir,
-                        binding=binding,
-                        scope=scopes[binding.record.scope_id],
-                        config=selected,
-                        backend="postgres_fts",
-                        variant="baseline",
-                        split="tuning",
-                        run_id=run_id,
-                        repeat_count=repeat_count,
-                        hmac_key=case_hmac_key,
-                    )
-                )
             all_baseline = [*baseline_tuning, *locked_cases["baseline"]]
             all_candidate = [
                 *tuning_cases[selected_fingerprint],
                 *locked_cases["candidate"],
             ]
+            _assert_query_embedding_pairing(
+                all_baseline,
+                all_candidate,
+                evidence=query_embedding,
+            )
             report_engine_artifacts = [*all_baseline, *all_candidate]
             baseline_load, candidate_load, operations = _gate_operations(
                 evidence_paths,
@@ -3531,6 +3723,8 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             manifest_sha256=manifest_sha256,
             policy_sha256=policy_sha256,
             selected_candidate_config_sha256=selected_fingerprint,
+            query_embedding=query_embedding,
+            load_embedding_protocol=_LOAD_EMBEDDING_PROTOCOL,
             tuning_results=tuning_results,
             locked_results={variant: aggregate_all_pools(cases) for variant, cases in locked_cases.items()},
             locked_slices={variant: aggregate_slices(cases) for variant, cases in locked_cases.items()},
@@ -3556,14 +3750,14 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                 verify_private_artifact_attestation(
                     attestation,
                     artifact_bytes=report_bytes,
-                    expected_artifact_type="rag-retrieval-bm25-report-v1",
+                    expected_artifact_type="rag-retrieval-bm25-report-v2",
                     key=case_hmac_key,
                     repository_root=REPOSITORY_ROOT,
                 )
             else:
                 attestation = create_private_artifact_attestation(
                     artifact_bytes=report_bytes,
-                    artifact_type="rag-retrieval-bm25-report-v1",
+                    artifact_type="rag-retrieval-bm25-report-v2",
                     key=case_hmac_key,
                     repository_root=REPOSITORY_ROOT,
                     source_paths=(
@@ -3578,6 +3772,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                         "src/rag_app/eval/private_sidecar.py",
                         "src/rag_app/eval/report_attestation.py",
                         "src/rag_app/eval/retrieval_gate.py",
+                        "src/rag_app/llm/embeddings.py",
                         "src/rag_app/rag/retrieve.py",
                         "src/rag_app/storage/s3.py",
                         "uv.lock",

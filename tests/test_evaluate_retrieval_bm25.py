@@ -411,9 +411,10 @@ def _execute_artifact(
                 backend="pg_textsearch",
                 variant="candidate",
                 split="tuning",
-                run_id="b" * 64,
-                repeat_count=2,
-            )
+                    run_id="b" * 64,
+                    repeat_count=2,
+                    query_embedding_sha256="e" * 64,
+                )
         ),
         record,
         sidecar,
@@ -465,6 +466,45 @@ def test_case_execution_rejects_changed_reranker_candidates() -> None:
 def test_case_execution_rejects_duplicate_reranker_candidates() -> None:
     with pytest.raises(runner.RetrievalEvaluationError, match="duplicate chunk IDs"):
         _execute_artifact(duplicate_candidate=True)
+
+
+class _CountingEmbedder(runner.Embedder):
+    def __init__(self) -> None:
+        self.query_calls = 0
+
+    async def embed_query(self, query: str) -> list[float]:
+        del query
+        self.query_calls += 1
+        return [0.25] * runner.settings.embed_dim
+
+
+def test_paired_query_embedder_pins_vector_and_returns_a_copy() -> None:
+    delegate = _CountingEmbedder()
+    embedder = runner._PairedQueryEmbedder(delegate)
+    asyncio.run(embedder.preload(["private query", "private query"]))
+
+    first = asyncio.run(embedder.embed_query("private query"))
+    first[0] = 1.0
+    second = asyncio.run(embedder.embed_query("private query"))
+
+    assert delegate.query_calls == 1
+    assert second[0] == 0.25
+    with pytest.raises(runner.RetrievalEvaluationError, match="unknown question"):
+        asyncio.run(embedder.embed_query("another private query"))
+
+
+def test_query_embedding_evidence_rejects_live_call_mismatch() -> None:
+    with pytest.raises(ValueError, match="live-call count"):
+        runner.QueryEmbeddingEvidence(
+            protocol="single-live-vector-per-question-v1",
+            cache_scope="run",
+            reuse_scope="tuning+locked+variants+repeats",
+            preloaded=True,
+            unique_question_count=2,
+            live_call_count=1,
+            vector_manifest_sha256="a" * 64,
+            config_sha256="b" * 64,
+        )
 
 
 def test_no_answer_aggregation_reports_returned_and_abstained_counts() -> None:
@@ -622,6 +662,7 @@ def test_resume_rejects_case_from_another_run(tmp_path: Path) -> None:
             split="tuning",
             variant="candidate",
             config_sha256=_config().fingerprint,
+            query_embedding_sha256=artifact.query_embedding_sha256,
             binding=binding,
         )
 
@@ -635,13 +676,24 @@ def test_variant_abstention_must_match_returned_count() -> None:
 
 
 def test_locked_decision_requires_target_gains() -> None:
-    baseline = [
+    artifacts = [
         _execute_artifact(index=1)[0],
         _execute_artifact(index=2)[0],
         _execute_artifact(index=3, answerable=False)[0],
         _execute_artifact(index=4, answerable=False)[0],
     ]
-    candidate = list(baseline)
+    baseline = [
+        item.model_copy(
+            update={"observation": item.observation.model_copy(update={"variant": "baseline"})}
+        )
+        for item in artifacts
+    ]
+    candidate = [
+        item.model_copy(
+            update={"observation": item.observation.model_copy(update={"variant": "candidate"})}
+        )
+        for item in artifacts
+    ]
     clusters = {
         item.case_id: f"cluster-sha256:{hashlib.sha256(item.case_id.encode()).hexdigest()}"
         for item in baseline
@@ -662,6 +714,17 @@ def test_locked_decision_requires_target_gains() -> None:
     assert decision.accepted is False
     assert "locked_target_gain:lexical_recall_at_5" in decision.failure_codes
     assert "locked_target_gain:ndcg_at_10" in decision.failure_codes
+
+
+def test_locked_decision_rejects_mismatched_query_embedding() -> None:
+    artifact = _execute_artifact(index=1)[0]
+    baseline = artifact.model_copy(
+        update={"observation": artifact.observation.model_copy(update={"variant": "baseline"})}
+    )
+    candidate = artifact.model_copy(update={"query_embedding_sha256": "f" * 64})
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="embedding evidence differs"):
+        runner._assert_query_embedding_pairing([baseline], [candidate])
 
 
 def _load_inputs():
@@ -849,6 +912,7 @@ def test_qualification_resume_rejects_unsigned_and_tampered_case(tmp_path: Path)
             split=artifact.split,
             variant=artifact.observation.variant,
             config_sha256=artifact.observation.config_sha256,
+            query_embedding_sha256=artifact.query_embedding_sha256,
             binding=binding,
             hmac_key=key,
         )
@@ -866,6 +930,7 @@ def test_qualification_resume_rejects_unsigned_and_tampered_case(tmp_path: Path)
             split=artifact.split,
             variant=artifact.observation.variant,
             config_sha256=artifact.observation.config_sha256,
+            query_embedding_sha256=artifact.query_embedding_sha256,
             binding=binding,
             hmac_key=key,
         )
@@ -925,6 +990,15 @@ def test_load_raw_rejects_declared_concurrency_above_observed_peak(tmp_path: Pat
     )
     raw_path = output.with_name("load.raw.json")
     raw_payload = json.loads(raw_path.read_text())
+    legacy_payload = dict(raw_payload)
+    legacy_payload.pop("embedding_protocol")
+    with pytest.raises(ValueError):
+        runner.RawLoadEvidence.model_validate(legacy_payload, strict=True)
+    with pytest.raises(ValueError):
+        runner.RawLoadEvidence.model_validate(
+            {**raw_payload, "embedding_protocol": "cached"},
+            strict=True,
+        )
     raw_payload["concurrency"] = 3
     raw_path.write_text(json.dumps(raw_payload, sort_keys=True))
     raw_path.chmod(0o600)
