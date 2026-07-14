@@ -266,6 +266,7 @@ class _FakeRetriever:
         swap_boundary: bool = False,
         change_candidates: bool = False,
         duplicate_candidate: bool = False,
+        irrelevant_jitter: bool = False,
     ) -> None:
         self.chunk = chunk
         self.flip = flip
@@ -273,6 +274,7 @@ class _FakeRetriever:
         self.swap_boundary = swap_boundary
         self.change_candidates = change_candidates
         self.duplicate_candidate = duplicate_candidate
+        self.irrelevant_jitter = irrelevant_jitter
         self.calls = 0
 
     async def retrieve_with_trace(self, session, query, **kwargs):
@@ -297,6 +299,11 @@ class _FakeRetriever:
         if self.duplicate_candidate:
             final = (rows[0],)
             reranked = (rows[0], rows[0])
+        if self.irrelevant_jitter:
+            rows[0].score = 1.0
+            rows[1].score = 0.9 if self.calls % 2 else 0.1
+            reranked = rows
+            final = (rows[0],)
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
             sparse_engine=(
@@ -349,6 +356,7 @@ def _execute_artifact(
     swap_boundary: bool = False,
     change_candidates: bool = False,
     duplicate_candidate: bool = False,
+    irrelevant_jitter: bool = False,
 ):
     record, sidecar, chunk_id, _ = _case(index, owner="owner-a", answerable=answerable)
     binding = runner.build_case_bindings([record], {record.case_id: sidecar})[record.case_id]
@@ -390,7 +398,7 @@ def _execute_artifact(
             text_ru="",
             meta={},
         )
-        if reorder or swap_boundary or change_candidates or duplicate_candidate
+        if reorder or swap_boundary or change_candidates or duplicate_candidate or irrelevant_jitter
         else None
     )
     return (
@@ -403,6 +411,7 @@ def _execute_artifact(
                     swap_boundary=swap_boundary,
                     change_candidates=change_candidates,
                     duplicate_candidate=duplicate_candidate,
+                    irrelevant_jitter=irrelevant_jitter,
                 ),
                 sessionmaker=lambda: _Session(),
                 binding=binding,
@@ -466,6 +475,13 @@ def test_case_execution_rejects_changed_reranker_candidates() -> None:
 def test_case_execution_rejects_duplicate_reranker_candidates() -> None:
     with pytest.raises(runner.RetrievalEvaluationError, match="duplicate chunk IDs"):
         _execute_artifact(duplicate_candidate=True)
+
+
+def test_case_execution_excludes_irrelevant_score_jitter_from_output_delta() -> None:
+    artifact, _, _ = _execute_artifact(irrelevant_jitter=True)
+
+    assert artifact.observation.deterministic is True
+    assert artifact.observation.reranker_max_score_delta == 0.0
 
 
 class _CountingEmbedder(runner.Embedder):

@@ -2183,11 +2183,20 @@ async def _execute_case(
     if not reranked_sets_stable:
         raise RetrievalEvaluationError("reranker candidate universe changed between repeats")
     shared_reranked = set(rerank_score_snapshots[0])
-    max_score_delta = max(
+    all_score_delta = max(
         (
             max(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
             - min(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
             for chunk_id in shared_reranked
+        ),
+        default=0.0,
+    )
+    output_ids = set().union(*(set(order) for order in pool_orders["final"]))
+    max_score_delta = max(
+        (
+            max(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+            - min(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
+            for chunk_id in output_ids
         ),
         default=0.0,
     )
@@ -2207,7 +2216,8 @@ async def _execute_case(
             raise RetrievalEvaluationError(
                 "repeated retrieval ordering is not deterministic "
                 f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
-                f"max_score_delta={max_score_delta:.6f})"
+                f"max_score_delta={max_score_delta:.6f},"
+                f"all_reranker_score_delta={all_score_delta:.6f})"
             )
         canonical_final = tuple(
             sorted(
