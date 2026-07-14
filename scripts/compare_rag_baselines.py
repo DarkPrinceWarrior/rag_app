@@ -57,7 +57,7 @@ from rag_app.eval.report_attestation import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPOSITORY_ROOT / "deploy" / "rag-eval" / "release-policy-v1.json"
-EXPECTED_POLICY_SHA256 = "a8fa047049cd4e0f928a64b0db94d41747e2a7419f610a092c066a0129e79d9d"
+EXPECTED_POLICY_SHA256 = "9a12be4de15635959bd502cf1d7adcc1d8cedcd917b79eff67a040fc997e33ca"
 QUALIFICATION_ARTIFACT_TYPE = "rag-model-qualification-raw-v1"
 _GATE_SOURCE_PATHS = {
     "comparator_sha256": "scripts/compare_rag_baselines.py",

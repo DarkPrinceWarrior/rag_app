@@ -998,8 +998,9 @@ def test_production_policy_is_strict_and_pinned() -> None:
     policy = load_policy(policy_path)
     assert policy.bootstrap_samples == 20_000
     assert policy.reference_report_sha256 == (
-        "ef79566abdb340d4d7a1504cfea6f7839f08c68d8046320a78ecc0ce374bf336"
+        "d9e2c72e1e325637a61d93aad8ddc9fcab30889443d5492ddc165d8cdedce23b"
     )
+    assert policy.reference_git_sha == "52747e11ea39267d0b8094ef4b9ea1fa4a3c85bf"
     assert policy.allowed_model_roles == ("llm",)
     assert policy.allowed_spdx_licenses == ("Apache-2.0",)
     assert policy.approved_model_licenses == ()

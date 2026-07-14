@@ -30,8 +30,8 @@ prompt/config, корпусе, embedder и reranker. Прогонщик v1 не 
 `deploy/rag-eval/release-policy-v1.json` фиксирует:
 
 - baseline report SHA-256
-  `ef79566abdb340d4d7a1504cfea6f7839f08c68d8046320a78ecc0ce374bf336`;
-- Git SHA `9ef2f7cc2ac395af61b14969bbb6aa71f7f9a546`;
+  `d9e2c72e1e325637a61d93aad8ddc9fcab30889443d5492ddc165d8cdedce23b`;
+- Git SHA `52747e11ea39267d0b8094ef4b9ea1fa4a3c85bf`;
 - Gold/sidecar, corpus/runtime snapshot и точную конфигурацию;
 - разрешенную роль, лицензию `Apache-2.0`, пороги качества, нагрузки и отката.
 
@@ -40,8 +40,9 @@ Baseline и candidate обязаны быть сформированы одно�
 retrieval-конфигурации, зависимостей или корпуса требует нового парного baseline
 и новой версии policy. Молчаливое сравнение несопоставимых систем запрещено.
 Подпись дополнительно закрепляет прямые исполняемые зависимости оценщика,
-`pyproject.toml` и `uv.lock`; окружение перед прогоном синхронизируется командой
-`uv sync --frozen`.
+`pyproject.toml` и `uv.lock`; окружение A100 перед прогоном синхронизируется
+командой `uv sync --frozen --group dev --extra parse`, чтобы не удалить
+зафиксированный MinerU-контур из общего проектного venv.
 
 `approved_model_licenses` намеренно пуст до появления конкретного candidate.
 Даже модель с заявленной Apache-2.0 лицензией не пройдет только по строке SPDX:
@@ -139,13 +140,38 @@ VERA; для сравнения NLP-систем важна именно раз�
 
 ## Запуск
 
+Эталон создается из чистого immutable checkout ревизии оценщика. На A100
+используется локальная роль `rag` из `.env`, потому что роль `rag_api` обязана
+применять пользовательский RLS-контекст и без него ничего не видит. Сам evaluator
+включает `default_transaction_read_only=on` и не выполняет записи:
+
+```bash
+set -a
+. ./.env
+set +a
+uv run --no-sync python scripts/evaluate_rag_gold_set.py \
+  /root/parser_trials/rag_eval_v1/release.jsonl \
+  /root/parser_trials/rag_eval_v1/release.sidecar.jsonl \
+  --mode release \
+  --report /root/parser_trials/rag_eval_v1/reference.json \
+  --attestation /root/parser_trials/rag_eval_v1/reference.attestation.json \
+  --attestation-key /root/.config/docragenslate/rag-release-hmac.key
+```
+
+После создания baseline и candidate, raw qualification и их подписей запускается
+сам шлюз:
+
 ```bash
 uv run python scripts/compare_rag_baselines.py \
   /root/parser_trials/rag_eval_v1/reference.json \
   /root/parser_trials/rag_eval_v1/candidate.json \
   /root/parser_trials/rag_eval_v1/release.jsonl \
+  /root/parser_trials/rag_eval_v1/release.sidecar.jsonl \
   /root/parser_trials/rag_eval_v1/qualification.json \
-  --policy deploy/rag-eval/release-policy-v1.json \
+  --baseline-attestation /root/parser_trials/rag_eval_v1/reference.attestation.json \
+  --candidate-attestation /root/parser_trials/rag_eval_v1/candidate.attestation.json \
+  --qualification-attestation /root/parser_trials/rag_eval_v1/qualification.attestation.json \
+  --attestation-key /root/.config/docragenslate/rag-release-hmac.key \
   --output /root/parser_trials/rag_eval_v1/release-decision.json
 ```
 
