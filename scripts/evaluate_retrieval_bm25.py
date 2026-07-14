@@ -2044,7 +2044,10 @@ async def _execute_case(
         repeat_hashes.append(_sha256_json(order_payload))
     deterministic = len(set(repeat_hashes)) == 1
     if not deterministic:
-        raise RetrievalEvaluationError("repeated retrieval ordering is not deterministic")
+        unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
+        raise RetrievalEvaluationError(
+            f"repeated retrieval ordering is not deterministic (stages={unstable})"
+        )
     if reranker_fallback:
         raise RetrievalEvaluationError("reranker fallback occurred during qualification")
     if len(sparse_engines) != 1:

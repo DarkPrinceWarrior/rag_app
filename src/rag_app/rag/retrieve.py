@@ -31,6 +31,7 @@ type SparseEngine = Literal["postgres_fts", "pg_textsearch_ru", "pg_textsearch_e
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u052f]")
 _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_RERANK_SCORE_DIGITS = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,7 @@ class RetrievalTrace:
     final: tuple[RetrievedChunk, ...]
     stage_latency_ms: dict[str, float]
     reranker_fallback: bool
+
 
 # Визуальный recall: страницы по эмбеддингу страницы-картинки (Qwen3-VL-Embedding)
 _VISUAL_PAGES_SQL = """
@@ -256,9 +258,7 @@ class Retriever:
         sparse_top_k = settings.rag_sparse_top_k if sparse_top_k is None else sparse_top_k
         rrf_k = settings.rag_rrf_k if rrf_k is None else rrf_k
         rerank_top_k = settings.rag_rerank_top_k if rerank_top_k is None else rerank_top_k
-        rerank_min_score = (
-            settings.rag_rerank_min_score if rerank_min_score is None else rerank_min_score
-        )
+        rerank_min_score = settings.rag_rerank_min_score if rerank_min_score is None else rerank_min_score
         for name, value in (
             ("top_k", top_k),
             ("dense_top_k", dense_top_k),
@@ -355,7 +355,7 @@ class Retriever:
         try:
             rr = await self.reranker.rerank(query, [c.text_ru or c.text_en for c in candidates])
             for c, s in zip(candidates, rr, strict=True):
-                c.score = s
+                c.score = round(float(s), _RERANK_SCORE_DIGITS)
             candidates.sort(key=lambda c: (-c.score, c.id.int))
             # Порог релевантности: если даже лучший фрагмент почти нерелевантен
             # (запрос — не про эти документы), не вываливаем случайные чанки —
@@ -436,9 +436,7 @@ class Retriever:
         visual_pages = {(r.document_id, r.page_idx) for r in rows}
         doc_ids = list({r.document_id for r in rows})
         img_rows = (await session.execute(sql(_IMG_CHUNKS_SQL), {"doc_ids": doc_ids})).all()
-        img_chunks = [
-            _row_to_chunk(r) for r in img_rows if (r.document_id, r.page_start) in visual_pages
-        ]
+        img_chunks = [_row_to_chunk(r) for r in img_rows if (r.document_id, r.page_start) in visual_pages]
         if not img_chunks:
             return result
         # визуальный реранк: query × вырезанный рисунок страницы (кроп из img_s3)
@@ -447,11 +445,7 @@ class Retriever:
                 crops: list[bytes] = []
                 for c in img_chunks:
                     key = (c.meta or {}).get("img_s3")
-                    crops.append(
-                        await self.storage.get_bytes(settings.bucket_artifacts, key)
-                        if key
-                        else b""
-                    )
+                    crops.append(await self.storage.get_bytes(settings.bucket_artifacts, key) if key else b"")
                 vs = await self.visual_reranker.rerank(query, crops)
                 for c, s in zip(img_chunks, vs, strict=True):
                     c.score = s

@@ -25,6 +25,11 @@ class EqualReranker:
         return [0.5] * len(texts)
 
 
+class NearEqualReranker:
+    async def rerank(self, query: str, texts: list[str]) -> list[float]:
+        return [0.5000003, 0.5000004]
+
+
 class Result:
     def __init__(self, rows: list[SimpleNamespace]) -> None:
         self.rows = rows
@@ -108,6 +113,15 @@ def test_retriever_breaks_equal_rrf_and_reranker_scores_by_chunk_id() -> None:
     result = asyncio.run(retriever.retrieve(TieSession(), "pressure", top_k=10))
 
     assert [item.id for item in result] == [uuid.UUID(int=1), uuid.UUID(int=2)]
+
+
+def test_retriever_quantizes_numerical_noise_before_tie_break() -> None:
+    retriever = Retriever(FakeEmbedder(), NearEqualReranker())
+
+    result = asyncio.run(retriever.retrieve(TieSession(), "pressure", top_k=10))
+
+    assert [item.id for item in result] == [uuid.UUID(int=1), uuid.UUID(int=2)]
+    assert {item.score for item in result} == {0.5}
 
 
 def test_retrieval_trace_keeps_every_ranked_stage_and_timings() -> None:
