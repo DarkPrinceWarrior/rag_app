@@ -113,6 +113,7 @@ _CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v2\0"
 _BUILD_RECIPE = REPOSITORY_ROOT / "deploy/postgres-bm25/Dockerfile"
 _PREPARE_SQL = REPOSITORY_ROOT / "deploy/postgres-bm25/prepare_candidate.sql"
 _MAX_RERANK_REPEAT_DELTA = 0.01
+_SCORE_EPSILON = 1e-12
 _QUERY_EMBEDDING_PROTOCOL: Literal["single-live-vector-per-question-v1"] = (
     "single-live-vector-per-question-v1"
 )
@@ -177,6 +178,7 @@ class VariantObservation(_StrictModel):
     deterministic: StrictBool
     reranker_consensus_applied: StrictBool
     reranker_max_score_delta: float = Field(ge=0.0)
+    reranker_all_max_score_delta: float = Field(ge=0.0)
     reranker_fallback: StrictBool
     returned_count: int = Field(ge=0, le=1000)
     abstained: StrictBool
@@ -187,10 +189,15 @@ class VariantObservation(_StrictModel):
             raise ValueError("abstention must match returned_count")
         hashes_stable = len(set(self.repeat_order_sha256)) == 1
         if self.reranker_consensus_applied:
-            if hashes_stable or self.reranker_max_score_delta > _MAX_RERANK_REPEAT_DELTA:
+            if (
+                hashes_stable
+                or self.reranker_max_score_delta > _MAX_RERANK_REPEAT_DELTA + _SCORE_EPSILON
+            ):
                 raise ValueError("reranker consensus evidence is inconsistent")
         elif not hashes_stable:
             raise ValueError("non-consensus repeat ordering must be identical")
+        if self.reranker_max_score_delta > self.reranker_all_max_score_delta:
+            raise ValueError("output reranker delta exceeds the full candidate delta")
         return self
 
 
@@ -2210,7 +2217,7 @@ async def _execute_case(
             unstable == "final"
             and len(final_lengths) == 1
             and final_count > 0
-            and max_score_delta <= _MAX_RERANK_REPEAT_DELTA
+            and max_score_delta <= _MAX_RERANK_REPEAT_DELTA + _SCORE_EPSILON
         )
         if not can_apply_consensus:
             raise RetrievalEvaluationError(
@@ -2221,7 +2228,7 @@ async def _execute_case(
             )
         canonical_final = tuple(
             sorted(
-                shared_reranked,
+                output_ids,
                 key=lambda chunk_id: (
                     -math.fsum(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
                     / len(rerank_score_snapshots),
@@ -2280,6 +2287,7 @@ async def _execute_case(
             deterministic=deterministic,
             reranker_consensus_applied=consensus_applied,
             reranker_max_score_delta=max_score_delta,
+            reranker_all_max_score_delta=all_score_delta,
             reranker_fallback=False,
             returned_count=final_count,
             abstained=final_count == 0,

@@ -267,6 +267,7 @@ class _FakeRetriever:
         change_candidates: bool = False,
         duplicate_candidate: bool = False,
         irrelevant_jitter: bool = False,
+        never_final_chunk: RetrievedChunk | None = None,
     ) -> None:
         self.chunk = chunk
         self.flip = flip
@@ -275,6 +276,7 @@ class _FakeRetriever:
         self.change_candidates = change_candidates
         self.duplicate_candidate = duplicate_candidate
         self.irrelevant_jitter = irrelevant_jitter
+        self.never_final_chunk = never_final_chunk
         self.calls = 0
 
     async def retrieve_with_trace(self, session, query, **kwargs):
@@ -282,6 +284,8 @@ class _FakeRetriever:
         assert current_principal().user_sub == "owner-a"
         self.calls += 1
         rows = (self.chunk,) if self.reorder_chunk is None else (self.chunk, self.reorder_chunk)
+        if self.never_final_chunk is not None:
+            rows = (*rows, self.never_final_chunk)
         final = () if self.flip and self.calls % 2 == 0 else rows
         reranked = rows
         if self.reorder_chunk is not None and self.calls % 2 == 0:
@@ -304,6 +308,16 @@ class _FakeRetriever:
             rows[1].score = 0.9 if self.calls % 2 else 0.1
             reranked = rows
             final = (rows[0],)
+        if self.never_final_chunk is not None:
+            rows[0].score = 0.505 if self.calls % 2 else 0.495
+            rows[1].score = 0.495 if self.calls % 2 else 0.505
+            rows[2].score = 0.5
+            reranked = (
+                (rows[0], rows[2], rows[1])
+                if self.calls % 2
+                else (rows[1], rows[2], rows[0])
+            )
+            final = reranked[:1]
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
             sparse_engine=(
@@ -357,6 +371,7 @@ def _execute_artifact(
     change_candidates: bool = False,
     duplicate_candidate: bool = False,
     irrelevant_jitter: bool = False,
+    never_final_tie: bool = False,
 ):
     record, sidecar, chunk_id, _ = _case(index, owner="owner-a", answerable=answerable)
     binding = runner.build_case_bindings([record], {record.case_id: sidecar})[record.case_id]
@@ -398,7 +413,28 @@ def _execute_artifact(
             text_ru="",
             meta={},
         )
-        if reorder or swap_boundary or change_candidates or duplicate_candidate or irrelevant_jitter
+        if reorder
+        or swap_boundary
+        or change_candidates
+        or duplicate_candidate
+        or irrelevant_jitter
+        or never_final_tie
+        else None
+    )
+    never_final_chunk = (
+        RetrievedChunk(
+            id=uuid.UUID(int=1),
+            document_id=document_id,
+            filename="private.pdf",
+            heading_path="Synthetic",
+            kind="section",
+            page_start=0,
+            page_end=0,
+            text_en="private never-final body",
+            text_ru="",
+            meta={},
+        )
+        if never_final_tie
         else None
     )
     return (
@@ -412,6 +448,7 @@ def _execute_artifact(
                     change_candidates=change_candidates,
                     duplicate_candidate=duplicate_candidate,
                     irrelevant_jitter=irrelevant_jitter,
+                    never_final_chunk=never_final_chunk,
                 ),
                 sessionmaker=lambda: _Session(),
                 binding=binding,
@@ -467,6 +504,14 @@ def test_case_execution_applies_consensus_at_top_k_boundary() -> None:
     assert len(set(artifact.observation.repeat_order_sha256)) == 2
 
 
+def test_case_execution_consensus_cannot_introduce_never_final_candidate() -> None:
+    artifact, _, _ = _execute_artifact(never_final_tie=True)
+
+    final_ids = artifact.observation.pools["final"].ranked_chunk_ids
+    assert artifact.observation.reranker_consensus_applied is True
+    assert uuid.UUID(int=1) not in final_ids
+
+
 def test_case_execution_rejects_changed_reranker_candidates() -> None:
     with pytest.raises(runner.RetrievalEvaluationError, match="candidate universe changed"):
         _execute_artifact(change_candidates=True)
@@ -482,6 +527,7 @@ def test_case_execution_excludes_irrelevant_score_jitter_from_output_delta() -> 
 
     assert artifact.observation.deterministic is True
     assert artifact.observation.reranker_max_score_delta == 0.0
+    assert artifact.observation.reranker_all_max_score_delta == pytest.approx(0.8)
 
 
 class _CountingEmbedder(runner.Embedder):
