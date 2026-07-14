@@ -200,6 +200,15 @@ def test_exact_evidence_is_the_only_relevance_source() -> None:
     assert metrics.recall["5"] == 0.0
 
 
+def test_retrieval_no_answer_count_includes_leakage_probes() -> None:
+    regular = _case(1, owner="owner-a", answerable=False)[0]
+    leakage = _case(2, owner="owner-a", answerable=False)[0].model_copy(
+        update={"challenge_tags": ("leakage",)}
+    )
+
+    assert runner._retrieval_no_answer_count((regular, leakage)) == 2
+
+
 def test_split_is_deterministic_and_keeps_document_clusters_disjoint() -> None:
     records = [
         _case(index, owner=f"document-{index}")[0].model_copy(

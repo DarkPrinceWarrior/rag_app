@@ -568,6 +568,10 @@ def _case_labels(record: GoldRecord) -> frozenset[str]:
     return frozenset(labels)
 
 
+def _retrieval_no_answer_count(records: Sequence[GoldRecord]) -> int:
+    return sum(not record.answerable for record in records)
+
+
 def _union_find_clusters(records: Sequence[GoldRecord]) -> list[_Cluster]:
     parent = {record.case_id: record.case_id for record in records}
 
@@ -3078,7 +3082,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
 
     gold_artifact = read_private_bytes(args.gold, max_bytes=256 * 1024 * 1024)
     sidecar_artifact = read_private_bytes(args.sidecar, max_bytes=256 * 1024 * 1024)
-    records, gold_report = parse_gold_set_bytes(gold_artifact.raw_bytes, mode="release")
+    records, _ = parse_gold_set_bytes(gold_artifact.raw_bytes, mode="release")
     sidecars = bind_gold_sidecar(
         records,
         parse_private_sidecar_bytes(sidecar_artifact.raw_bytes),
@@ -3101,7 +3105,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             raise RetrievalEvaluationError("sidecar artifact does not match qualification policy")
         if len(records) != policy.expected_case_count:
             raise RetrievalEvaluationError("reviewed case count does not match policy")
-        if gold_report.no_answer_count != policy.expected_no_answer_case_count:
+        if _retrieval_no_answer_count(records) != policy.expected_no_answer_case_count:
             raise RetrievalEvaluationError("no-answer case count does not match policy")
     else:
         case_hmac_key = None
