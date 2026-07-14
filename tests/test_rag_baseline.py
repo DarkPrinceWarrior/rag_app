@@ -415,6 +415,7 @@ def test_production_baseline_disables_reranker_fallback() -> None:
             "top_k": 10,
             "owner_sub": "synthetic-owner",
             "allow_rerank_fallback": False,
+            "sparse_backend": "postgres_fts",
         }
     ]
 
@@ -487,6 +488,8 @@ def test_provenance_contains_only_reproducible_non_private_identifiers() -> None
     assert payload["document_snapshot_count"] == 1
     assert payload["models"]["llm"]
     assert payload["configuration"]["answer_route"] == "doc_only"
+    assert payload["configuration"]["sparse_backend"] == "postgres_fts"
+    assert payload["configuration"]["rrf_k"] == 60
     assert len(payload["configuration_sha256"]) == 64
     assert record.question not in serialized
     assert record.reference_answer not in serialized

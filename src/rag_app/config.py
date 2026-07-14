@@ -6,7 +6,7 @@ import re
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -134,8 +134,13 @@ class Settings(BaseSettings):
     )
 
     # --- RAG (roadmap § 5) ---
+    rag_sparse_backend: Literal["postgres_fts", "pg_textsearch"] = Field(
+        default="postgres_fts",
+        validation_alias="RAG_SPARSE_BACKEND",
+    )
     rag_dense_top_k: int = 50
     rag_sparse_top_k: int = 50
+    rag_rrf_k: int = Field(default=60, ge=1, validation_alias="RAG_RRF_K")
     rag_rerank_top_k: int = 20  # после RRF — в reranker
     # порог релевантности реранкера [0..1]: если лучший фрагмент ниже — считаем,
     # что запрос не про эти документы, и не вываливаем случайные чанки (пусто)

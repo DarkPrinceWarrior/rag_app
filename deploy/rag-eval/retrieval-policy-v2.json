@@ -1,0 +1,78 @@
+{
+  "baseline_backend": "postgres_fts",
+  "bootstrap_samples": 20000,
+  "bootstrap_seed": 2026071409,
+  "candidate_backend": "pg_textsearch",
+  "confidence_level": 0.95,
+  "corpus_snapshot_sha256": "83e2c7098f58fd405955553131f3b2072cbe4d95dd53d54fea88e6eccaeaa5d1",
+  "expected_case_count": 236,
+  "expected_no_answer_case_count": 67,
+  "global_max_regression": 0.01,
+  "gold_artifact_sha256": "c5ac4752dba3f7303832847c6caa5e4aa21f262ab5be1fe2768ac17be8ef1578",
+  "max_operational_seconds": 600.0,
+  "max_p95_absolute_increase_ms": 250.0,
+  "max_p95_ratio": 1.1,
+  "min_determinism_replays": 3,
+  "min_load_concurrency": 10,
+  "min_load_requests": 200,
+  "min_owner_scope_count": 2,
+  "min_rls_principal_count": 10,
+  "min_throughput_ratio": 0.9,
+  "policy_id": "docragenslate-sparse-retrieval-v2",
+  "required_base_postgres_image_digest": "sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966",
+  "required_baseline_index_manifest_sha256": "0a67ee68830af6cf0e818ece54d074eff86bfacd1eb27bbf26182b13c8aa6aeb",
+  "required_baseline_indexes": [
+    {
+      "access_method": "gin",
+      "b": null,
+      "canonical_definition": "CREATE INDEX ix_chunks_tsv ON public.chunks USING gin (tsv)",
+      "definition_sha256": "d56c579f37f7e42935b5a6f65935746dd7ccb991440ba5b4c1ae8db0e4b8f929",
+      "k1": null,
+      "name": "ix_chunks_tsv",
+      "text_config": null
+    }
+  ],
+  "required_build_recipe_sha256": "7781086b50b6112edc9499ae7e2aa21704d0dbd9c079ae428e105658f4e2d1c1",
+  "required_candidate_image_digest": "sha256:f8dc1dbfd85dcde9cdece2b5265f8653bae78b44b5e0ece865b3869f3b58aff2",
+  "required_candidate_index_manifest_sha256": "3fd157a1562b4c90b434d7dc8a8b7ccf6115740784cf8c483e6130f57f272a73",
+  "required_candidate_indexes": [
+    {
+      "b": 0.75,
+      "canonical_definition": "CREATE INDEX ix_chunks_bm25_en_v1 ON public.chunks USING bm25 ((((COALESCE(text_en, ''::text) || '\n'::text) || COALESCE(text_ru, ''::text)))) WITH (text_config=english, k1='1.2', b='0.75')",
+      "definition_sha256": "791127bd82f743ee65e5ce4f665f872d4c77d43dce187828e3d9d4e5d806513e",
+      "k1": 1.2,
+      "name": "ix_chunks_bm25_en_v1",
+      "text_config": "english"
+    },
+    {
+      "b": 0.75,
+      "canonical_definition": "CREATE INDEX ix_chunks_bm25_ru_v1 ON public.chunks USING bm25 ((((COALESCE(text_ru, ''::text) || '\n'::text) || COALESCE(text_en, ''::text)))) WITH (text_config=russian, k1='1.2', b='0.75')",
+      "definition_sha256": "387c820e250365d63380993f0ac92956b654816985b7c5a3add6c8bdd8378f66",
+      "k1": 1.2,
+      "name": "ix_chunks_bm25_ru_v1",
+      "text_config": "russian"
+    }
+  ],
+  "required_content_types": [
+    "text",
+    "table",
+    "formula",
+    "figure",
+    "scan"
+  ],
+  "required_languages": [
+    "ru",
+    "en",
+    "zh"
+  ],
+  "required_pg_textsearch_commit": "578ff529894992fb9e67cae4c69424e65c84868e",
+  "required_extension_binary_sha256": "c3d0d5e0a9ff0be5fd0b9aa0710f9640ce6b7b7a0ece4075a7ba1dd9c27f3c5e",
+  "required_pg_textsearch_package_sha256": "dc9a823e16f59b24b8c7f17c07a497b728be6c043643b4d56a65c912fa254349",
+  "required_pg_textsearch_version": "1.3.1",
+  "required_prepare_sql_sha256": "e68797a79c3d336f787d93d9acef1cca2d7f5bb3f20e007762174ca15e3df02f",
+  "schema_version": "rag-retrieval-policy-v2",
+  "sidecar_artifact_sha256": "1635d3a59465fd6b4f9b9ca56c97bbc091a1f1c7c4e7c46c707a1272924ec717",
+  "slice_max_regression": 0.01,
+  "target_lexical_recall_at_5_gain": 0.03,
+  "target_ndcg_at_10_gain": 0.02
+}

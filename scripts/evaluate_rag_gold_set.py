@@ -14,7 +14,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -65,7 +65,7 @@ from rag_app.llm.embeddings import Embedder, Reranker
 from rag_app.llm.visual import VisualEmbedder
 from rag_app.llm.visual_reranker import VisualReranker
 from rag_app.rag.chat import CHAT_SYSTEM_PROMPT, ChatEngine
-from rag_app.rag.retrieve import Retriever
+from rag_app.rag.retrieve import Retriever, SparseBackend
 from rag_app.storage.s3 import Storage
 
 _NO_RESULTS_ANSWER = "В библиотеке не нашлось проиндексированных фрагментов по этому запросу."
@@ -423,6 +423,7 @@ def _build_provenance(
     *,
     mode: Literal["candidate", "release"],
     top_k: int,
+    sparse_backend: SparseBackend = "postgres_fts",
     gold_artifact_sha256: str,
     sidecar_artifact_sha256: str,
     evaluated_at: datetime,
@@ -443,6 +444,8 @@ def _build_provenance(
         top_k=top_k,
         dense_top_k=settings.rag_dense_top_k,
         sparse_top_k=settings.rag_sparse_top_k,
+        sparse_backend=sparse_backend,
+        rrf_k=settings.rag_rrf_k,
         rerank_top_k=settings.rag_rerank_top_k,
         rerank_min_score=settings.rag_rerank_min_score,
         embedding_dim=settings.embed_dim,
@@ -460,7 +463,7 @@ def _build_provenance(
     )
     configuration_sha256 = hashlib.sha256(
         json.dumps(
-            configuration.model_dump(mode="json"),
+            configuration.model_dump(mode="json", exclude_none=True),
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -579,6 +582,7 @@ class ProductionBaselineRunner:
         sessionmaker: async_sessionmaker[AsyncSession],
         *,
         top_k: int,
+        sparse_backend: SparseBackend = "postgres_fts",
     ) -> None:
         require_loopback_url(settings.embed_base_url, name="embedding endpoint")
         require_loopback_url(settings.rerank_base_url, name="reranker endpoint")
@@ -590,6 +594,7 @@ class ProductionBaselineRunner:
         self.engine = engine
         self.sessionmaker = sessionmaker
         self.top_k = top_k
+        self.sparse_backend = sparse_backend
         self.storage = Storage()
         self.embedder = Embedder()
         visual_embedder = VisualEmbedder() if settings.visual_enabled else None
@@ -855,6 +860,7 @@ class ProductionBaselineRunner:
                 top_k=self.top_k,
                 owner_sub=owner_sub,
                 allow_rerank_fallback=False,
+                sparse_backend=getattr(self, "sparse_backend", "postgres_fts"),
             )
         retrieval_ms = (time.monotonic() - retrieval_start) * 1000
         if any(document_refs.get(chunk.document_id) is None for chunk in chunks):
@@ -906,6 +912,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("sidecar", type=Path)
     parser.add_argument("--mode", choices=("candidate", "release"), default="release")
     parser.add_argument("--top-k", type=int, default=10, choices=range(10, 65))
+    parser.add_argument(
+        "--sparse-backend",
+        choices=("postgres_fts", "pg_textsearch"),
+        default="postgres_fts",
+    )
     parser.add_argument("--report", type=Path)
     parser.add_argument("--attestation", type=Path)
     parser.add_argument("--attestation-key", type=Path)
@@ -940,7 +951,13 @@ async def async_main() -> int:
         if args.mode == "release" and (git_sha is None or git_dirty is not False):
             raise BaselineEvaluationError("release baseline requires a clean Git revision")
         engine, sessionmaker = create_readonly_sessionmaker()
-        runner = ProductionBaselineRunner(engine, sessionmaker, top_k=args.top_k)
+        sparse_backend = cast(SparseBackend, args.sparse_backend)
+        runner = ProductionBaselineRunner(
+            engine,
+            sessionmaker,
+            top_k=args.top_k,
+            sparse_backend=sparse_backend,
+        )
         try:
             runtime_snapshot = await runner.verify_corpus_snapshot(records, bound)
             model_revisions = await _collect_model_revisions()
@@ -950,6 +967,7 @@ async def async_main() -> int:
                 records,
                 mode=args.mode,
                 top_k=args.top_k,
+                sparse_backend=sparse_backend,
                 gold_artifact_sha256=gold_artifact_sha256,
                 sidecar_artifact_sha256=sidecar_artifact_sha256,
                 evaluated_at=datetime.now(UTC),
