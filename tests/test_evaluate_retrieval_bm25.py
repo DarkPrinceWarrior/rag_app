@@ -63,16 +63,20 @@ def _case(
     question = f"What exact value is specified for test case number {index}?"
     answer = f"The exact test value is {index}." if answerable else None
     evidence = (
-        EvidenceRef(
-            evidence_id=evidence_id,
-            document_ref=document_ref,
-            page=1,
-            content_type="text",
-            content_sha256=content_sha,
-            relevance_grade=3,
-            bbox=None,
-        ),
-    ) if answerable else ()
+        (
+            EvidenceRef(
+                evidence_id=evidence_id,
+                document_ref=document_ref,
+                page=1,
+                content_type="text",
+                content_sha256=content_sha,
+                relevance_grade=3,
+                bbox=None,
+            ),
+        )
+        if answerable
+        else ()
+    )
     record = GoldRecord(
         schema_version="rag-gold-v1",
         case_id=f"ragq-test-bm25-{index:04d}",
@@ -196,14 +200,13 @@ def test_exact_evidence_is_the_only_relevance_source() -> None:
     assert metrics.recall["5"] == 0.0
 
 
-def test_split_is_deterministic_and_keeps_scope_clusters_disjoint() -> None:
-    pairs = [
-        _case(1, owner="owner-a"),
-        _case(2, owner="owner-a"),
-        _case(3, owner="owner-b"),
-        _case(4, owner="owner-b"),
+def test_split_is_deterministic_and_keeps_document_clusters_disjoint() -> None:
+    records = [
+        _case(index, owner=f"document-{index}")[0].model_copy(
+            update={"scope_id": make_scope_id(f"owner-{index % 2}")}
+        )
+        for index in range(1, 5)
     ]
-    records = [item[0] for item in pairs]
 
     first = runner.stratified_cluster_split(records, seed=17, locked_fraction=0.5)
     second = runner.stratified_cluster_split(records, seed=17, locked_fraction=0.5)
@@ -211,9 +214,20 @@ def test_split_is_deterministic_and_keeps_scope_clusters_disjoint() -> None:
     assert first == second
     assert set(first.tuning_cluster_ids).isdisjoint(first.locked_cluster_ids)
     by_id = {record.case_id: record for record in records}
+    tuning_documents = {
+        snapshot.document_ref
+        for case_id in first.tuning_case_ids
+        for snapshot in by_id[case_id].document_scope
+    }
+    locked_documents = {
+        snapshot.document_ref
+        for case_id in first.locked_case_ids
+        for snapshot in by_id[case_id].document_scope
+    }
     tuning_scopes = {by_id[case_id].scope_id for case_id in first.tuning_case_ids}
     locked_scopes = {by_id[case_id].scope_id for case_id in first.locked_case_ids}
-    assert tuning_scopes.isdisjoint(locked_scopes)
+    assert tuning_documents.isdisjoint(locked_documents)
+    assert tuning_scopes == locked_scopes == {make_scope_id("owner-0"), make_scope_id("owner-1")}
 
 
 def test_split_fails_when_only_one_independent_cluster_exists() -> None:
@@ -248,9 +262,7 @@ class _FakeRetriever:
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
             sparse_engine=(
-                "postgres_fts"
-                if kwargs["sparse_backend"] == "postgres_fts"
-                else "pg_textsearch_en"
+                "postgres_fts" if kwargs["sparse_backend"] == "postgres_fts" else "pg_textsearch_en"
             ),
             dense=rows,
             sparse=rows,
@@ -318,20 +330,24 @@ def _execute_artifact(*, index: int = 1, answerable: bool = True, flip: bool = F
             corpus_sha256="a" * 64,
         ),
     )
-    return asyncio.run(
-        runner._execute_case(
-            retriever=_FakeRetriever(chunk, flip=flip),
-            sessionmaker=lambda: _Session(),
-            binding=binding,
-            scope=scope,
-            config=_config(),
-            backend="pg_textsearch",
-            variant="candidate",
-            split="tuning",
-            run_id="b" * 64,
-            repeat_count=2,
-        )
-    ), record, sidecar
+    return (
+        asyncio.run(
+            runner._execute_case(
+                retriever=_FakeRetriever(chunk, flip=flip),
+                sessionmaker=lambda: _Session(),
+                binding=binding,
+                scope=scope,
+                config=_config(),
+                backend="pg_textsearch",
+                variant="candidate",
+                split="tuning",
+                run_id="b" * 64,
+                repeat_count=2,
+            )
+        ),
+        record,
+        sidecar,
+    )
 
 
 def test_case_execution_sets_principal_and_serializes_no_content() -> None:
@@ -385,6 +401,41 @@ def test_sweep_selection_uses_quality_then_latency() -> None:
         latency_ms={"mean": 5.0, "p50": 5.0, "p95": 5.0},
     )
     assert runner.select_tuning_config({"a" * 64: weaker, "b" * 64: stronger}) == "b" * 64
+
+
+def test_split_ignores_single_cluster_labels_without_document_leakage() -> None:
+    records = []
+    for index in range(12):
+        record = _case(index, owner=f"document-{index}")[0]
+        records.append(
+            record.model_copy(
+                update={
+                    "scope_id": make_scope_id(f"scope-{index % 2}"),
+                    "content_types": ("scan",) if index == 0 else ("text",),
+                }
+            )
+        )
+
+    split = runner.stratified_cluster_split(records, seed=2026071409, locked_fraction=0.75)
+    by_id = {record.case_id: record for record in records}
+    locked_documents = {
+        snapshot.document_ref
+        for case_id in split.locked_case_ids
+        for snapshot in by_id[case_id].document_scope
+    }
+    tuning_documents = {
+        snapshot.document_ref
+        for case_id in split.tuning_case_ids
+        for snapshot in by_id[case_id].document_scope
+    }
+
+    assert len(split.locked_case_ids) == 9
+    assert len(split.tuning_case_ids) == 3
+    assert locked_documents.isdisjoint(tuning_documents)
+    assert set(split.locked_case_ids) | set(split.tuning_case_ids) == set(by_id)
+    assert (
+        sum(split.distribution[partition].get("content:scan", 0) for partition in ("locked", "tuning")) == 1
+    )
 
 
 def test_external_evidence_is_corpus_bound_and_private(tmp_path: Path) -> None:
@@ -577,8 +628,7 @@ def test_candidate_provenance_binds_legacy_fts_manifest() -> None:
         extensions={"pg_textsearch": policy.required_pg_textsearch_version},
         index_definitions=definitions,
         index_definitions_sha256={
-            name: hashlib.sha256(definition.encode()).hexdigest()
-            for name, definition in definitions.items()
+            name: hashlib.sha256(definition.encode()).hexdigest() for name, definition in definitions.items()
         },
         extension_binary_sha256=policy.required_extension_binary_sha256,
         extension_binary_bytes=1_746_152,
@@ -631,9 +681,7 @@ def test_corpus_verifier_awaits_storage_read(monkeypatch: pytest.MonkeyPatch) ->
     )
     storage = SimpleNamespace(get_bytes=AsyncMock(return_value=b"source-bytes"))
     verifier = runner._CorpusVerifier(lambda: _Session(), storage)
-    verifier._load_scope_rows = AsyncMock(
-        return_value=("owner-a", [document], [chunk], [])
-    )
+    verifier._load_scope_rows = AsyncMock(return_value=("owner-a", [document], [chunk], []))
     verifier._verify_case_evidence = AsyncMock(return_value=None)
     monkeypatch.setattr(runner, "bytes_sha256", lambda _: snapshot.source_sha256)
     monkeypatch.setattr(
@@ -856,9 +904,7 @@ def test_database_evidence_preserves_index_definition_literals() -> None:
         candidate_index_manifest_sha256=policy.required_candidate_index_manifest_sha256,
     )
 
-    evidence = asyncio.run(
-        runner._database_evidence(Engine(), policy=policy, runtime=runtime)
-    )
+    evidence = asyncio.run(runner._database_evidence(Engine(), policy=policy, runtime=runtime))
 
     assert evidence.index_definitions == expected
     assert "\n" in expected["ix_chunks_bm25_en_v1"]

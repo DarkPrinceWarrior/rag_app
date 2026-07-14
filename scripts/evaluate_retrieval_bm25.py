@@ -200,9 +200,7 @@ class CaseArtifact(_StrictModel):
 
 
 class CaseArtifactHmac(_StrictModel):
-    schema_version: Literal["retrieval-bm25-case-hmac-v1"] = (
-        "retrieval-bm25-case-hmac-v1"
-    )
+    schema_version: Literal["retrieval-bm25-case-hmac-v1"] = "retrieval-bm25-case-hmac-v1"
     key_id: str = Field(pattern=_SHA256_PATTERN)
     artifact_sha256: str = Field(pattern=_SHA256_PATTERN)
     run_id: str = Field(pattern=_SHA256_PATTERN)
@@ -479,9 +477,7 @@ class LockedNoAnswerDecision(_StrictModel):
 
 
 class LockedDecision(_StrictModel):
-    schema_version: Literal["retrieval-locked-decision-v1"] = (
-        "retrieval-locked-decision-v1"
-    )
+    schema_version: Literal["retrieval-locked-decision-v1"] = "retrieval-locked-decision-v1"
     case_count: int = Field(ge=1, le=500)
     tuning_case_count: int = Field(ge=1, le=500)
     metrics: tuple[MetricDecision, ...] = Field(min_length=7, max_length=7)
@@ -586,12 +582,9 @@ def _union_find_clusters(records: Sequence[GoldRecord]) -> list[_Cluster]:
         if left_root != right_root:
             parent[max(left_root, right_root)] = min(left_root, right_root)
 
-    owners: dict[str, str] = {}
     documents: dict[str, str] = {}
     by_id = {record.case_id: record for record in records}
     for record in records:
-        previous = owners.setdefault(record.scope_id, record.case_id)
-        union(previous, record.case_id)
         for snapshot in record.document_scope:
             previous = documents.setdefault(snapshot.document_ref, record.case_id)
             union(previous, record.case_id)
@@ -601,9 +594,7 @@ def _union_find_clusters(records: Sequence[GoldRecord]) -> list[_Cluster]:
         grouped[root(case_id)].append(case_id)
     clusters = []
     for case_ids in grouped.values():
-        labels = frozenset(
-            label for case_id in case_ids for label in _case_labels(by_id[case_id])
-        )
+        labels = frozenset(label for case_id in case_ids for label in _case_labels(by_id[case_id]))
         cluster_id = _sha256_json(case_ids)
         clusters.append(_Cluster(cluster_id, tuple(case_ids), labels))
     return sorted(clusters, key=lambda item: item.cluster_id)
@@ -633,12 +624,6 @@ def stratified_cluster_split(
     for cluster in clusters:
         for label in cluster.labels:
             label_clusters[label].add(cluster.cluster_id)
-    unsplittable = sorted(label for label, values in label_clusters.items() if len(values) < 2)
-    if unsplittable:
-        raise RetrievalEvaluationError(
-            f"stratified split has labels confined to one cluster: {','.join(unsplittable)}"
-        )
-
     total_cases = sum(len(cluster.case_ids) for cluster in clusters)
     target = max(1, min(round(total_cases * locked_fraction), total_cases - 1))
     all_labels = sorted(label_clusters)
@@ -650,37 +635,28 @@ def stratified_cluster_split(
         locked_size = sum(len(clusters[index].case_ids) for index in indices)
         tuning_ids = {cluster.cluster_id for cluster in clusters} - selected
         if any(
-            not (values & selected) or not (values & tuning_ids)
+            not values & selected or not values & tuning_ids
             for values in label_clusters.values()
+            if len(values) >= 2
         ):
             return None
-        locked_counts = Counter(
-            label for index in indices for label in clusters[index].labels
-        )
+        locked_counts = Counter(label for index in indices for label in clusters[index].labels)
         distribution_error = sum(
-            abs(
-                locked_counts[label] / len(indices)
-                - len(label_clusters[label]) / len(clusters)
-            )
+            abs(locked_counts[label] / len(indices) - len(label_clusters[label]) / len(clusters))
             for label in all_labels
         )
-        tie = hashlib.sha256(
-            f"{seed}:{','.join(sorted(selected))}".encode()
-        ).hexdigest()
+        tie = hashlib.sha256(f"{seed}:{','.join(sorted(selected))}".encode()).hexdigest()
         return abs(locked_size - target), distribution_error, tie
 
     candidates: Iterable[tuple[int, ...]]
     if len(clusters) <= 18:
         candidates = itertools.chain.from_iterable(
-            itertools.combinations(range(len(clusters)), size)
-            for size in range(1, len(clusters))
+            itertools.combinations(range(len(clusters)), size) for size in range(1, len(clusters))
         )
     else:
         ordered = sorted(
             range(len(clusters)),
-            key=lambda index: hashlib.sha256(
-                f"{seed}:{clusters[index].cluster_id}".encode()
-            ).hexdigest(),
+            key=lambda index: hashlib.sha256(f"{seed}:{clusters[index].cluster_id}".encode()).hexdigest(),
         )
         candidates = (tuple(ordered[:size]) for size in range(1, len(clusters)))
 
@@ -710,11 +686,7 @@ def stratified_cluster_split(
     tuning_case_ids = tuple(sorted(tuning_cases))
     locked_case_ids = tuple(sorted(locked_cases))
     tuning_cluster_ids = tuple(
-        sorted(
-            cluster.cluster_id
-            for cluster in clusters
-            if cluster.cluster_id not in locked_clusters
-        )
+        sorted(cluster.cluster_id for cluster in clusters if cluster.cluster_id not in locked_clusters)
     )
     locked_cluster_ids = tuple(sorted(locked_clusters))
     payload = {
@@ -746,10 +718,7 @@ def build_case_bindings(
     for record in records:
         sidecar = sidecars[record.case_id]
         grade_by_evidence = {item.evidence_id: item.relevance_grade for item in record.evidence}
-        relevance = {
-            item.chunk_id: grade_by_evidence[item.evidence_id]
-            for item in sidecar.exact_evidence
-        }
+        relevance = {item.chunk_id: grade_by_evidence[item.evidence_id] for item in sidecar.exact_evidence}
         if record.answerable and not relevance:
             raise RetrievalEvaluationError("answerable case lacks exact-evidence chunk ground truth")
         if not record.answerable and relevance:
@@ -805,10 +774,7 @@ def aggregate_pool(
         return sum(values) / len(values) if values else None
 
     latencies = [case.observation.pools[pool].latency_ms for case in cases]
-    fpr_values = [
-        bool(case.observation.pools[pool].metrics.no_answer_false_positive)
-        for case in no_answer
-    ]
+    fpr_values = [bool(case.observation.pools[pool].metrics.no_answer_false_positive) for case in no_answer]
     returned_counts = [case.observation.returned_count for case in cases]
     abstained_count = sum(case.observation.abstained for case in cases)
     return AggregateMetrics(
@@ -817,9 +783,7 @@ def aggregate_pool(
         recall={k: mean_metric("recall", k) for k in ("1", "5", "10")},
         mrr={k: mean_metric("mrr", k) for k in ("1", "5", "10")},
         ndcg={k: mean_metric("ndcg", k) for k in ("1", "5", "10")},
-        no_answer_false_positive_rate=(
-            sum(fpr_values) / len(fpr_values) if fpr_values else None
-        ),
+        no_answer_false_positive_rate=(sum(fpr_values) / len(fpr_values) if fpr_values else None),
         returned_count=sum(returned_counts),
         abstained_count=abstained_count,
         no_answer_returned_count=sum(case.observation.returned_count for case in no_answer),
@@ -833,10 +797,7 @@ def aggregate_pool(
 
 
 def aggregate_all_pools(cases: Sequence[CaseArtifact]) -> dict[PoolName, AggregateMetrics]:
-    return {
-        pool: aggregate_pool(cases, pool=pool)
-        for pool in ("dense", "sparse", "hybrid", "final")
-    }
+    return {pool: aggregate_pool(cases, pool=pool) for pool in ("dense", "sparse", "hybrid", "final")}
 
 
 def aggregate_slices(
@@ -856,10 +817,7 @@ def aggregate_slices(
             labels.add("challenge:none")
         for label in labels:
             slices[label].append(case)
-    return {
-        label: aggregate_all_pools(selected)
-        for label, selected in sorted(slices.items())
-    }
+    return {label: aggregate_all_pools(selected) for label, selected in sorted(slices.items())}
 
 
 def sweep_configs(
@@ -885,9 +843,7 @@ def sweep_configs(
             rerank_min_score=threshold,
             final_top_k=control.final_top_k,
         )
-        for sparse, rrf, threshold in itertools.product(
-            sparse_top_k, rrf_k, rerank_min_score
-        )
+        for sparse, rrf, threshold in itertools.product(sparse_top_k, rrf_k, rerank_min_score)
     }
     if not configs:
         raise RetrievalEvaluationError("sweep must contain at least one configuration")
@@ -998,9 +954,7 @@ def _verify_case_hmac(
 ) -> None:
     signature_path = _case_hmac_path(path)
     if not signature_path.exists():
-        raise RetrievalEvaluationError(
-            "qualification resume artifact is missing its case HMAC"
-        )
+        raise RetrievalEvaluationError("qualification resume artifact is missing its case HMAC")
     try:
         actual = read_private_json(
             signature_path,
@@ -1156,9 +1110,8 @@ def _parse_external_evidence(
         raise RetrievalEvaluationError(f"{expected_kind} evidence corpus binding mismatch")
     if policy is not None:
         if isinstance(value, _RlsEvidence):
-            if (
-                len(value.principals) < policy.min_rls_principal_count
-                or any(item.leak_count for item in value.principals)
+            if len(value.principals) < policy.min_rls_principal_count or any(
+                item.leak_count for item in value.principals
             ):
                 raise RetrievalEvaluationError("RLS evidence does not satisfy policy")
         elif isinstance(value, _LoadEvidence):
@@ -1177,12 +1130,9 @@ def _parse_external_evidence(
             if (
                 value.recovery_seconds > policy.max_operational_seconds
                 or value.rollback_seconds > policy.max_operational_seconds
-                or value.rollback_index_manifest_sha256
-                != policy.required_baseline_index_manifest_sha256
-                or value.candidate_image_digest
-                != policy.required_candidate_image_digest
-                or value.candidate_index_manifest_sha256
-                != policy.required_candidate_index_manifest_sha256
+                or value.rollback_index_manifest_sha256 != policy.required_baseline_index_manifest_sha256
+                or value.candidate_image_digest != policy.required_candidate_image_digest
+                or value.candidate_index_manifest_sha256 != policy.required_candidate_index_manifest_sha256
             ):
                 raise RetrievalEvaluationError("restart/rollback evidence does not satisfy policy")
     return EvidenceReference(
@@ -1212,8 +1162,7 @@ def _parse_operational_evidence(
     if (
         value.corpus_snapshot_sha256 != corpus_snapshot_sha256
         or value.candidate_image_digest != policy.required_candidate_image_digest
-        or value.candidate_index_manifest_sha256
-        != policy.required_candidate_index_manifest_sha256
+        or value.candidate_index_manifest_sha256 != policy.required_candidate_index_manifest_sha256
         or len(value.rls_principals) < policy.min_rls_principal_count
         or any(item.leak_count for item in value.rls_principals)
         or not value.update_visible
@@ -1223,8 +1172,7 @@ def _parse_operational_evidence(
         or value.determinism_replays < policy.min_determinism_replays
         or value.determinism_mismatches
         or value.rollback_backend != "postgres_fts"
-        or value.rollback_index_manifest_sha256
-        != policy.required_baseline_index_manifest_sha256
+        or value.rollback_index_manifest_sha256 != policy.required_baseline_index_manifest_sha256
         or any(
             duration > policy.max_operational_seconds
             for duration in (
@@ -1282,9 +1230,7 @@ def _validate_operational_raw_evidence(
         raw_artifact = read_private_json(raw_path)
     except PrivateArtifactError:
         raise RetrievalEvaluationError("operational raw evidence is invalid") from None
-    if raw_artifact.sha256 != value.raw_evidence_sha256 or not isinstance(
-        raw_artifact.value, dict
-    ):
+    if raw_artifact.sha256 != value.raw_evidence_sha256 or not isinstance(raw_artifact.value, dict):
         raise RetrievalEvaluationError("operational raw evidence hash mismatch")
     raw = cast(Mapping[str, Any], raw_artifact.value)
     component_hashes = raw.get("component_sha256")
@@ -1319,9 +1265,12 @@ def _validate_operational_raw_evidence(
     update = lifecycle.get("update")
     delete = lifecycle.get("delete")
     raw_principals = raw.get("rls_principals")
-    if not isinstance(update, dict) or not isinstance(delete, dict) or not isinstance(
-        raw_principals, list
-    ) or any(not isinstance(item, dict) for item in raw_principals):
+    if (
+        not isinstance(update, dict)
+        or not isinstance(delete, dict)
+        or not isinstance(raw_principals, list)
+        or any(not isinstance(item, dict) for item in raw_principals)
+    ):
         raise RetrievalEvaluationError("operational raw observations are incomplete")
     principal_projection = tuple(
         sorted(
@@ -1362,8 +1311,7 @@ def _validate_operational_raw_evidence(
         and raw.get("candidate_ready_for_gold") is True
         and raw.get("corpus_snapshot_sha256") == value.corpus_snapshot_sha256
         and raw.get("candidate_image_digest") == value.candidate_image_digest
-        and raw.get("candidate_index_manifest_sha256")
-        == value.candidate_index_manifest_sha256
+        and raw.get("candidate_index_manifest_sha256") == value.candidate_index_manifest_sha256
         and principal_projection == expected_principals
         and gold_scope_rls.get("all_gold_scopes_covered") is True
         and gold_scope_rls.get("reviewed_case_count") == policy.expected_case_count
@@ -1382,8 +1330,7 @@ def _validate_operational_raw_evidence(
             for key in ("committed", "chunk_hidden", "document_hidden", "new_en_hidden", "new_ru_hidden")
         )
         and value.delete_visibility_seconds == delete.get("visibility_seconds")
-        and value.restart_recovered
-        == all(restart.get(key) is True for key in restart_checks)
+        and value.restart_recovered == all(restart.get(key) is True for key in restart_checks)
         and value.restart_recovery_seconds == restart.get("recovery_seconds")
         and value.determinism_replays == determinism.get("replays")
         and value.determinism_mismatches == determinism.get("mismatches")
@@ -1394,15 +1341,11 @@ def _validate_operational_raw_evidence(
             and rollback.get("gin_valid_ready_live") is True
             and rollback.get("owner_mismatches") == 0
             and isinstance(rollback_negative, list)
-            and all(
-                isinstance(item, dict) and item.get("returned_count") == 0
-                for item in rollback_negative
-            )
+            and all(isinstance(item, dict) and item.get("returned_count") == 0 for item in rollback_negative)
         )
         and value.rollback_seconds == rollback.get("rollback_seconds")
         and value.rollback_backend == rollback.get("rollback_backend")
-        and value.rollback_index_manifest_sha256
-        == rollback.get("baseline_index_manifest_sha256")
+        and value.rollback_index_manifest_sha256 == rollback.get("baseline_index_manifest_sha256")
     )
     if not raw_matches:
         raise RetrievalEvaluationError("operational summary does not match raw observations")
@@ -1517,9 +1460,7 @@ class _CorpusVerifier:
                     raise RetrievalEvaluationError("source document resolution mismatch")
                 owners = {row.owner_sub for row in owner_rows}
                 if len(owners) != 1:
-                    raise RetrievalEvaluationError(
-                        "source documents do not resolve to one owner"
-                    )
+                    raise RetrievalEvaluationError("source documents do not resolve to one owner")
                 owner_sub = str(next(iter(owners)))
                 if make_scope_id(owner_sub) != sidecar.scope_id:
                     raise RetrievalEvaluationError("resolved owner scope hash mismatch")
@@ -1750,11 +1691,7 @@ def _read_regular_bytes(path: Path, *, max_bytes: int = 16 * 1024 * 1024) -> byt
         raise RetrievalEvaluationError("unable to open required input") from None
     try:
         info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-            or not 0 < info.st_size <= max_bytes
-        ):
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 < info.st_size <= max_bytes:
             raise RetrievalEvaluationError("required input is not a bounded regular file")
         chunks: list[bytes] = []
         remaining = info.st_size
@@ -1785,9 +1722,7 @@ def _tracked_repository_source(path: Path) -> str:
         source = path.expanduser().resolve(strict=True)
         relative = source.relative_to(repository).as_posix()
     except (OSError, ValueError):
-        raise RetrievalEvaluationError(
-            "qualification policy must be a tracked repository source"
-        ) from None
+        raise RetrievalEvaluationError("qualification policy must be a tracked repository source") from None
     try:
         result = subprocess.run(  # noqa: S603
             ["git", "ls-files", "--error-unmatch", "--", relative],  # noqa: S607
@@ -1798,13 +1733,9 @@ def _tracked_repository_source(path: Path) -> str:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
-        raise RetrievalEvaluationError(
-            "qualification policy must be a tracked repository source"
-        ) from None
+        raise RetrievalEvaluationError("qualification policy must be a tracked repository source") from None
     if result.stdout.strip() != relative:
-        raise RetrievalEvaluationError(
-            "qualification policy must resolve to one tracked repository source"
-        )
+        raise RetrievalEvaluationError("qualification policy must resolve to one tracked repository source")
     return relative
 
 
@@ -1941,9 +1872,7 @@ async def _database_evidence(
     async with engine.connect() as connection:
         version = int((await connection.execute(sql("SHOW server_version_num"))).scalar_one())
         extension_rows = (
-            await connection.execute(
-                sql("SELECT extname, extversion FROM pg_extension ORDER BY extname")
-            )
+            await connection.execute(sql("SELECT extname, extversion FROM pg_extension ORDER BY extname"))
         ).all()
         index_rows = (
             await connection.execute(
@@ -1960,9 +1889,7 @@ async def _database_evidence(
     definitions = {str(row.indexname): str(row.indexdef) for row in index_rows}
     if set(definitions) != set(names):
         raise RetrievalEvaluationError("required sparse indexes are missing")
-    expected_definitions = {
-        item.name: item.canonical_definition for item in policy.required_baseline_indexes
-    }
+    expected_definitions = {item.name: item.canonical_definition for item in policy.required_baseline_indexes}
     expected_definitions.update(
         {item.name: item.canonical_definition for item in policy.required_candidate_indexes}
     )
@@ -2047,9 +1974,7 @@ def _expected_sparse_engine(record: GoldRecord, backend: SparseBackend) -> Spars
     else:
         expected = "postgres_fts"
     if planned != expected:
-        raise RetrievalEvaluationError(
-            "Gold language and production sparse script routing disagree"
-        )
+        raise RetrievalEvaluationError("Gold language and production sparse script routing disagree")
     return expected
 
 
@@ -2348,10 +2273,7 @@ def _validate_raw_load_evidence(
         or raw.config_sha256 != config.fingerprint
         or raw.locked_case_manifest_sha256 != _sha256_json(locked_ids)
         or (concurrency is not None and raw.concurrency != concurrency)
-        or (
-            requests_per_backend is not None
-            and raw.requests_per_backend != requests_per_backend
-        )
+        or (requests_per_backend is not None and raw.requests_per_backend != requests_per_backend)
     ):
         raise RetrievalEvaluationError("raw load evidence does not match this run")
     for item in raw.observations:
@@ -2398,9 +2320,7 @@ def _aggregate_load_backend(
             0.95,
         ),
         throughput_rps=completed / duration,
-        raw_observations_sha256=_sha256_json(
-            [item.model_dump(mode="json") for item in observations]
-        ),
+        raw_observations_sha256=_sha256_json([item.model_dump(mode="json") for item in observations]),
     )
 
 
@@ -2452,6 +2372,7 @@ async def generate_load_evidence(
     else:
         semaphore = asyncio.Semaphore(concurrency)
         started_at = datetime.now(UTC)
+
         async def run_pair(pair_index: int) -> tuple[LoadRequestObservation, ...]:
             case_id = locked_ids[pair_index % len(locked_ids)]
             binding = bindings[case_id]
@@ -2478,9 +2399,7 @@ async def generate_load_evidence(
                 )
             return tuple(pair_observations)
 
-        paired = await asyncio.gather(
-            *(run_pair(pair_index) for pair_index in range(requests_per_backend))
-        )
+        paired = await asyncio.gather(*(run_pair(pair_index) for pair_index in range(requests_per_backend)))
         observations = tuple(item for pair in paired for item in pair)
         raw = RawLoadEvidence(
             corpus_snapshot_sha256=corpus_snapshot_sha256,
@@ -2541,13 +2460,9 @@ def _statistical_cluster_ids(
 ) -> dict[str, str]:
     result: dict[str, str] = {}
     for case_id, binding in bindings.items():
-        evidence_documents = sorted(
-            {item.document_ref for item in binding.sidecar.exact_evidence}
-        )
+        evidence_documents = sorted({item.document_ref for item in binding.sidecar.exact_evidence})
         if not evidence_documents:
-            evidence_documents = sorted(
-                {item.document_ref for item in binding.sidecar.source_documents}
-            )
+            evidence_documents = sorted({item.document_ref for item in binding.sidecar.source_documents})
         payload = {
             "scope_id": binding.record.scope_id,
             "documents": evidence_documents,
@@ -2584,9 +2499,7 @@ def _locked_bootstrap(
         baseline_values.append(baseline)
         candidate_values.append(candidate)
     if len(grouped) < 2:
-        raise RetrievalEvaluationError(
-            "locked decision requires at least two statistical clusters"
-        )
+        raise RetrievalEvaluationError("locked decision requires at least two statistical clusters")
     clusters = tuple((sum(values), len(values)) for _, values in sorted(grouped.items()))
     rng = random.Random(seed)
     bootstrapped: list[float] = []
@@ -2668,20 +2581,20 @@ def evaluate_locked_decision(
                     _locked_metric_values(right)[metric],
                 )
             )
-        baseline_mean, candidate_mean, improvement, ci_low, ci_high, clusters = (
-            _locked_bootstrap(
-                rows,
-                samples=policy.bootstrap_samples,
-                seed=policy.bootstrap_seed
-                ^ int.from_bytes(hashlib.sha256(f"locked:{metric}".encode()).digest()[:8], "big"),
-                confidence_level=policy.confidence_level,
-            )
+        baseline_mean, candidate_mean, improvement, ci_low, ci_high, clusters = _locked_bootstrap(
+            rows,
+            samples=policy.bootstrap_samples,
+            seed=policy.bootstrap_seed
+            ^ int.from_bytes(hashlib.sha256(f"locked:{metric}".encode()).digest()[:8], "big"),
+            confidence_level=policy.confidence_level,
         )
         noninferiority = ci_low >= -policy.global_max_regression
         target = (
             policy.target_lexical_recall_at_5_gain
             if metric == "lexical_recall_at_5"
-            else policy.target_ndcg_at_10_gain if metric == "ndcg_at_10" else None
+            else policy.target_ndcg_at_10_gain
+            if metric == "ndcg_at_10"
+            else None
         )
         target_passed = target is None or ci_low >= target
         passed = noninferiority and target_passed
@@ -2716,14 +2629,11 @@ def evaluate_locked_decision(
     ]
     if not no_answer_rows:
         raise RetrievalEvaluationError("locked set has no no-answer cases")
-    baseline_rate, candidate_rate, improvement, ci_low, ci_high, clusters = (
-        _locked_bootstrap(
-            no_answer_rows,
-            samples=policy.bootstrap_samples,
-            seed=policy.bootstrap_seed
-            ^ int.from_bytes(hashlib.sha256(b"locked:no_answer").digest()[:8], "big"),
-            confidence_level=policy.confidence_level,
-        )
+    baseline_rate, candidate_rate, improvement, ci_low, ci_high, clusters = _locked_bootstrap(
+        no_answer_rows,
+        samples=policy.bootstrap_samples,
+        seed=policy.bootstrap_seed ^ int.from_bytes(hashlib.sha256(b"locked:no_answer").digest()[:8], "big"),
+        confidence_level=policy.confidence_level,
     )
     no_answer_passed = ci_low >= -policy.global_max_regression
     if not no_answer_passed:
@@ -2802,9 +2712,7 @@ def _sparse_engine_case_evidence(
             variant=item.observation.variant,
             config_sha256=item.observation.config_sha256,
             sparse_engine=cast(Any, item.observation.sparse_engine),
-            artifact_sha256=hashlib.sha256(
-                _canonical_bytes(item.model_dump(mode="json"))
-            ).hexdigest(),
+            artifact_sha256=hashlib.sha256(_canonical_bytes(item.model_dump(mode="json"))).hexdigest(),
         )
         for item in artifacts
     ]
@@ -2862,9 +2770,7 @@ def _gate_sparse_engine(
             base_postgres_image_digest=database.base_image_digest,
             build_recipe_sha256=database.build_recipe_sha256,
             prepare_sql_sha256=database.prepare_sql_sha256,
-            legacy_fts_index_manifest_sha256=(
-                database.baseline_index_manifest_sha256
-            ),
+            legacy_fts_index_manifest_sha256=(database.baseline_index_manifest_sha256),
             spdx_license="PostgreSQL",
         )
     return SparseEngineProvenance(
@@ -2890,9 +2796,7 @@ def _gate_operations(
         raise RetrievalEvaluationError(
             "qualification requires consolidated operational and raw load evidence"
         )
-    _, load_value = _read_external_evidence(
-        evidence_paths["load"], expected_kind="load"
-    )
+    _, load_value = _read_external_evidence(evidence_paths["load"], expected_kind="load")
     if not isinstance(load_value, _LoadEvidence):
         raise RetrievalEvaluationError("load evidence type mismatch")
     _, operations = _parse_operational_evidence(
@@ -2922,8 +2826,7 @@ def _gate_report(
         for item in sorted(artifacts, key=lambda value: value.case_id)
     )
     scope_provenance = tuple(
-        OwnerScopeProvenance(**item.model_dump(mode="python"))
-        for item in manifest.owner_scopes
+        OwnerScopeProvenance(**item.model_dump(mode="python")) for item in manifest.owner_scopes
     )
     models = RetrievalModelRevisions(
         embedding=RuntimeModelRevision(**manifest.model_revisions.embedding.model_dump()),
@@ -3098,8 +3001,7 @@ def _validate_load_evidence_binding(
     )
     if (
         value.config_sha256 != config.fingerprint
-        or value.locked_case_manifest_sha256
-        != _sha256_json(tuple(sorted(locked_case_ids)))
+        or value.locked_case_manifest_sha256 != _sha256_json(tuple(sorted(locked_case_ids)))
         or value.corpus_snapshot_sha256 != corpus_snapshot_sha256
         or value.raw_artifact_sha256 != raw_artifact.sha256
         or value.baseline != expected_baseline
@@ -3165,9 +3067,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
     _assert_output_inside_work_dir(output, work_dir)
     _assert_output_inside_work_dir(attestation_output, work_dir)
     if args.stop_after_load_evidence and args.generate_load_evidence is None:
-        raise RetrievalEvaluationError(
-            "--stop-after-load-evidence requires --generate-load-evidence"
-        )
+        raise RetrievalEvaluationError("--stop-after-load-evidence requires --generate-load-evidence")
 
     gold_artifact = read_private_bytes(args.gold, max_bytes=256 * 1024 * 1024)
     sidecar_artifact = read_private_bytes(args.sidecar, max_bytes=256 * 1024 * 1024)
@@ -3282,9 +3182,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             seed=args.split_seed,
             locked_fraction=args.locked_fraction,
         )
-        if mode == "qualification" and (
-            len(split.locked_case_ids) < 200 or len(split.tuning_case_ids) > 36
-        ):
+        if mode == "qualification" and (len(split.locked_case_ids) < 200 or len(split.tuning_case_ids) > 36):
             raise RetrievalEvaluationError(
                 "qualification requires at least 200 locked cases and at most 36 tuning cases"
             )
@@ -3314,9 +3212,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             "gold_corpus_sha256": _gold_corpus_fingerprint(records),
             "runtime_corpus_sha256": runtime_corpus_sha256,
             "policy_sha256": policy_sha256,
-            "owner_scopes": [
-                scopes[key].evidence.model_dump(mode="json") for key in sorted(scopes)
-            ],
+            "owner_scopes": [scopes[key].evidence.model_dump(mode="json") for key in sorted(scopes)],
             "split": split.model_dump(mode="json"),
             "control_config": control.model_dump(mode="json"),
             "sweep_configs": [item.model_dump(mode="json") for item in sweep],
@@ -3351,18 +3247,12 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                 )
             tuning_cases[config.fingerprint] = observations
         tuning_results = {
-            fingerprint: aggregate_all_pools(cases)
-            for fingerprint, cases in sorted(tuning_cases.items())
+            fingerprint: aggregate_all_pools(cases) for fingerprint, cases in sorted(tuning_cases.items())
         }
         selected_fingerprint = select_tuning_config(
-            {
-                fingerprint: metrics["final"]
-                for fingerprint, metrics in tuning_results.items()
-            }
+            {fingerprint: metrics["final"] for fingerprint, metrics in tuning_results.items()}
         )
-        selected = next(
-            config for config in sweep if config.fingerprint == selected_fingerprint
-        )
+        selected = next(config for config in sweep if config.fingerprint == selected_fingerprint)
         locked_cases: dict[VariantName, list[CaseArtifact]] = {
             "baseline": [],
             "candidate": [],
@@ -3399,9 +3289,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                 raise RetrievalEvaluationError("generated load evidence path must be absolute")
             _assert_output_inside_work_dir(generated_load_path, work_dir)
             if "load" in evidence_paths and evidence_paths["load"] != generated_load_path:
-                raise RetrievalEvaluationError(
-                    "generated and ingested load evidence are mutually exclusive"
-                )
+                raise RetrievalEvaluationError("generated and ingested load evidence are mutually exclusive")
             if mode == "qualification" and (
                 args.load_concurrency < policy.min_load_concurrency
                 or args.load_requests_per_backend < policy.min_load_requests
@@ -3573,26 +3461,17 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             policy_sha256=policy_sha256,
             selected_candidate_config_sha256=selected_fingerprint,
             tuning_results=tuning_results,
-            locked_results={
-                variant: aggregate_all_pools(cases)
-                for variant, cases in locked_cases.items()
-            },
-            locked_slices={
-                variant: aggregate_slices(cases) for variant, cases in locked_cases.items()
-            },
+            locked_results={variant: aggregate_all_pools(cases) for variant, cases in locked_cases.items()},
+            locked_slices={variant: aggregate_slices(cases) for variant, cases in locked_cases.items()},
             baseline_gate_report_sha256=baseline_gate_report_sha256,
             candidate_gate_report_sha256=candidate_gate_report_sha256,
             gate_decision=gate_decision,
             locked_decision=locked_decision,
             release_accepted=(
-                locked_decision.accepted and gate_decision.accepted
-                if gate_decision is not None
-                else None
+                locked_decision.accepted and gate_decision.accepted if gate_decision is not None else None
             ),
             deterministic=True,
-            sparse_engine_evidence=_sparse_engine_case_evidence(
-                report_engine_artifacts
-            ),
+            sparse_engine_evidence=_sparse_engine_case_evidence(report_engine_artifacts),
             runtime_corpus_sha256_after=runtime_after,
             completed_at=datetime.now(UTC),
         )
