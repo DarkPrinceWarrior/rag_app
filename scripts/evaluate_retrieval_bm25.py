@@ -2043,6 +2043,9 @@ async def _execute_case(
             raise RetrievalEvaluationError("retriever escaped the verified owner scope")
         sparse_engines.add(trace.sparse_engine)
         reranker_fallback = reranker_fallback or trace.reranker_fallback
+        reranked_order = tuple(chunk.id for chunk in trace.reranked)
+        if len(reranked_order) != len(set(reranked_order)):
+            raise RetrievalEvaluationError("reranker returned duplicate chunk IDs")
         rerank_score_snapshots.append({chunk.id: chunk.score for chunk in trace.reranked})
         order_payload: dict[str, list[str]] = {}
         for pool, rows in _pool_rows(trace).items():
@@ -2052,9 +2055,15 @@ async def _execute_case(
             pool_orders[pool].append(order)
             pool_latencies[pool].append(_pool_latency(trace, pool))
             order_payload[pool] = [str(chunk_id) for chunk_id in order]
+        final_order = pool_orders["final"][-1]
+        if final_order != reranked_order[: len(final_order)]:
+            raise RetrievalEvaluationError("final retrieval results are not a reranked prefix")
         repeat_hashes.append(_sha256_json(order_payload))
     deterministic = len(set(repeat_hashes)) == 1
-    shared_reranked = set.intersection(*(set(snapshot) for snapshot in rerank_score_snapshots))
+    reranked_sets_stable = len({frozenset(snapshot) for snapshot in rerank_score_snapshots}) == 1
+    if not reranked_sets_stable:
+        raise RetrievalEvaluationError("reranker candidate universe changed between repeats")
+    shared_reranked = set(rerank_score_snapshots[0])
     max_score_delta = max(
         (
             max(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
@@ -2068,11 +2077,9 @@ async def _execute_case(
         unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
         final_sets_stable = len({frozenset(order) for order in pool_orders["final"]}) == 1
         final_lengths = {len(order) for order in pool_orders["final"]}
-        reranked_sets_stable = len({frozenset(snapshot) for snapshot in rerank_score_snapshots}) == 1
         final_count = next(iter(final_lengths)) if len(final_lengths) == 1 else 0
         can_apply_consensus = (
             unstable == "final"
-            and reranked_sets_stable
             and len(final_lengths) == 1
             and final_count > 0
             and max_score_delta <= _MAX_RERANK_REPEAT_DELTA
@@ -2083,12 +2090,9 @@ async def _execute_case(
                 f"(stages={unstable},final_set_stable={str(final_sets_stable).lower()},"
                 f"max_score_delta={max_score_delta:.6f})"
             )
-        reranked_ids = set(rerank_score_snapshots[0])
-        if any(not set(order).issubset(reranked_ids) for order in pool_orders["final"]):
-            raise RetrievalEvaluationError("final retrieval results are not a reranked subset")
         canonical_final = tuple(
             sorted(
-                reranked_ids,
+                shared_reranked,
                 key=lambda chunk_id: (
                     -math.fsum(snapshot[chunk_id] for snapshot in rerank_score_snapshots)
                     / len(rerank_score_snapshots),

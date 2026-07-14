@@ -265,12 +265,14 @@ class _FakeRetriever:
         reorder_chunk: RetrievedChunk | None = None,
         swap_boundary: bool = False,
         change_candidates: bool = False,
+        duplicate_candidate: bool = False,
     ) -> None:
         self.chunk = chunk
         self.flip = flip
         self.reorder_chunk = reorder_chunk
         self.swap_boundary = swap_boundary
         self.change_candidates = change_candidates
+        self.duplicate_candidate = duplicate_candidate
         self.calls = 0
 
     async def retrieve_with_trace(self, session, query, **kwargs):
@@ -279,11 +281,22 @@ class _FakeRetriever:
         self.calls += 1
         rows = (self.chunk,) if self.reorder_chunk is None else (self.chunk, self.reorder_chunk)
         final = () if self.flip and self.calls % 2 == 0 else rows
+        reranked = rows
         if self.reorder_chunk is not None and self.calls % 2 == 0:
-            final = tuple(reversed(final))
+            reranked = tuple(reversed(rows))
+            final = reranked
         if self.swap_boundary:
-            final = (rows[self.calls % 2],)
-        reranked = final if self.change_candidates else rows
+            first = self.calls % 2
+            rows[first].score = 0.5001
+            rows[(first + 1) % 2].score = 0.5
+            reranked = (rows[first], rows[(first + 1) % 2])
+            final = reranked[:1]
+        if self.change_candidates:
+            final = (rows[0],)
+            reranked = rows if self.calls % 2 else (rows[0],)
+        if self.duplicate_candidate:
+            final = (rows[0],)
+            reranked = (rows[0], rows[0])
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
             sparse_engine=(
@@ -335,6 +348,7 @@ def _execute_artifact(
     reorder: bool = False,
     swap_boundary: bool = False,
     change_candidates: bool = False,
+    duplicate_candidate: bool = False,
 ):
     record, sidecar, chunk_id, _ = _case(index, owner="owner-a", answerable=answerable)
     binding = runner.build_case_bindings([record], {record.case_id: sidecar})[record.case_id]
@@ -376,7 +390,7 @@ def _execute_artifact(
             text_ru="",
             meta={},
         )
-        if reorder or swap_boundary or change_candidates
+        if reorder or swap_boundary or change_candidates or duplicate_candidate
         else None
     )
     return (
@@ -388,6 +402,7 @@ def _execute_artifact(
                     reorder_chunk=reorder_chunk,
                     swap_boundary=swap_boundary,
                     change_candidates=change_candidates,
+                    duplicate_candidate=duplicate_candidate,
                 ),
                 sessionmaker=lambda: _Session(),
                 binding=binding,
@@ -443,8 +458,13 @@ def test_case_execution_applies_consensus_at_top_k_boundary() -> None:
 
 
 def test_case_execution_rejects_changed_reranker_candidates() -> None:
-    with pytest.raises(runner.RetrievalEvaluationError, match="not deterministic"):
-        _execute_artifact(swap_boundary=True, change_candidates=True)
+    with pytest.raises(runner.RetrievalEvaluationError, match="candidate universe changed"):
+        _execute_artifact(change_candidates=True)
+
+
+def test_case_execution_rejects_duplicate_reranker_candidates() -> None:
+    with pytest.raises(runner.RetrievalEvaluationError, match="duplicate chunk IDs"):
+        _execute_artifact(duplicate_candidate=True)
 
 
 def test_no_answer_aggregation_reports_returned_and_abstained_counts() -> None:
