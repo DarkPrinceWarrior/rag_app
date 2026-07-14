@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import stat
+
+from pypdf import PdfReader, PdfWriter
+
 from rag_app.db.models import SegmentKind
 from rag_app.pipeline.page_fallback import (
+    extract_selected_pdf_pages,
     page_fallback_allowed,
     page_fallback_error_metadata,
     page_fallback_metadata,
+    remap_selected_page_drafts,
     select_page_fallbacks,
 )
 from rag_app.pipeline.page_routing import PageRouteDecision, RouteRole
@@ -27,11 +33,12 @@ def test_accepts_missing_table_structure_with_full_page_geometry() -> None:
     )
     plan = select_page_fallbacks(
         [_draft(1, "plain text")],
-        [_draft(1, "A", SegmentKind.table)],
+        [_draft(1, "A" * 60, SegmentKind.table)],
         routing,
         n_pages=2,
         page_sizes={1: (600.0, 800.0)},
         parser_revision=3,
+        allow_full_page_geometry=True,
     )
 
     assert len(plan.candidates) == 1
@@ -53,6 +60,7 @@ def test_rejects_table_when_primary_already_has_structure() -> None:
         n_pages=1,
         page_sizes={0: (600.0, 800.0)},
         parser_revision=1,
+        allow_full_page_geometry=True,
     )
 
     assert plan.candidates == ()
@@ -71,6 +79,7 @@ def test_low_quality_requires_minimum_score_and_margin() -> None:
         n_pages=1,
         page_sizes={0: (600.0, 800.0)},
         parser_revision=1,
+        allow_full_page_geometry=True,
     )
     rejected = select_page_fallbacks(
         fallback,
@@ -79,11 +88,69 @@ def test_low_quality_requires_minimum_score_and_margin() -> None:
         n_pages=1,
         page_sizes={0: (600.0, 800.0)},
         parser_revision=1,
+        allow_full_page_geometry=True,
     )
 
     assert len(accepted.candidates) == 1
     assert rejected.candidates == ()
     assert rejected.decisions[0].reason == "quality_not_improved"
+
+
+def test_rejects_candidate_that_regresses_backfilled_final_result() -> None:
+    routing = _routing(PageRouteDecision(0, RouteRole.parser_fallback, "low_raw_score"))
+    native = "A" * 200
+    plan = select_page_fallbacks(
+        [_draft(0, "")],
+        [_draft(0, "A" * 110)],
+        routing,
+        primary_final=[_draft(0, native)],
+        native_text_by_page={0: native},
+        n_pages=1,
+        page_sizes={0: (600.0, 800.0)},
+        parser_revision=1,
+        allow_full_page_geometry=True,
+    )
+
+    assert plan.candidates == ()
+    assert plan.decisions[0].reason == "final_result_regressed"
+
+
+def test_precise_geometry_is_required_by_default() -> None:
+    routing = _routing(PageRouteDecision(0, RouteRole.parser_fallback, "low_raw_score"))
+    plan = select_page_fallbacks(
+        [_draft(0, "")],
+        [_draft(0, "useful extracted text")],
+        routing,
+        n_pages=1,
+        page_sizes={0: (600.0, 800.0)},
+        parser_revision=1,
+    )
+
+    assert plan.candidates == ()
+    assert plan.decisions[0].reason == "precise_geometry_missing"
+
+
+def test_extracts_only_selected_pages_and_remaps_drafts(tmp_path) -> None:
+    source = tmp_path / "source.pdf"
+    selected = tmp_path / "selected.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=200)
+    writer.add_blank_page(width=300, height=400)
+    writer.add_blank_page(width=500, height=600)
+    writer.write(source)
+    writer.close()
+
+    assert extract_selected_pdf_pages(source, selected, (0, 2)) == (0, 2)
+    reader = PdfReader(selected, strict=True)
+    assert len(reader.pages) == 2
+    assert float(reader.pages[1].mediabox.width) == 500.0
+    assert stat.S_IMODE(selected.stat().st_mode) == 0o600
+
+    remapped = remap_selected_page_drafts(
+        [_draft(0, "first"), _draft(1, "third")],
+        (0, 2),
+    )
+    assert [draft.page_idx for draft in remapped] == [0, 2]
 
 
 def test_ignores_structured_sidecar_roles_and_reports_only_aggregates() -> None:

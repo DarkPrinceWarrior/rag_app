@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -88,7 +89,7 @@ def _valid_bbox(value: Any) -> bool:
         x0, y0, x1, y1 = (float(item) for item in value)
     except (TypeError, ValueError):
         return False
-    return x1 > x0 and y1 > y0
+    return all(math.isfinite(item) for item in (x0, y0, x1, y1)) and x1 > x0 and y1 > y0
 
 
 def _valid_table_grid(value: Any) -> bool:
@@ -100,6 +101,43 @@ def _valid_table_grid(value: Any) -> bool:
     return len(widths) == 1 and 0 not in widths
 
 
+def _valid_table_cells(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    for row in value:
+        if not isinstance(row, list) or not row:
+            return False
+        for cell in row:
+            if not isinstance(cell, dict) or not isinstance(cell.get("text"), str):
+                return False
+            for field in ("rowspan", "colspan"):
+                span = cell.get(field, 1)
+                if isinstance(span, bool) or not isinstance(span, int) or span < 1:
+                    return False
+    return True
+
+
+def _valid_point_geometry(meta: Mapping[str, Any]) -> bool:
+    bbox = meta.get("bbox_pt")
+    page_size = meta.get("page_size_pt")
+    if bbox is None:
+        return page_size is None
+    if not _valid_bbox(bbox) or not isinstance(page_size, (list, tuple)) or len(page_size) != 2:
+        return False
+    try:
+        width, height = (float(value) for value in page_size)
+        x0, y0, x1, y1 = (float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(item) for item in (width, height, x0, y0, x1, y1))
+        and width > 0
+        and height > 0
+        and 0 <= x0 < x1 <= width
+        and 0 <= y0 < y1 <= height
+    )
+
+
 def _integrity_ratio(drafts: Sequence[SegmentDraft]) -> tuple[float, int, int]:
     checked = 0
     invalid = 0
@@ -108,10 +146,16 @@ def _integrity_ratio(drafts: Sequence[SegmentDraft]) -> tuple[float, int, int]:
         if bbox is not None:
             checked += 1
             invalid += not _valid_bbox(bbox)
-
-        if draft.kind == SegmentKind.table and "table_rows" in draft.meta:
+        if "bbox_pt" in draft.meta or "page_size_pt" in draft.meta:
             checked += 1
-            invalid += not _valid_table_grid(draft.meta["table_rows"])
+            invalid += not _valid_point_geometry(draft.meta)
+
+        if draft.kind == SegmentKind.table:
+            checked += 1
+            invalid += not _valid_table_cells(draft.meta.get("table_cells"))
+            if "table_rows" in draft.meta:
+                checked += 1
+                invalid += not _valid_table_grid(draft.meta["table_rows"])
 
     ratio = 1.0 if checked == 0 else 1.0 - invalid / checked
     return ratio, invalid, checked
@@ -218,9 +262,18 @@ def evaluate_parse(
         score = 0.0
     score = round(max(0.0, min(1.0, score)), 4)
 
+    hard_fail_reasons = {
+        "empty_output",
+        "missing_pages",
+        "invalid_page_indices",
+        "pages_without_content",
+        "duplicate_content",
+        "invalid_structures",
+        "low_native_text_coverage",
+    }
     return ParseQualityReport(
         score=score,
-        acceptable=score >= min_score,
+        acceptable=score >= min_score and hard_fail_reasons.isdisjoint(reasons),
         page_coverage=round(page_coverage, 4),
         native_text_coverage=None if native_text_coverage is None else round(native_text_coverage, 4),
         duplicate_ratio=round(duplicate_ratio, 4),

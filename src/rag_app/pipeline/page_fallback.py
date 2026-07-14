@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import copy
+import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from pypdf import PdfReader, PdfWriter
 
 from rag_app.db.models import SegmentKind
 from rag_app.pipeline.page_routing import PageCandidate, RouteRole
@@ -68,6 +72,97 @@ def _has_table(drafts: Sequence[SegmentDraft]) -> bool:
     return any(draft.kind == SegmentKind.table for draft in drafts)
 
 
+def extract_selected_pdf_pages(
+    source: Path,
+    destination: Path,
+    page_indices: Sequence[int],
+) -> tuple[int, ...]:
+    """Создать закрытый PDF только из выбранных физических страниц."""
+
+    selected = tuple(page_indices)
+    if not selected or len(selected) != len(set(selected)) or tuple(sorted(selected)) != selected:
+        raise ValueError("selected PDF pages must be unique, sorted and non-empty")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    writer = PdfWriter(strict=True)
+    try:
+        with source.open("rb") as source_handle:
+            reader = PdfReader(source_handle, strict=True)
+            if reader.is_encrypted:
+                raise ValueError("encrypted PDF cannot be used for page fallback")
+            if selected[0] < 0 or selected[-1] >= len(reader.pages):
+                raise ValueError("selected PDF page is out of range")
+            for page_idx in selected:
+                writer.add_page(reader.pages[page_idx])
+            descriptor = os.open(
+                destination,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                writer.write(handle)
+    finally:
+        writer.close()
+    return selected
+
+
+def remap_selected_page_drafts(
+    drafts: Sequence[SegmentDraft],
+    selected_pages: Sequence[int],
+) -> list[SegmentDraft]:
+    """Вернуть индексы урезанного PDF в исходную физическую нумерацию."""
+
+    selected = tuple(selected_pages)
+    result: list[SegmentDraft] = []
+    for idx, draft in enumerate(drafts):
+        if draft.page_idx is None or not 0 <= draft.page_idx < len(selected):
+            raise ValueError("fallback draft page index is outside selected PDF")
+        result.append(
+            SegmentDraft(
+                idx=idx,
+                kind=draft.kind,
+                source_text=draft.source_text,
+                page_idx=selected[draft.page_idx],
+                heading_level=draft.heading_level,
+                meta=copy.deepcopy(draft.meta),
+            )
+        )
+    return result
+
+
+def _has_precise_geometry(
+    drafts: Sequence[SegmentDraft],
+    *,
+    page_size: tuple[float, float],
+) -> bool:
+    width, height = page_size
+    if width <= 0 or height <= 0 or not drafts:
+        return False
+    for draft in drafts:
+        bbox = draft.meta.get("bbox_pt")
+        size = draft.meta.get("page_size_pt")
+        if (
+            not isinstance(bbox, (list, tuple))
+            or len(bbox) != 4
+            or not isinstance(size, (list, tuple))
+            or len(size) != 2
+            or draft.meta.get("geometry_precision") == "full_page"
+        ):
+            return False
+        try:
+            x0, y0, x1, y1 = (float(value) for value in bbox)
+            actual_width, actual_height = (float(value) for value in size)
+        except (TypeError, ValueError):
+            return False
+        if (
+            abs(actual_width - width) > 0.5
+            or abs(actual_height - height) > 0.5
+            or not 0 <= x0 < x1 <= width
+            or not 0 <= y0 < y1 <= height
+        ):
+            return False
+    return True
+
+
 def _with_page_geometry(
     drafts: Sequence[SegmentDraft],
     *,
@@ -105,11 +200,15 @@ def select_page_fallbacks(
     fallback: Sequence[SegmentDraft],
     routing: PageRoutingPlan,
     *,
+    primary_final: Sequence[SegmentDraft] | None = None,
+    native_text_by_page: Mapping[int, str] | None = None,
     n_pages: int,
     page_sizes: Mapping[int, tuple[float, float]],
     parser_revision: int,
     min_score: float = 0.70,
     min_margin: float = 0.05,
+    max_final_score_regression: float = 0.01,
+    allow_full_page_geometry: bool = False,
     backend: str = "paddle_vl",
 ) -> PageFallbackPlan:
     """Принять только явно выбранные router страницы с доказанным улучшением."""
@@ -118,6 +217,8 @@ def select_page_fallbacks(
         raise ValueError("n_pages must be non-negative")
     if parser_revision < 0:
         raise ValueError("parser_revision must be non-negative")
+    if not 0.0 <= max_final_score_regression <= 1.0:
+        raise ValueError("max_final_score_regression must be between zero and one")
     if not backend:
         raise ValueError("backend must be non-empty")
     for draft in fallback:
@@ -130,12 +231,32 @@ def select_page_fallbacks(
         if route.role != RouteRole.parser_fallback:
             continue
         primary_page = _page_drafts(primary_raw, route.page_idx)
+        final_page = _page_drafts(
+            primary_raw if primary_final is None else primary_final,
+            route.page_idx,
+        )
         fallback_page = _page_drafts(fallback, route.page_idx)
         if not fallback_page:
             decisions.append(PageFallbackDecision(route.page_idx, False, "candidate_missing"))
             continue
-        primary_report = evaluate_parse(primary_page, n_pages=1)
-        fallback_report = evaluate_parse(fallback_page, n_pages=1)
+        native_text = None
+        if native_text_by_page is not None and route.page_idx in native_text_by_page:
+            native_text = {0: native_text_by_page[route.page_idx]}
+        primary_report = evaluate_parse(
+            primary_page,
+            n_pages=1,
+            native_text_by_page=native_text,
+        )
+        final_report = evaluate_parse(
+            final_page,
+            n_pages=1,
+            native_text_by_page=native_text,
+        )
+        fallback_report = evaluate_parse(
+            fallback_page,
+            n_pages=1,
+            native_text_by_page=native_text,
+        )
         if route.reason == "table_requires_structure_check":
             accepted = (
                 not _has_table(primary_page)
@@ -152,6 +273,19 @@ def select_page_fallbacks(
                 min_margin=min_margin,
             )
             reason = "quality_improved" if accepted else "quality_not_improved"
+        if accepted and (
+            fallback_report.score + max_final_score_regression < final_report.score
+            or fallback_report.integrity_ratio < final_report.integrity_ratio
+            or fallback_report.duplicate_ratio > final_report.duplicate_ratio
+            or (
+                final_report.native_text_coverage is not None
+                and fallback_report.native_text_coverage is not None
+                and fallback_report.native_text_coverage + max_final_score_regression
+                < final_report.native_text_coverage
+            )
+        ):
+            accepted = False
+            reason = "final_result_regressed"
         if not accepted:
             decisions.append(PageFallbackDecision(route.page_idx, False, reason))
             continue
@@ -159,16 +293,35 @@ def select_page_fallbacks(
         if page_size is None:
             decisions.append(PageFallbackDecision(route.page_idx, False, "page_size_missing"))
             continue
+        if _has_precise_geometry(fallback_page, page_size=page_size):
+            candidate_drafts = tuple(
+                SegmentDraft(
+                    idx=index,
+                    kind=draft.kind,
+                    source_text=draft.source_text,
+                    page_idx=route.page_idx,
+                    heading_level=draft.heading_level,
+                    meta=copy.deepcopy(draft.meta),
+                )
+                for index, draft in enumerate(fallback_page)
+            )
+        elif allow_full_page_geometry:
+            candidate_drafts = _with_page_geometry(
+                fallback_page,
+                page_idx=route.page_idx,
+                page_size=page_size,
+            )
+        else:
+            decisions.append(
+                PageFallbackDecision(route.page_idx, False, "precise_geometry_missing")
+            )
+            continue
         candidates.append(
             PageCandidate(
                 page_idx=route.page_idx,
                 backend=backend,
                 parser_revision=parser_revision,
-                drafts=_with_page_geometry(
-                    fallback_page,
-                    page_idx=route.page_idx,
-                    page_size=page_size,
-                ),
+                drafts=candidate_drafts,
             )
         )
         decisions.append(PageFallbackDecision(route.page_idx, True, reason))

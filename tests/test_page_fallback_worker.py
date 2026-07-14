@@ -28,13 +28,26 @@ def test_worker_helper_merges_only_accepted_page(monkeypatch) -> None:
 
     async def fake_vlm(*args, **kwargs) -> list[SegmentDraft]:
         del args, kwargs
-        return [_draft(1, "A", SegmentKind.table)]
+        draft = _draft(0, "A" * 60, SegmentKind.table)
+        draft.meta.update(
+            {
+                "bbox_pt": [10.0, 10.0, 590.0, 790.0],
+                "page_size_pt": [600.0, 800.0],
+            }
+        )
+        return [draft]
+
+    def fake_extract(source, destination, page_indices):
+        del source
+        destination.write_bytes(b"selected pdf")
+        return tuple(page_indices)
 
     async def fake_upload(storage, doc_id, base_dir, drafts) -> None:
         del storage, doc_id, base_dir
         uploaded.extend(drafts)
 
     monkeypatch.setattr(tasks, "_vlm_segments", fake_vlm)
+    monkeypatch.setattr(tasks, "extract_selected_pdf_pages", fake_extract)
     monkeypatch.setattr(tasks, "_pdf_page_sizes", lambda _: {0: (600.0, 800.0), 1: (600.0, 800.0)})
     monkeypatch.setattr(tasks, "_upload_segment_images", fake_upload)
     routing = PageRoutingPlan(
@@ -56,7 +69,7 @@ def test_worker_helper_merges_only_accepted_page(monkeypatch) -> None:
         )
     )
 
-    assert [draft.source_text for draft in merged] == ["page zero", "A"]
+    assert [draft.source_text for draft in merged] == ["page zero", "A" * 60]
     assert merged[1].meta["parser_backend"] == "paddle_vl"
     assert merged[1].meta["parser_revision"] == 4
     assert len(uploaded) == 1

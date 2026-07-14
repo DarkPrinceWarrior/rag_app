@@ -13,6 +13,7 @@ import re
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -49,9 +50,11 @@ from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.office_render import render_to_pdf
 from rag_app.pipeline.paddle_vl import paddle_to_segments, run_paddle
 from rag_app.pipeline.page_fallback import (
+    extract_selected_pdf_pages,
     page_fallback_allowed,
     page_fallback_error_metadata,
     page_fallback_metadata,
+    remap_selected_page_drafts,
     select_page_fallbacks,
 )
 from rag_app.pipeline.page_routing import RouteRole, merge_page_replacements
@@ -202,6 +205,7 @@ async def _apply_paddle_page_fallback(
     *,
     n_pages: int,
     parser_revision: int,
+    native_text_by_page: Mapping[int, str] | None = None,
 ) -> tuple[list[SegmentDraft], dict[str, Any], frozenset[int]]:
     """Запустить Paddle отдельно и атомарно принять только выигравшие страницы."""
 
@@ -209,13 +213,28 @@ async def _apply_paddle_page_fallback(
         tmp_path = Path(tmp)
         local_file = tmp_path / "source.pdf"
         await storage.download_to(settings.bucket_originals, doc.s3_key_original, local_file)
-        out_dir = tmp_path / "paddle_out"
-        fallback_drafts = await _vlm_segments(
-            "paddle_vl",
+        selected_pages = tuple(
+            sorted(
+                decision.page_idx
+                for decision in routing.selected
+                if decision.role == RouteRole.parser_fallback
+            )
+        )
+        selected_file = tmp_path / "selected.pdf"
+        await asyncio.to_thread(
+            extract_selected_pdf_pages,
             local_file,
+            selected_file,
+            selected_pages,
+        )
+        out_dir = tmp_path / "paddle_out"
+        reduced_drafts = await _vlm_segments(
+            "paddle_vl",
+            selected_file,
             out_dir,
             timeout_s=settings.parser_sidecar_timeout_s,
         )
+        fallback_drafts = remap_selected_page_drafts(reduced_drafts, selected_pages)
         page_sizes = await asyncio.to_thread(_pdf_page_sizes, local_file.read_bytes())
         if len(page_sizes) != n_pages:
             raise RuntimeError(
@@ -225,6 +244,8 @@ async def _apply_paddle_page_fallback(
             primary_raw,
             fallback_drafts,
             routing,
+            primary_final=primary_final,
+            native_text_by_page=native_text_by_page,
             n_pages=n_pages,
             page_sizes=page_sizes,
             parser_revision=parser_revision,
@@ -468,6 +489,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                             routing_plan,
                             n_pages=n_pages,
                             parser_revision=claimed_revision,
+                            native_text_by_page=native_text_by_page,
                         )
                         if fallback_summary["accepted_page_count"]:
                             quality = evaluate_parse(

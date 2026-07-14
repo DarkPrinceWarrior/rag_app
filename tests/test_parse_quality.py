@@ -81,6 +81,41 @@ def test_invalid_table_and_bbox_are_reported() -> None:
     assert "invalid_structures" in report.reasons
 
 
+def test_invalid_bbox_pt_and_table_cells_are_hard_failures() -> None:
+    report = evaluate_parse(
+        [
+            _draft(
+                0,
+                0,
+                "Broken table with enough source text to pass the density score.",
+                kind=SegmentKind.table,
+                meta={
+                    "table_cells": [[{"text": "A", "rowspan": 0}]],
+                    "table_rows": [["A"]],
+                    "bbox_pt": [0.0, 0.0, 700.0, 800.0],
+                    "page_size_pt": [600.0, 800.0],
+                },
+            )
+        ],
+        n_pages=1,
+    )
+
+    assert report.score >= 0.70
+    assert not report.acceptable
+    assert "invalid_structures" in report.reasons
+
+
+def test_missing_page_is_hard_failure_even_when_numeric_score_is_high() -> None:
+    report = evaluate_parse(
+        [_draft(0, 0, "A" * 1000)],
+        n_pages=2,
+    )
+
+    assert report.score >= 0.70
+    assert not report.acceptable
+    assert "missing_pages" in report.reasons
+
+
 def test_structured_image_page_counts_as_content_without_fake_missing_page() -> None:
     report = evaluate_parse(
         [_draft(0, 0, "", kind=SegmentKind.image, meta={"bbox": [0, 0, 100, 100]})],
