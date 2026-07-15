@@ -40,6 +40,7 @@ services:
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.3-4.8.2-distroless
+    profiles: [dcgm]
     restart: unless-stopped
     network_mode: host
     gpus: all
