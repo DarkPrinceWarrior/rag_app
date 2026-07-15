@@ -78,17 +78,20 @@ function LoadedSegmentEditor({
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-center gap-6 px-6 py-10 md:px-[168px]">
-        <div className="w-full max-w-[548px]">
+      <div className="flex min-w-0 flex-wrap items-start justify-center gap-6 px-6 py-10 md:px-[168px]">
+        <div className="w-full min-w-0 max-w-[548px]">
           <PaneHeader label="Оригинал" lang={sourceLang} />
-          <div className="mt-2 rounded-lg bg-[#222226]/[0.02] p-3">
-            <Markdown content={target.source_text} className="text-[14.3px] leading-relaxed" />
+          <div className="mt-2 min-w-0 overflow-x-auto rounded-lg bg-[#222226]/[0.02] p-3">
+            <Markdown
+              content={target.source_text}
+              className="break-words text-[14.3px] leading-relaxed [overflow-wrap:anywhere]"
+            />
           </div>
         </div>
 
-        <div className="w-full max-w-[548px]">
+        <div className="w-full min-w-0 max-w-[548px]">
           <PaneHeader label="Перевод" lang="ru" />
-          <div className="mt-2 flex flex-col gap-4 rounded-lg border border-[#4b4ce6] bg-[#392dc1]/[0.06] p-3">
+          <div className="mt-2 flex min-w-0 flex-col gap-4 rounded-lg border border-[#4b4ce6] bg-[#392dc1]/[0.06] p-3">
             {needsReview && (
               <span className="inline-flex w-fit items-center rounded-full bg-[#952d2d]/10 px-2 py-1 text-[11px] font-medium text-[#c43232]">
                 Требует проверки
@@ -105,7 +108,7 @@ function LoadedSegmentEditor({
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={Math.max(3, Math.ceil(text.length / 60))}
-              className="w-full resize-none whitespace-pre-wrap bg-transparent text-[14.3px] leading-relaxed outline-none"
+              className="w-full min-w-0 resize-none whitespace-pre-wrap bg-transparent text-[14.3px] leading-relaxed outline-none"
             />
           </div>
 
