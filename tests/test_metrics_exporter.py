@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from rag_app.metrics_exporter import _number_guard_counts
+from rag_app.workers.queueing import _document_number_guard_counts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,6 +24,24 @@ def test_number_guard_counts_use_absolute_document_snapshots() -> None:
     )
     assert protected == 15
     assert unconfirmed == 2
+
+
+def test_document_number_guard_includes_quantities_with_units() -> None:
+    protected, unconfirmed = _document_number_guard_counts(
+        [
+            {
+                "entity_guard": {
+                    "protected": {"number": 2, "measurement": 3, "standard": 1},
+                    "unconfirmed": {"number": 1, "measurement": 2, "standard": 1},
+                }
+            },
+            None,
+            {"entity_guard": "invalid"},
+        ]
+    )
+
+    assert protected == 5
+    assert unconfirmed == 3
 
 
 def test_prometheus_config_has_all_required_targets() -> None:

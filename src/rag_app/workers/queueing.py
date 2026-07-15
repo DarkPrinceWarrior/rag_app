@@ -8,7 +8,7 @@ import logging
 import math
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import wraps
 from typing import Any, Literal
 
@@ -129,6 +129,23 @@ async def record_dlq(
         logger.warning("queue DLQ write failed", exc_info=True)
 
 
+def _document_number_guard_counts(rows: Iterable[object]) -> tuple[int, int]:
+    """Суммировать голые числа и величины с единицами из validation JSON."""
+
+    protected = 0
+    unconfirmed = 0
+    for validation in rows:
+        if not isinstance(validation, dict):
+            continue
+        guard = validation.get("entity_guard")
+        if not isinstance(guard, dict):
+            continue
+        for kind in ("number", "measurement"):
+            protected += int((guard.get("protected") or {}).get(kind, 0))
+            unconfirmed += int((guard.get("unconfirmed") or {}).get(kind, 0))
+    return protected, unconfirmed
+
+
 async def record_document_number_guard(ctx: dict[str, Any], doc_id: object) -> None:
     """Сохранить абсолютные агрегаты документа без document_id label в Prometheus."""
 
@@ -147,16 +164,7 @@ async def record_document_number_guard(ctx: dict[str, Any], doc_id: object) -> N
                 .scalars()
                 .all()
             )
-        protected = 0
-        unconfirmed = 0
-        for validation in rows:
-            if not isinstance(validation, dict):
-                continue
-            guard = validation.get("entity_guard")
-            if not isinstance(guard, dict):
-                continue
-            protected += int((guard.get("protected") or {}).get("number", 0))
-            unconfirmed += int((guard.get("unconfirmed") or {}).get("number", 0))
+        protected, unconfirmed = _document_number_guard_counts(rows)
         await ctx["redis"].hset(NUMBER_GUARD_HASH, str(document_id), f"{protected}|{unconfirmed}")
     except Exception:
         logger.warning("number guard metric snapshot failed", exc_info=True)
