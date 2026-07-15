@@ -274,8 +274,8 @@ function Viewer() {
         {totalSegs.toLocaleString('ru')} (документ очень большой — остальные не загружены)
       </div>
     )}
-    <div className="sticky top-[49px] z-[5] flex items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur">
-      <span className="truncate text-sm font-medium">
+    <div className="sticky top-[49px] z-[5] flex flex-wrap items-center gap-3 border-b bg-card/90 px-5 py-2 backdrop-blur max-md:static max-md:gap-2 max-md:px-3">
+      <span className="min-w-0 truncate text-sm font-medium max-md:basis-full">
         {docQ.data?.filename} · {docQ.data?.status}
       </span>
       <span className="ml-auto text-xs text-primary">{msg}</span>
@@ -330,7 +330,7 @@ function Viewer() {
           value={docQ.data?.parser_backend || 'mineru'}
           onChange={(e) => askReparseBackend(e.target.value)}
           title="Движок парсинга: переразобрать документ выбранным парсером"
-          className="rounded-md border bg-background px-2 py-1 text-xs"
+          className="min-h-8 max-w-full rounded-md border bg-background px-2 py-1 text-xs max-md:min-h-11 max-md:flex-1"
         >
           <option value="mineru">парсер: MinerU+добор</option>
           <option value="dots_mocr">парсер: dots.mocr</option>
@@ -338,7 +338,7 @@ function Viewer() {
         </select>
       )}
       {isPdfDoc && (
-        <Button variant="outline" size="sm" onClick={askReparseOcr} title="Если текст в PDF распознан как латиница-каша">
+        <Button className="max-md:flex-1" variant="outline" size="sm" onClick={askReparseOcr} title="Если текст в PDF распознан как латиница-каша">
           OCR-распознавание
         </Button>
       )}
@@ -363,7 +363,7 @@ function Viewer() {
           )}
         </Menu>
       )}
-      <Button size="sm" onClick={askReexport}>
+      <Button className="max-md:flex-1" size="sm" onClick={askReexport}>
         Пересобрать экспорт
       </Button>
     </div>
@@ -446,7 +446,7 @@ function Viewer() {
     return (
       <div>
         {header}
-        <div className="flex h-[calc(100vh-97px)] flex-col">
+        <div className="flex h-[calc(100vh-97px)] flex-col max-md:h-auto">
           {textMode && (
             <div className="flex items-center gap-2 border-b bg-card px-4 py-1.5 text-sm">
               <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
@@ -460,10 +460,15 @@ function Viewer() {
               </Button>
             </div>
           )}
-          <div className="flex flex-1 overflow-hidden">
-            <div className="w-1/2 border-r">
+          <div className="flex flex-1 overflow-hidden max-md:flex-col max-md:overflow-visible">
+            <div
+              className={cn(
+                'w-1/2 border-r max-md:w-full max-md:border-b max-md:border-r-0',
+                !textMode && 'max-md:min-h-[70vh]',
+              )}
+            >
               {textMode ? (
-                <div ref={sourceColRef} className="h-full overflow-y-auto">
+                <div ref={sourceColRef} className="h-full overflow-y-auto max-md:h-auto max-md:overflow-visible">
                   <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
                   <article className="mx-auto max-w-3xl px-6 py-4">
                     <DocRead segs={pageSegs} field="source" citedId={cited} selectedId={selectedSegId} onSelectSeg={selectSeg} />
@@ -480,9 +485,14 @@ function Viewer() {
                 />
               )}
             </div>
-            <div className="flex w-1/2 flex-col">
+            <div
+              className={cn(
+                'flex w-1/2 flex-col max-md:w-full',
+                !textMode && 'max-md:min-h-[70vh]',
+              )}
+            >
               {textMode ? (
-                <div ref={translatedColRef} className="h-full overflow-y-auto">
+                <div ref={translatedColRef} className="h-full overflow-y-auto max-md:h-auto max-md:overflow-visible">
                   <PaneHeader label="Перевод" lang="ru" />
                   <article className="mx-auto max-w-3xl px-6 py-4">
                     <DocRead

@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page, type Route } from '@playwright/t
 
 const documentId = '00000000-0000-4000-8000-000000000001'
 const secondDocumentId = '00000000-0000-4000-8000-000000000002'
+const segmentId = '00000000-0000-4000-8000-000000000101'
 
 const document = {
   id: documentId,
@@ -28,6 +29,20 @@ const secondDocument = {
   filename: 'Спецификация оборудования.pdf',
 }
 
+const segment = {
+  id: segmentId,
+  idx: 0,
+  page_idx: 0,
+  kind: 'paragraph',
+  heading_level: null,
+  source_text: 'Design pressure is 16 MPa.',
+  translated_text: 'Расчётное давление — 16 МПа.',
+  needs_review: false,
+  validation: null,
+  bbox: null,
+  page_size: null,
+}
+
 async function json(route: Route, body: unknown) {
   await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
 }
@@ -37,6 +52,8 @@ async function mockApi(page: Page, sessions: unknown[] = []) {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/config') return json(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
     if (path === '/api/documents') return json(route, [document, secondDocument])
+    if (path === `/api/documents/${documentId}`) return json(route, document)
+    if (path === `/api/documents/${documentId}/segments`) return json(route, [segment])
     if (path === '/api/folders') return json(route, [])
     if (path === '/api/chat/sessions') return json(route, sessions)
     if (/^\/api\/chat\/sessions\/[^/]+\/messages$/.test(path)) return json(route, [])
@@ -131,4 +148,15 @@ test('direct chat link restores a persisted multi-document scope', async ({ page
 
   await page.goto(`/chat?sid=${sessionId}`)
   await expect(page.getByRole('button', { name: 'Область чата: 2 документа' })).toBeVisible()
+})
+
+test('390px document viewer keeps both source and translation usable', async ({ page }) => {
+  await mockApi(page)
+  await page.goto(`/view/${documentId}`)
+
+  await expect(page.getByText('Design pressure is 16 MPa.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Расчётное давление — 16 МПа.', { exact: true })).toBeVisible()
+  await expectAccessibleViewport(page)
+  await expectTouchTarget(page.getByRole('button', { name: 'Пересобрать экспорт' }))
+  await expectTouchTarget(page.getByRole('button', { name: 'Скачать перевод' }))
 })
