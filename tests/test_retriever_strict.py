@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from rag_app.config import Settings
-from rag_app.rag.retrieve import Retriever, sparse_query_plan
+from rag_app.rag.retrieve import Retriever, dense_query_plan, sparse_query_plan
 
 
 class FakeEmbedder:
@@ -84,6 +84,20 @@ class TieSession:
         )
 
 
+class HnswSession(Session):
+    def __init__(self) -> None:
+        super().__init__()
+        self.statements: list[str] = []
+        self.parameters: list[dict] = []
+
+    async def execute(self, statement, parameters) -> Result:
+        self.statements.append(str(statement))
+        self.parameters.append(parameters)
+        if len(self.statements) == 1:
+            return Result([])
+        return Result([self.row] if len(self.statements) == 2 else [])
+
+
 def test_retriever_fails_closed_when_baseline_disables_fallback() -> None:
     retriever = Retriever(FakeEmbedder(), FailingReranker())
 
@@ -143,6 +157,7 @@ def test_retrieval_trace_keeps_every_ranked_stage_and_timings() -> None:
 
     assert trace.requested_sparse_backend == "postgres_fts"
     assert trace.sparse_engine == "postgres_fts"
+    assert trace.dense_backend == "exact"
     assert [item.id for item in trace.dense] == [uuid.UUID(int=2)]
     assert [item.id for item in trace.sparse] == [uuid.UUID(int=1)]
     assert [item.id for item in trace.hybrid_pre_rerank] == [uuid.UUID(int=1), uuid.UUID(int=2)]
@@ -217,9 +232,62 @@ def test_sparse_backend_and_rrf_use_public_environment_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RAG_SPARSE_BACKEND", "pg_textsearch")
+    monkeypatch.setenv("RAG_DENSE_BACKEND", "hnsw")
+    monkeypatch.setenv("RAG_HNSW_ITERATIVE_SCAN", "strict_order")
+    monkeypatch.setenv("RAG_HNSW_EF_SEARCH", "120")
+    monkeypatch.setenv("RAG_HNSW_MAX_SCAN_TUPLES", "30000")
+    monkeypatch.setenv("RAG_HNSW_SCAN_MEM_MULTIPLIER", "3.5")
     monkeypatch.setenv("RAG_RRF_K", "77")
 
     configured = Settings(_env_file=None)
 
     assert configured.rag_sparse_backend == "pg_textsearch"
+    assert configured.rag_dense_backend == "hnsw"
+    assert configured.rag_hnsw_iterative_scan == "strict_order"
+    assert configured.rag_hnsw_ef_search == 120
+    assert configured.rag_hnsw_max_scan_tuples == 30_000
+    assert configured.rag_hnsw_scan_mem_multiplier == 3.5
     assert configured.rag_rrf_k == 77
+
+
+def test_hnsw_dense_plan_has_two_indexable_filtered_language_branches() -> None:
+    statement = dense_query_plan("hnsw").statement
+
+    assert "ORDER BY c.emb_en <=> CAST(:qe AS vector)" in statement
+    assert "ORDER BY c.emb_ru <=> CAST(:qe AS vector)" in statement
+    assert statement.count("CAST(:owner AS text) IS NULL OR d.owner_sub = :owner") == 3
+    assert statement.count("CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id") == 3
+    assert "GROUP BY candidate.id" in statement
+    assert "ORDER BY MIN(candidate.dist), candidate.id" in statement
+    assert "LEAST(" not in statement
+
+
+def test_exact_dense_plan_stays_default_and_rejects_unknown_backend() -> None:
+    configured = Settings(_env_file=None)
+
+    assert configured.rag_dense_backend == "exact"
+    assert "LEAST(" in dense_query_plan("exact").statement
+    assert "c.emb_en IS NOT NULL OR c.emb_ru IS NOT NULL" in dense_query_plan("exact").statement
+    with pytest.raises(ValueError, match="unsupported dense backend"):
+        dense_query_plan("unknown")  # type: ignore[arg-type]
+
+
+def test_hnsw_backend_applies_transaction_local_settings_before_dense_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rag_app.rag.retrieve.settings.rag_dense_backend", "hnsw")
+    monkeypatch.setattr("rag_app.rag.retrieve.settings.rag_hnsw_iterative_scan", "strict_order")
+    session = HnswSession()
+
+    trace = asyncio.run(Retriever(FakeEmbedder(), EqualReranker()).retrieve_with_trace(session, "pressure"))
+
+    assert trace.dense_backend == "hnsw"
+    assert "set_config('hnsw.iterative_scan', :iterative_scan, true)" in session.statements[0]
+    assert session.parameters[0] == {
+        "iterative_scan": "strict_order",
+        "ef_search": 100,
+        "max_scan_tuples": 20_000,
+        "scan_mem_multiplier": 2.0,
+    }
+    assert "WITH en_scan AS MATERIALIZED" in session.statements[1]
+    assert "websearch_to_tsquery" in session.statements[2]

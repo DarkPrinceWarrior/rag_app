@@ -138,6 +138,34 @@ class Settings(BaseSettings):
         default="postgres_fts",
         validation_alias="RAG_SPARSE_BACKEND",
     )
+    # Точный dual-language поиск остается baseline. HNSW включается только после
+    # filtered-recall qualification; его GUC действуют transaction-local.
+    rag_dense_backend: Literal["exact", "hnsw"] = Field(
+        default="exact",
+        validation_alias="RAG_DENSE_BACKEND",
+    )
+    rag_hnsw_iterative_scan: Literal["off", "strict_order", "relaxed_order"] = Field(
+        default="strict_order",
+        validation_alias="RAG_HNSW_ITERATIVE_SCAN",
+    )
+    rag_hnsw_ef_search: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        validation_alias="RAG_HNSW_EF_SEARCH",
+    )
+    rag_hnsw_max_scan_tuples: int = Field(
+        default=20_000,
+        ge=1,
+        le=1_000_000,
+        validation_alias="RAG_HNSW_MAX_SCAN_TUPLES",
+    )
+    rag_hnsw_scan_mem_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=100.0,
+        validation_alias="RAG_HNSW_SCAN_MEM_MULTIPLIER",
+    )
     rag_dense_top_k: int = 50
     rag_sparse_top_k: int = 50
     rag_rrf_k: int = Field(default=60, ge=1, validation_alias="RAG_RRF_K")

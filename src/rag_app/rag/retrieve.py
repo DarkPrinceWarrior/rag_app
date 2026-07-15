@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 type SparseBackend = Literal["postgres_fts", "pg_textsearch"]
 type SparseEngine = Literal["postgres_fts", "pg_textsearch_ru", "pg_textsearch_en"]
+type DenseBackend = Literal["exact", "hnsw"]
+type HnswIterativeScan = Literal["off", "strict_order", "relaxed_order"]
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u052f]")
 _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -44,6 +46,14 @@ class SparseQueryPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class DenseQueryPlan:
+    """Закрепляет exact baseline или индексируемый dual-language HNSW."""
+
+    backend: DenseBackend
+    statement: str
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalTrace:
     """Полный порядок стадий одного retrieval-вызова для воспроизводимого A/B."""
 
@@ -56,6 +66,7 @@ class RetrievalTrace:
     final: tuple[RetrievedChunk, ...]
     stage_latency_ms: dict[str, float]
     reranker_fallback: bool
+    dense_backend: DenseBackend = "exact"
 
 
 # Визуальный recall: страницы по эмбеддингу страницы-картинки (Qwen3-VL-Embedding)
@@ -106,10 +117,103 @@ _DENSE_SQL = f"""
 SELECT {_BASE_FIELDS},
        LEAST(c.emb_en <=> CAST(:qe AS vector), c.emb_ru <=> CAST(:qe AS vector)) AS dist
 FROM chunks c JOIN documents d ON d.id = c.document_id
-WHERE TRUE{_SCOPE}
+WHERE (c.emb_en IS NOT NULL OR c.emb_ru IS NOT NULL){_SCOPE}
 ORDER BY dist, c.id
 LIMIT :k
 """
+
+# LEAST(emb_en, emb_ru) не соответствует ни одному operator-class индексу и
+# планируется как exact scan. Для HNSW каждый язык обязан иметь собственный
+# прямой ORDER BY distance; внешний CTE затем дедуплицирует кандидатов.
+_HNSW_DENSE_SQL = f"""
+WITH en_scan AS MATERIALIZED (
+    SELECT c.id, c.emb_en <=> CAST(:qe AS vector) AS dist
+    FROM chunks c JOIN documents d ON d.id = c.document_id
+    WHERE c.emb_en IS NOT NULL{_SCOPE}
+    ORDER BY c.emb_en <=> CAST(:qe AS vector)
+    LIMIT :k
+),
+ru_scan AS MATERIALIZED (
+    SELECT c.id, c.emb_ru <=> CAST(:qe AS vector) AS dist
+    FROM chunks c JOIN documents d ON d.id = c.document_id
+    WHERE c.emb_ru IS NOT NULL{_SCOPE}
+    ORDER BY c.emb_ru <=> CAST(:qe AS vector)
+    LIMIT :k
+),
+nearest AS MATERIALIZED (
+    SELECT candidate.id, MIN(candidate.dist) AS dist
+    FROM (
+        SELECT id, dist FROM en_scan
+        UNION ALL
+        SELECT id, dist FROM ru_scan
+    ) candidate
+    GROUP BY candidate.id
+    ORDER BY MIN(candidate.dist), candidate.id
+    LIMIT :k
+)
+SELECT {_BASE_FIELDS}, nearest.dist
+FROM nearest
+JOIN chunks c ON c.id = nearest.id
+JOIN documents d ON d.id = c.document_id
+WHERE TRUE{_SCOPE}
+ORDER BY nearest.dist, c.id
+LIMIT :k
+"""
+
+_HNSW_LOCAL_SETTINGS_SQL = """
+SELECT
+    set_config('hnsw.iterative_scan', :iterative_scan, true),
+    set_config('hnsw.ef_search', CAST(:ef_search AS text), true),
+    set_config('hnsw.max_scan_tuples', CAST(:max_scan_tuples AS text), true),
+    set_config('hnsw.scan_mem_multiplier', CAST(:scan_mem_multiplier AS text), true)
+"""
+
+
+def dense_query_plan(backend: DenseBackend) -> DenseQueryPlan:
+    if backend == "exact":
+        return DenseQueryPlan(backend, _DENSE_SQL)
+    if backend == "hnsw":
+        return DenseQueryPlan(backend, _HNSW_DENSE_SQL)
+    raise ValueError(f"unsupported dense backend: {backend}")
+
+
+async def configure_hnsw_transaction(
+    session: AsyncSession,
+    *,
+    iterative_scan: HnswIterativeScan | None = None,
+    ef_search: int | None = None,
+    max_scan_tuples: int | None = None,
+    scan_mem_multiplier: float | None = None,
+) -> None:
+    """Apply candidate HNSW knobs only until the current transaction ends."""
+
+    iterative_scan = (
+        settings.rag_hnsw_iterative_scan if iterative_scan is None else iterative_scan
+    )
+    ef_search = settings.rag_hnsw_ef_search if ef_search is None else ef_search
+    max_scan_tuples = (
+        settings.rag_hnsw_max_scan_tuples if max_scan_tuples is None else max_scan_tuples
+    )
+    scan_mem_multiplier = (
+        settings.rag_hnsw_scan_mem_multiplier
+        if scan_mem_multiplier is None
+        else scan_mem_multiplier
+    )
+    if iterative_scan not in {"off", "strict_order", "relaxed_order"}:
+        raise ValueError("unsupported HNSW iterative scan mode")
+    if ef_search < 1 or max_scan_tuples < 1 or not math.isfinite(scan_mem_multiplier):
+        raise ValueError("HNSW search limits must be finite and positive")
+    if scan_mem_multiplier < 1.0:
+        raise ValueError("HNSW scan memory multiplier must be at least one")
+    await session.execute(
+        sql(_HNSW_LOCAL_SETTINGS_SQL),
+        {
+            "iterative_scan": iterative_scan,
+            "ef_search": ef_search,
+            "max_scan_tuples": max_scan_tuples,
+            "scan_mem_multiplier": scan_mem_multiplier,
+        },
+    )
 
 _SPARSE_SQL = f"""
 SELECT {_BASE_FIELDS},
@@ -287,9 +391,12 @@ class Retriever:
         q_emb = await self.embedder.embed_query(query)
         latencies["embedding"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
+        dense_plan = dense_query_plan(settings.rag_dense_backend)
+        if dense_plan.backend == "hnsw":
+            await configure_hnsw_transaction(session)
         dense_rows = (
             await session.execute(
-                sql(_DENSE_SQL),
+                sql(dense_plan.statement),
                 {**params, "qe": str(q_emb), "k": dense_top_k},
             )
         ).all()
@@ -331,6 +438,7 @@ class Retriever:
             return RetrievalTrace(
                 requested_sparse_backend=requested_backend,
                 sparse_engine=sparse_plan.engine,
+                dense_backend=dense_plan.backend,
                 dense=dense_chunks,
                 sparse=sparse_chunks,
                 hybrid_pre_rerank=hybrid_pre_rerank,
