@@ -58,3 +58,50 @@ def test_long_section_splits() -> None:
     chunks = segments_to_chunks(segs)
     assert len(chunks) > 1
     assert all(c.heading_path == "Big" for c in chunks)
+    assert len({c.meta["section_id"] for c in chunks}) == 1
+    assert [c.meta["ordinal_in_section"] for c in chunks] == list(range(len(chunks)))
+    assert [c.meta["source_ordinal"] for c in chunks] == sorted(
+        c.meta["source_ordinal"] for c in chunks
+    )
+
+
+def test_hierarchy_metadata_keeps_table_in_its_section_source_order() -> None:
+    document_id = uuid.uuid4()
+    heading = _seg(0, SegmentKind.heading, "Section", level=1)
+    paragraph = _seg(1, SegmentKind.paragraph, "Body text " * 30)
+    table = _seg(2, SegmentKind.table, "A | B\n1 | 2")
+    trailing = _seg(3, SegmentKind.paragraph, "Trailing text " * 30)
+    for segment in (heading, paragraph, table, trailing):
+        segment.document_id = document_id
+    table.meta = {"table_merge_group": "logical-table-1", "continuation_index": 0}
+
+    chunks = segments_to_chunks([heading, paragraph, table, trailing])
+
+    assert {chunk.meta["section_id"] for chunk in chunks} == {str(heading.id)}
+    assert sorted(chunk.meta["ordinal_in_section"] for chunk in chunks) == list(
+        range(len(chunks))
+    )
+    table_chunk = next(chunk for chunk in chunks if chunk.kind == "table")
+    assert table_chunk.meta["logical_table_id"] == "logical-table-1"
+    assert table_chunk.meta["continuation_index"] == 0
+
+
+def test_hierarchy_metadata_assigns_stable_root_to_headingless_document() -> None:
+    document_id = uuid.uuid4()
+    segments = [
+        _seg(index, SegmentKind.paragraph, f"Root paragraph {index} " + "word " * 300)
+        for index in range(3)
+    ]
+    for segment in segments:
+        segment.document_id = document_id
+
+    first = segments_to_chunks(segments)
+    second = segments_to_chunks(segments)
+
+    assert first
+    assert {chunk.meta["section_id"] for chunk in first} == {
+        str(uuid.uuid5(uuid.NAMESPACE_URL, f"rag-section-root:{document_id}"))
+    }
+    assert [chunk.meta["section_id"] for chunk in first] == [
+        chunk.meta["section_id"] for chunk in second
+    ]

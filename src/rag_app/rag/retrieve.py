@@ -12,7 +12,7 @@ import math
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from sqlalchemy import text as sql
@@ -30,6 +30,7 @@ type SparseBackend = Literal["postgres_fts", "pg_textsearch"]
 type SparseEngine = Literal["postgres_fts", "pg_textsearch_ru", "pg_textsearch_en"]
 type DenseBackend = Literal["exact", "hnsw"]
 type HnswIterativeScan = Literal["off", "strict_order", "relaxed_order"]
+type HierarchicalMode = Literal["off", "shadow", "active"]
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u052f]")
 _HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -67,6 +68,12 @@ class RetrievalTrace:
     stage_latency_ms: dict[str, float]
     reranker_fallback: bool
     dense_backend: DenseBackend = "exact"
+    hierarchical_mode: HierarchicalMode = "off"
+    hierarchical_pre_rerank: tuple[RetrievedChunk, ...] = ()
+    hierarchical_reranked: tuple[RetrievedChunk, ...] = ()
+    hierarchical_final: tuple[RetrievedChunk, ...] = ()
+    hierarchical_added: int = 0
+    hierarchical_fallback: bool = False
 
 
 # Визуальный recall: страницы по эмбеддингу страницы-картинки (Qwen3-VL-Embedding)
@@ -274,6 +281,140 @@ WHERE c.kind = 'image' AND (c.meta ? 'img_s3') AND c.document_id = ANY(:doc_ids)
   AND d.status = 'done'
 """
 
+# Первый уровень задают RRF-якоря (документ/раздел/страница). Второй уровень
+# поднимает точные чанки внутри этих узлов: тот же раздел, соседний ordinal/страница,
+# продолжение таблицы или связанный continuation-group. Все scope/RBAC-фильтры
+# применяются в том же SQL; RLS в PostgreSQL остается дополнительной защитой.
+_HIERARCHICAL_EXPANSION_SQL = f"""
+WITH anchor_input AS MATERIALIZED (
+    SELECT anchor_id, anchor_rank
+    FROM unnest(CAST(:anchor_ids AS uuid[])) WITH ORDINALITY AS t(anchor_id, anchor_rank)
+),
+anchors AS MATERIALIZED (
+    SELECT c.id, c.document_id, c.idx, c.heading_path, c.page_start, c.page_end,
+           c.meta, anchor_input.anchor_rank,
+           COALESCE(
+             NULLIF(c.meta->>'section_id', ''),
+             'legacy:' || COALESCE(c.heading_path, '')
+           ) AS section_key,
+           COUNT(*) OVER (
+             PARTITION BY c.document_id, COALESCE(
+               NULLIF(c.meta->>'section_id', ''),
+               'legacy:' || COALESCE(c.heading_path, '')
+             )
+           ) AS section_anchor_count
+    FROM anchor_input
+    JOIN chunks c ON c.id = anchor_input.anchor_id
+    JOIN documents d ON d.id = c.document_id
+    WHERE TRUE{_SCOPE}
+),
+related_ranked AS MATERIALIZED (
+    SELECT c.id,
+           anchors.anchor_rank,
+           CASE
+             WHEN NULLIF(c.meta->>'logical_table_id', '') IS NOT NULL
+              AND c.meta->>'logical_table_id' = anchors.meta->>'logical_table_id' THEN 0
+             WHEN NULLIF(c.meta->>'table_merge_group', '') IS NOT NULL
+              AND c.meta->>'table_merge_group' = anchors.meta->>'table_merge_group' THEN 1
+             WHEN NULLIF(c.meta->>'continuation_group', '') IS NOT NULL
+              AND c.meta->>'continuation_group' = anchors.meta->>'continuation_group' THEN 1
+             WHEN COALESCE(
+                NULLIF(c.meta->>'section_id', ''),
+                'legacy:' || COALESCE(c.heading_path, '')
+              ) = anchors.section_key
+              AND ABS(
+                COALESCE(NULLIF(c.meta->>'ordinal_in_section', '')::int, c.idx)
+                - COALESCE(NULLIF(anchors.meta->>'ordinal_in_section', '')::int, anchors.idx)
+              ) = 1 THEN 2
+             ELSE 3
+           END AS relation_priority,
+           ABS(
+             COALESCE(NULLIF(c.meta->>'ordinal_in_section', '')::int, c.idx)
+             - COALESCE(NULLIF(anchors.meta->>'ordinal_in_section', '')::int, anchors.idx)
+           ) AS idx_distance,
+           row_number() OVER (
+               PARTITION BY anchors.id
+               ORDER BY
+                 CASE
+                   WHEN NULLIF(c.meta->>'logical_table_id', '') IS NOT NULL
+                    AND c.meta->>'logical_table_id' = anchors.meta->>'logical_table_id' THEN 0
+                   WHEN NULLIF(c.meta->>'table_merge_group', '') IS NOT NULL
+                    AND c.meta->>'table_merge_group' = anchors.meta->>'table_merge_group' THEN 1
+                   WHEN NULLIF(c.meta->>'continuation_group', '') IS NOT NULL
+                    AND c.meta->>'continuation_group' = anchors.meta->>'continuation_group' THEN 1
+                   WHEN COALESCE(
+                      NULLIF(c.meta->>'section_id', ''),
+                      'legacy:' || COALESCE(c.heading_path, '')
+                    ) = anchors.section_key
+                    AND ABS(
+                      COALESCE(NULLIF(c.meta->>'ordinal_in_section', '')::int, c.idx)
+                      - COALESCE(NULLIF(anchors.meta->>'ordinal_in_section', '')::int, anchors.idx)
+                    ) = 1 THEN 2
+                   ELSE 3
+                 END,
+                 ABS(
+                   COALESCE(NULLIF(c.meta->>'ordinal_in_section', '')::int, c.idx)
+                   - COALESCE(NULLIF(anchors.meta->>'ordinal_in_section', '')::int, anchors.idx)
+                 ),
+                 c.id
+           ) AS relation_rank
+    FROM anchors
+    JOIN chunks c ON c.document_id = anchors.document_id AND c.id <> anchors.id
+    JOIN documents d ON d.id = c.document_id
+    WHERE TRUE{_SCOPE}
+      AND (
+        (
+          COALESCE(
+            NULLIF(c.meta->>'section_id', ''),
+            'legacy:' || COALESCE(c.heading_path, '')
+          ) = anchors.section_key
+          AND (
+            ABS(
+              COALESCE(NULLIF(c.meta->>'ordinal_in_section', '')::int, c.idx)
+              - COALESCE(NULLIF(anchors.meta->>'ordinal_in_section', '')::int, anchors.idx)
+            ) = 1
+            OR anchors.section_anchor_count >= 2
+            OR (
+              c.page_start IS NOT NULL AND c.page_end IS NOT NULL
+              AND anchors.page_start IS NOT NULL AND anchors.page_end IS NOT NULL
+              AND c.page_start <= anchors.page_end + :page_radius
+              AND c.page_end >= anchors.page_start - :page_radius
+            )
+          )
+        )
+        OR (
+          NULLIF(c.meta->>'logical_table_id', '') IS NOT NULL
+          AND c.meta->>'logical_table_id' = anchors.meta->>'logical_table_id'
+        )
+        OR (
+          NULLIF(c.meta->>'table_merge_group', '') IS NOT NULL
+          AND c.meta->>'table_merge_group' = anchors.meta->>'table_merge_group'
+        )
+        OR (
+          NULLIF(c.meta->>'continuation_group', '') IS NOT NULL
+          AND c.meta->>'continuation_group' = anchors.meta->>'continuation_group'
+        )
+      )
+),
+related AS MATERIALIZED (
+    SELECT id,
+           MIN(anchor_rank) AS anchor_rank,
+           MIN(relation_priority) AS relation_priority,
+           MIN(idx_distance) AS idx_distance
+    FROM related_ranked
+    WHERE relation_rank <= :per_anchor_k
+    GROUP BY id
+    ORDER BY MIN(anchor_rank), MIN(relation_priority), MIN(idx_distance), id
+    LIMIT :expansion_k
+)
+SELECT {_BASE_FIELDS}
+FROM related
+JOIN chunks c ON c.id = related.id
+JOIN documents d ON d.id = c.document_id
+WHERE TRUE{_SCOPE}
+ORDER BY related.anchor_rank, related.relation_priority, related.idx_distance, c.id
+"""
+
 
 def _row_to_chunk(row: Any) -> RetrievedChunk:
     return RetrievedChunk(
@@ -288,6 +429,59 @@ def _row_to_chunk(row: Any) -> RetrievedChunk:
         text_ru=row.text_ru,
         meta=row.meta,
     )
+
+
+def _deduplicate_chunks(
+    chunks: list[RetrievedChunk], *, protected_prefix: int = 0
+) -> list[RetrievedChunk]:
+    """Keep ordering while removing UUID and wholly overlapping segment payloads."""
+
+    have_ids: set[uuid.UUID] = set()
+    seen_segments: dict[uuid.UUID, set[str]] = {}
+    deduplicated: list[RetrievedChunk] = []
+    for index, chunk in enumerate(chunks):
+        if chunk.id in have_ids:
+            continue
+        segment_ids = {
+            str(value) for value in (chunk.meta or {}).get("segment_ids", []) if value
+        }
+        document_segments = seen_segments.setdefault(chunk.document_id, set())
+        if index >= protected_prefix and segment_ids and segment_ids <= document_segments:
+            continue
+        have_ids.add(chunk.id)
+        document_segments.update(segment_ids)
+        deduplicated.append(chunk)
+    return deduplicated
+
+
+async def _rerank_candidates(
+    reranker: Reranker,
+    query: str,
+    candidates: list[RetrievedChunk],
+    fallback_scores: dict[uuid.UUID, float],
+    *,
+    min_score: float,
+    allow_fallback: bool,
+    failure_message: str,
+) -> tuple[list[RetrievedChunk], bool, bool]:
+    """Rerank one complete pool and report fallback/relevance without hiding errors."""
+
+    try:
+        scores = await reranker.rerank(
+            query, [candidate.text_ru or candidate.text_en for candidate in candidates]
+        )
+        for candidate, score in zip(candidates, scores, strict=True):
+            candidate.score = round(float(score), _RERANK_SCORE_DIGITS)
+        candidates.sort(key=lambda candidate: (-candidate.score, candidate.id.int))
+        relevant = not candidates or candidates[0].score >= min_score
+        return candidates, False, relevant
+    except Exception as exc:
+        if not allow_fallback:
+            raise RuntimeError(failure_message) from None
+        logger.warning("reranker недоступен (%s) — отдаю RRF-порядок", exc)
+        for candidate in candidates:
+            candidate.score = fallback_scores[candidate.id]
+        return candidates, True, True
 
 
 class Retriever:
@@ -347,6 +541,8 @@ class Retriever:
         rrf_k: int | None = None,
         rerank_top_k: int | None = None,
         rerank_min_score: float | None = None,
+        hierarchical_mode: HierarchicalMode | None = None,
+        allow_hierarchical_fallback: bool = True,
     ) -> RetrievalTrace:
         """Run production retrieval and retain content-bearing stages in memory.
 
@@ -363,6 +559,9 @@ class Retriever:
         rrf_k = settings.rag_rrf_k if rrf_k is None else rrf_k
         rerank_top_k = settings.rag_rerank_top_k if rerank_top_k is None else rerank_top_k
         rerank_min_score = settings.rag_rerank_min_score if rerank_min_score is None else rerank_min_score
+        hierarchical_mode = (
+            settings.rag_hierarchical_mode if hierarchical_mode is None else hierarchical_mode
+        )
         for name, value in (
             ("top_k", top_k),
             ("dense_top_k", dense_top_k),
@@ -374,6 +573,13 @@ class Retriever:
                 raise ValueError(f"{name} must be a positive integer")
         if not math.isfinite(rerank_min_score) or not 0.0 <= rerank_min_score <= 1.0:
             raise ValueError("rerank_min_score must be finite and between 0 and 1")
+        if hierarchical_mode not in {"off", "shadow", "active"}:
+            raise ValueError("unsupported hierarchical mode")
+        if (
+            hierarchical_mode != "off"
+            and settings.rag_hierarchical_max_candidates < rerank_top_k
+        ):
+            raise ValueError("hierarchical max candidates must cover the baseline rerank pool")
 
         # пустой список = нет фильтра (трактуем как None)
         document_ids = document_ids or None
@@ -429,6 +635,82 @@ class Retriever:
         hybrid_pre_rerank = tuple(candidates)
         latencies["fusion"] = (time.perf_counter() - stage_start) * 1000
 
+        hierarchical_fallback = False
+        hierarchical_candidates = list(candidates)
+        latencies["hierarchy_sql"] = 0.0
+        if candidates and hierarchical_mode != "off":
+            stage_start = time.perf_counter()
+            anchor_ids = [
+                candidate.id
+                for candidate in candidates[: settings.rag_hierarchical_anchor_top_k]
+            ]
+            expansion_k = settings.rag_hierarchical_max_candidates - len(candidates)
+            try:
+                async with session.begin_nested():
+                    related_rows = (
+                        await session.execute(
+                            sql(_HIERARCHICAL_EXPANSION_SQL),
+                            {
+                                **params,
+                                "anchor_ids": anchor_ids,
+                                "page_radius": settings.rag_hierarchical_page_radius,
+                                "per_anchor_k": settings.rag_hierarchical_per_anchor_k,
+                                "expansion_k": expansion_k,
+                            },
+                        )
+                    ).all()
+                have = {candidate.id for candidate in hierarchical_candidates}
+                for row in related_rows:
+                    if row.id in have:
+                        continue
+                    hierarchical_candidates.append(_row_to_chunk(row))
+                    have.add(row.id)
+                    if len(hierarchical_candidates) >= settings.rag_hierarchical_max_candidates:
+                        break
+            except Exception as exc:
+                if not allow_hierarchical_fallback:
+                    raise RuntimeError(
+                        "hierarchical expansion failed while fallback was disabled"
+                    ) from None
+                logger.warning("hierarchical expansion недоступен (%s) — оставляю baseline", exc)
+                hierarchical_fallback = True
+                hierarchical_candidates = list(candidates)
+            latencies["hierarchy_sql"] = (time.perf_counter() - stage_start) * 1000
+        hierarchical_candidates = _deduplicate_chunks(
+            hierarchical_candidates, protected_prefix=len(candidates)
+        )
+        hierarchical_pre_rerank = tuple(hierarchical_candidates)
+        hierarchical_added = len(hierarchical_candidates) - len(candidates)
+        for rank, candidate in enumerate(hierarchical_candidates):
+            scores.setdefault(candidate.id, 1.0 / (rrf_k + rerank_top_k + rank + 1))
+
+        shadow_reranked: tuple[RetrievedChunk, ...] | None = None
+        shadow_final: tuple[RetrievedChunk, ...] | None = None
+        latencies["hierarchy_rerank"] = 0.0
+        if hierarchical_mode == "shadow" and hierarchical_added:
+            stage_start = time.perf_counter()
+            shadow_pool = [
+                replace(candidate, meta=dict(candidate.meta or {}))
+                for candidate in hierarchical_candidates
+            ]
+            shadow_pool, shadow_fallback, shadow_relevant = await _rerank_candidates(
+                self.reranker,
+                query,
+                shadow_pool,
+                scores,
+                min_score=rerank_min_score,
+                allow_fallback=allow_hierarchical_fallback,
+                failure_message=(
+                    "hierarchical reranker failed while fallback was disabled"
+                ),
+            )
+            hierarchical_fallback = hierarchical_fallback or shadow_fallback
+            shadow_reranked = tuple(shadow_pool)
+            shadow_final = tuple(shadow_pool[:top_k]) if shadow_relevant else ()
+            latencies["hierarchy_rerank"] = (time.perf_counter() - stage_start) * 1000
+        if hierarchical_mode == "active":
+            candidates = hierarchical_candidates
+
         def build_trace(
             *,
             reranked: tuple[RetrievedChunk, ...],
@@ -449,6 +731,20 @@ class Retriever:
                     "total": (time.perf_counter() - total_start) * 1000,
                 },
                 reranker_fallback=reranker_fallback,
+                hierarchical_mode=hierarchical_mode,
+                hierarchical_pre_rerank=hierarchical_pre_rerank,
+                hierarchical_reranked=(
+                    shadow_reranked
+                    if shadow_reranked is not None
+                    else reranked if hierarchical_mode == "active" else ()
+                ),
+                hierarchical_final=(
+                    shadow_final
+                    if shadow_final is not None
+                    else final if hierarchical_mode == "active" else ()
+                ),
+                hierarchical_added=hierarchical_added,
+                hierarchical_fallback=hierarchical_fallback,
             )
 
         if not candidates:
@@ -458,37 +754,30 @@ class Retriever:
 
         # reranker: считаем релевантность по RU-тексту (вопросы по-русски),
         # для нераспознанных RU — EN (BGE-reranker-v2-m3 мультиязычный)
-        reranker_fallback = False
         stage_start = time.perf_counter()
-        try:
-            rr = await self.reranker.rerank(query, [c.text_ru or c.text_en for c in candidates])
-            for c, s in zip(candidates, rr, strict=True):
-                c.score = round(float(s), _RERANK_SCORE_DIGITS)
-            candidates.sort(key=lambda c: (-c.score, c.id.int))
-            # Порог релевантности: если даже лучший фрагмент почти нерелевантен
-            # (запрос — не про эти документы), не вываливаем случайные чанки —
-            # пусто → чат честно скажет, что релевантного не нашлось. Только в ветке
-            # успешного реранка (у RRF-фолбэка иная шкала скоров).
-            if candidates and candidates[0].score < rerank_min_score:
-                logger.info(
-                    "retrieve: топ-реранк %.4f < порога %.4f — релевантных фрагментов нет",
-                    candidates[0].score,
-                    rerank_min_score,
-                )
-                latencies["rerank"] = (time.perf_counter() - stage_start) * 1000
-                latencies["visual"] = 0.0
-                return build_trace(
-                    reranked=tuple(candidates),
-                    final=(),
-                    reranker_fallback=False,
-                )
-        except Exception as exc:  # reranker недоступен → порядок RRF
-            if not allow_rerank_fallback:
-                raise RuntimeError("reranker failed while fallback was disabled") from None
-            logger.warning("reranker недоступен (%s) — отдаю RRF-порядок", exc)
-            reranker_fallback = True
-            for c in candidates:
-                c.score = scores[c.id]
+        candidates, reranker_fallback, relevant = await _rerank_candidates(
+            self.reranker,
+            query,
+            candidates,
+            scores,
+            min_score=rerank_min_score,
+            allow_fallback=allow_rerank_fallback,
+            failure_message="reranker failed while fallback was disabled",
+        )
+        # Порог действует только при успешном реранке; RRF использует другую шкалу.
+        if not relevant:
+            logger.info(
+                "retrieve: топ-реранк %.4f < порога %.4f — релевантных фрагментов нет",
+                candidates[0].score,
+                rerank_min_score,
+            )
+            latencies["rerank"] = (time.perf_counter() - stage_start) * 1000
+            latencies["visual"] = 0.0
+            return build_trace(
+                reranked=tuple(candidates),
+                final=(),
+                reranker_fallback=False,
+            )
         latencies["rerank"] = (time.perf_counter() - stage_start) * 1000
         reranked = tuple(candidates)
         result = candidates[:top_k]

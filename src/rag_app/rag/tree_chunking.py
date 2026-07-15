@@ -94,6 +94,7 @@ def _merge_adjacent_table_groups(drafts: list[ChunkDraft]) -> list[ChunkDraft]:
 
     merged: list[ChunkDraft] = []
     aggregate_keys = {"segment_ids", "bboxes", "tree_node_ids"}
+    order_keys = {"source_ordinal", "ordinal_in_section", "continuation_index"}
     for draft in drafts:
         previous = merged[-1] if merged else None
         group = draft.meta.get("table_merge_group")
@@ -113,7 +114,7 @@ def _merge_adjacent_table_groups(drafts: list[ChunkDraft]) -> list[ChunkDraft]:
         assert previous is not None
         combined_meta = dict(previous.meta)
         for key, value in draft.meta.items():
-            if key in aggregate_keys:
+            if key in aggregate_keys or key in order_keys:
                 continue
             if key in combined_meta and combined_meta[key] != value:
                 raise DocumentTreeChunkError(
@@ -127,6 +128,14 @@ def _merge_adjacent_table_groups(drafts: list[ChunkDraft]) -> list[ChunkDraft]:
             *previous.meta.get("bboxes", []),
             *draft.meta.get("bboxes", []),
         ]
+        for key in order_keys:
+            values = [
+                value
+                for value in (previous.meta.get(key), draft.meta.get(key))
+                if isinstance(value, int)
+            ]
+            if values:
+                combined_meta[key] = min(values)
         merged[-1] = ChunkDraft(
             idx=previous.idx,
             kind="table",

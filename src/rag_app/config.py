@@ -174,6 +174,24 @@ class Settings(BaseSettings):
     # что запрос не про эти документы, и не вываливаем случайные чанки (пусто)
     rag_rerank_min_score: float = 0.02
     rag_context_top_k: int = 5  # в промпт
+    # Иерархический добор: найденные гибридным поиском чанки задают узлы
+    # документ/раздел/страница, затем одним SQL поднимаются их соседи и связанные
+    # продолжения таблиц. До полного Gold A/B production остается в режиме off.
+    rag_hierarchical_mode: Literal["off", "shadow", "active"] = Field(
+        default="off", validation_alias="RAG_HIERARCHICAL_MODE"
+    )
+    rag_hierarchical_anchor_top_k: int = Field(
+        default=8, ge=1, le=100, validation_alias="RAG_HIERARCHICAL_ANCHOR_TOP_K"
+    )
+    rag_hierarchical_per_anchor_k: int = Field(
+        default=4, ge=1, le=20, validation_alias="RAG_HIERARCHICAL_PER_ANCHOR_K"
+    )
+    rag_hierarchical_max_candidates: int = Field(
+        default=40, ge=1, le=128, validation_alias="RAG_HIERARCHICAL_MAX_CANDIDATES"
+    )
+    rag_hierarchical_page_radius: int = Field(
+        default=1, ge=0, le=3, validation_alias="RAG_HIERARCHICAL_PAGE_RADIUS"
+    )
     # сколько вырезанных рисунков (img_s3 среди найденных чанков) приложить кропами
     # в мультимодальный запрос Qwen3.5 (vision on-demand в чате) — кап под ctx 8192
     rag_vision_max_images: int = 3

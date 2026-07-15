@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import re
+import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,6 +42,71 @@ class ChunkDraft:
 
 def _heading_path(stack: list[str]) -> str:
     return " → ".join(stack)
+
+
+def _annotate_hierarchy(drafts: list[ChunkDraft], segments: list[Segment]) -> None:
+    """Attach stable, citation-safe parent/ordering metadata to leaf chunks."""
+
+    if not drafts or not segments:
+        return
+    section_stack: list[uuid.UUID] = []
+    section_by_segment: dict[str, tuple[uuid.UUID, ...]] = {}
+    segments_by_id = {str(segment.id): segment for segment in segments}
+    for segment in segments:
+        if segment.kind == SegmentKind.heading:
+            level = max(segment.heading_level or 1, 1)
+            del section_stack[level - 1 :]
+            section_stack.append(segment.id)
+        section_by_segment[str(segment.id)] = tuple(section_stack)
+
+    section_chunks: dict[str, list[ChunkDraft]] = defaultdict(list)
+    for draft in drafts:
+        segment_ids = [str(value) for value in draft.meta.get("segment_ids", [])]
+        member_segments = [
+            segments_by_id[segment_id]
+            for segment_id in segment_ids
+            if segment_id in segments_by_id
+        ]
+        if not member_segments:
+            continue
+        first = min(member_segments, key=lambda segment: (segment.idx, segment.id.int))
+        section_path = section_by_segment.get(str(first.id), ())
+        root_id = uuid.uuid5(uuid.NAMESPACE_URL, f"rag-section-root:{first.document_id}")
+        section_id = section_path[-1] if section_path else root_id
+        draft.meta.update(
+            {
+                "section_id": str(section_id),
+                "section_path": [str(value) for value in section_path],
+                "parent_id": str(section_id),
+                "source_ordinal": min(segment.idx for segment in member_segments),
+            }
+        )
+        table_groups = {
+            str((segment.meta or {}).get("table_merge_group"))
+            for segment in member_segments
+            if (segment.meta or {}).get("table_merge_group")
+        }
+        continuation_groups = {
+            str((segment.meta or {}).get("continuation_group"))
+            for segment in member_segments
+            if (segment.meta or {}).get("continuation_group")
+        }
+        logical_table_ids = table_groups or continuation_groups
+        if draft.kind == "table" and len(logical_table_ids) == 1:
+            draft.meta["logical_table_id"] = next(iter(logical_table_ids))
+        continuation_indexes = {
+            value
+            for segment in member_segments
+            if isinstance((value := (segment.meta or {}).get("continuation_index")), int)
+        }
+        if draft.kind == "table" and len(continuation_indexes) == 1:
+            draft.meta["continuation_index"] = next(iter(continuation_indexes))
+        section_chunks[str(section_id)].append(draft)
+
+    for chunks in section_chunks.values():
+        chunks.sort(key=lambda draft: (int(draft.meta["source_ordinal"]), draft.idx))
+        for ordinal, draft in enumerate(chunks):
+            draft.meta["ordinal_in_section"] = ordinal
 
 
 def _flush(
@@ -142,4 +209,5 @@ def segments_to_chunks(segments: list[Segment]) -> list[ChunkDraft]:
     ]
     for i, d in enumerate(kept):
         d.idx = i
+    _annotate_hierarchy(kept, segments)
     return kept
