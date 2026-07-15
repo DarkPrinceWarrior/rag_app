@@ -1,0 +1,15 @@
+description: DocRAGenslate offline Promptfoo harness contract
+
+providers:
+  - id: file://mock_provider.mjs
+    label: offline-safe-mock
+
+prompts:
+  - '{{attack}}'
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://assertions.mjs:noInternalLeak
+
+tests: cases.yaml

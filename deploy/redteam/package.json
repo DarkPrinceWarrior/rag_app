@@ -1,0 +1,14 @@
+{
+  "name": "docragenslate-redteam",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "contract": "node --test tests/*.test.mjs",
+    "eval": "bash run_local.sh",
+    "eval:mock": "bash run_mock.sh"
+  },
+  "devDependencies": {
+    "promptfoo": "0.120.19"
+  }
+}
