@@ -1,10 +1,15 @@
 # Обновление основного vLLM без смешивания с MinerU
 
 Цель первого окна — квалифицировать `vLLM 0.24.0`; переход на 0.25.x выполняется
-отдельно. Скрипт `prepare_candidate_env.sh` создает новые Python 3.12-окружения
-`main` и `visual` и не изменяет текущие venv, приложение или
+отдельно. Скрипт `prepare_candidate_env.sh` создает новое Python 3.12-окружение
+`main` и не изменяет текущие venv, приложение или
 `/root/services/mineru/current`. MinerU 3.4.4 остается на vLLM 0.21, а
 PaddleOCR-VL — на собственном vLLM 0.10.2.
+
+Все профили по умолчанию используют единое immutable-окружение `main`: версия
+vLLM и CUDA-зависимости у них одинаковы, а отдельная копия занимает около 9 ГБ.
+Если будущий профиль потребует несовместимых зависимостей, подготовить `visual`
+и явно задать `VLLM_VISUAL_CANDIDATE_DIR` в candidate env.
 
 ## Матрица приемки
 
@@ -21,8 +26,9 @@ PaddleOCR-VL — на собственном vLLM 0.10.2.
 
 ## Порядок окна
 
-1. Подготовить окружения без переключения: `VLLM_VERSION=0.24.0
-   deploy/vllm/prepare_candidate_env.sh main` и `... visual`.
+1. Подготовить окружение без переключения: `VLLM_VERSION=0.24.0
+   deploy/vllm/prepare_candidate_env.sh main`. Отдельный `visual` нужен только
+   при явном `VLLM_VISUAL_CANDIDATE_DIR` из-за несовместимости зависимостей.
 2. Установить только шаблон кандидата: `install -m 0644
    deploy/vllm/vllm-candidate@.service /etc/systemd/system/` и выполнить
    `systemctl daemon-reload`.

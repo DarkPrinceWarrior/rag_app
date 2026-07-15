@@ -1,15 +1,27 @@
 # API и worker под systemd
 
 `rag-api.service` и `rag-worker.service` заменяют только tmux-процессы приложения;
-модельные сервисы и Docker Compose не затрагиваются. Оба unit-файла сначала
-читают закрытый корневой `.env`, затем отслеживаемый `deploy/rag-runtime.env`.
-Поэтому принятые несекретные режимы бюджета контекста, visual retrieval и
-теневого парсинга одинаковы после интерактивного и автоматического рестарта.
+модельные сервисы и Docker Compose не затрагиваются. API загружает только
+`/etc/docragenslate/api.env` с ролью БД `rag_api`, legacy/split workers — только
+`worker.env` с ролью `rag_worker`; отсутствие или подмена роли останавливает
+установку/старт. Затем загружается отслеживаемый `deploy/rag-runtime.env`, поэтому
+несекретные режимы одинаковы после интерактивного и автоматического рестарта.
+
+Installer преобразует текущие `.env.api.local` и `.env.worker.local` в
+systemd-совместимый формат: удаляет только префикс `export`, отклоняет произвольный
+shell-синтаксис, проверяет имя роли в `RAG_DATABASE_URL`, пишет через временный
+файл и атомарный `mv`. Каталог имеет режим `0700`, файлы — `0600`; значения в
+stdout/journal не выводятся. Общий `.env` с owner-role приложению не передаётся.
+Exporter метрик получает только loopback-настройки Redis, запускается вне каталога
+репозитория (чтобы `Settings.env_file=.env` не подхватил owner-env неявно) и не
+читает DB/S3/OIDC env.
 
 ## Окно переключения
 
-1. Синхронизировать код и `.venv`, собрать SPA, проверить `.env` и выполнить
+1. Синхронизировать код и `.venv`, собрать SPA, проверить role-specific env и выполнить
    `REPO_DIR=/root/projects/rag_app deploy/install_rag_app_services.sh --check`.
+   Для отдельной подготовки закрытых файлов без установки units доступен режим
+   `--prepare-env`; он также выполняется автоматически при `--install/--activate`.
 2. Дождаться окончания длинных ARQ-задач или явно зафиксировать активные job ID.
    Установить без запуска: `deploy/install_rag_app_services.sh --install`.
 3. Остановить только tmux-сессии `rag_api` и `rag_worker`; убедиться, что порта
@@ -27,7 +39,8 @@ Worker получает `SIGINT` и до 3600 секунд на graceful shutdow
 ## Откат
 
 `systemctl disable --now rag-app.target`, затем запустить прежние команды в tmux
-с тем же `.env` и обязательно экспортировать четыре значения из
+с `.env.api.local` для API и `.env.worker.local` для worker и обязательно
+экспортировать значения из
 `deploy/rag-runtime.env`. Unit-файлы не меняют БД, Redis или MinIO; откат не
 требует миграции. Не держать systemd и tmux одновременно.
 

@@ -5,7 +5,10 @@ set -euo pipefail
 
 profile="${1:-}"
 main_dir="${VLLM_MAIN_CANDIDATE_DIR:-/root/services/vllm-main-0.24.0}"
-visual_dir="${VLLM_VISUAL_CANDIDATE_DIR:-/root/services/vllm-visual-0.24.0}"
+# Все профили используют один и тот же pinned vLLM wheel. По умолчанию visual
+# переиспользует immutable main-env, чтобы не дублировать ~9 ГБ CUDA-зависимостей.
+# Отдельное окружение остаётся доступно явным override для будущих конфликтов ABI.
+visual_dir="${VLLM_VISUAL_CANDIDATE_DIR:-$main_dir}"
 
 case "$profile" in
   qwen35)

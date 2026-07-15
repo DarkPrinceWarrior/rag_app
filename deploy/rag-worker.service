@@ -8,7 +8,8 @@ Type=simple
 WorkingDirectory=/root/projects/rag_app
 Environment=PYTHONPATH=/root/projects/rag_app/src
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/root/projects/rag_app/.env
+# Installer creates this systemd-compatible file from .env.worker.local (0600).
+EnvironmentFile=/etc/docragenslate/worker.env
 EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
 ExecStart=/root/projects/rag_app/.venv/bin/arq rag_app.workers.main.WorkerSettings
 Restart=on-failure

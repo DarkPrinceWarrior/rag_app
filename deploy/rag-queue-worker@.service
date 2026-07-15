@@ -9,7 +9,8 @@ Type=simple
 WorkingDirectory=/root/projects/rag_app
 Environment=PYTHONPATH=/root/projects/rag_app/src
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/root/projects/rag_app/.env
+# All split workers use the same dedicated BYPASSRLS worker role.
+EnvironmentFile=/etc/docragenslate/worker.env
 EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
 ExecStart=/root/projects/rag_app/deploy/run_queue_worker.sh %i
 Restart=on-failure

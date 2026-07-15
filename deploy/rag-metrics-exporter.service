@@ -5,11 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/projects/rag_app
+# Do not run from the repository: Settings has env_file=".env" and would otherwise
+# load the production owner env implicitly even without an EnvironmentFile directive.
+WorkingDirectory=/
 Environment=PYTHONPATH=/root/projects/rag_app/src
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/root/projects/rag_app/.env
-EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
+# Exporter reads only Redis queue/quality aggregates; it receives no DB/S3/OIDC secrets.
+Environment=RAG_REDIS_HOST=127.0.0.1
+Environment=RAG_REDIS_PORT=6379
+Environment=RAG_REDIS_DB=0
 ExecStart=/root/projects/rag_app/.venv/bin/uvicorn rag_app.metrics_exporter:app --host 127.0.0.1 --port 9108
 Restart=on-failure
 RestartSec=5

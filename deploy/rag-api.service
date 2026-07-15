@@ -8,7 +8,9 @@ Type=simple
 WorkingDirectory=/root/projects/rag_app
 Environment=PYTHONPATH=/root/projects/rag_app/src
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-/root/projects/rag_app/.env
+# Installer creates this systemd-compatible file from .env.api.local (0600).
+# Missing role-specific configuration is fatal; never fall back to owner .env.
+EnvironmentFile=/etc/docragenslate/api.env
 EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
 ExecStart=/root/projects/rag_app/.venv/bin/uvicorn rag_app.api.main:app --host 127.0.0.1 --port 8100 --proxy-headers
 Restart=on-failure
