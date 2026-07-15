@@ -12,6 +12,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, cast
 
 from openai import AsyncOpenAI
@@ -19,6 +20,15 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from rag_app.config import settings
 from rag_app.llm.vision import _cap_image
+from rag_app.rag.grounding import (
+    CitationGuardResult,
+    CitationVerifier,
+    ContextBudgetAudit,
+    GroundingError,
+    GroundingMode,
+    compress_low_priority_chunks,
+    count_chat_tokens,
+)
 from rag_app.rag.retrieve import RetrievedChunk
 from rag_app.storage.s3 import Storage
 
@@ -95,7 +105,7 @@ def _catalog_text(chunks: list[RetrievedChunk]) -> str | None:
     return (cat.text_ru or cat.text_en or "").strip() if cat else None
 
 
-def build_context_block(chunks: list[RetrievedChunk]) -> str:
+def build_context_block(chunks: list[RetrievedChunk], *, legacy_chunk_chars: int | None = 3000) -> str:
     # Бюджет контекста: multi-hop собирает много фрагментов — без лимита промпт
     # перерастает окно модели. Клеим по убыванию ранга, пока влезает; хвост
     # (низкоранговые) отбрасываем. Нумеруем ТОЛЬКО источники (без каталога).
@@ -111,8 +121,10 @@ def build_context_block(chunks: list[RetrievedChunk]) -> str:
             )
             header += f" · {pages}"
         body = c.text_ru or c.text_en
-        seg = f"{header}\n{body[:3000]}"
-        if parts and total + len(seg) > settings.rag_context_max_chars:
+        if legacy_chunk_chars is not None:
+            body = body[:legacy_chunk_chars]
+        seg = f"{header}\n{body}"
+        if legacy_chunk_chars is not None and parts and total + len(seg) > settings.rag_context_max_chars:
             break
         parts.append(seg)
         total += len(seg)
@@ -200,12 +212,94 @@ def _fit_context_window(messages: list[dict[str, Any]], n_images: int) -> None:
         logger.info("chat: окно близко к пределу — отброшено %d старых реплик истории", dropped)
 
 
+@dataclass(frozen=True)
+class PreparedChat:
+    messages: list[dict[str, Any]]
+    chunks: list[RetrievedChunk]
+    budget_audit: ContextBudgetAudit | None
+
+
+def _system_text(
+    *,
+    chunks: list[RetrievedChunk],
+    route: str,
+    summary: str | None,
+    memory_block: str | None,
+) -> str:
+    if chunks:
+        system = CHAT_SYSTEM_PROMPT
+    elif route == "out_of_scope":
+        system = GENERAL_SYSTEM_PROMPT
+    else:
+        system = MEMORY_ONLY_SYSTEM_PROMPT
+    if summary:
+        system += f"\n\nКраткое содержание более ранней части диалога:\n{summary}"
+    if memory_block:
+        system += f"\n\n=== Память о пользователе и проекте ===\n{memory_block}"
+    return system
+
+
+def _text_messages(
+    question: str,
+    chunks: list[RetrievedChunk],
+    history: list[dict[str, str]],
+    *,
+    summary: str | None,
+    memory_block: str | None,
+    route: str,
+    legacy_context: bool,
+) -> list[dict[str, Any]]:
+    system = _system_text(
+        chunks=chunks,
+        route=route,
+        summary=summary,
+        memory_block=memory_block,
+    )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    messages.extend(history[-settings.rag_history_messages :])
+    if chunks:
+        context = build_context_block(
+            chunks,
+            legacy_chunk_chars=3000 if legacy_context else None,
+        )
+        user_content = (
+            f"Фрагменты документов:\n\n{context}\n\n"
+            f"Вопрос: {question}\n\n"
+            "Ответь по правилам (цитаты [n] обязательны)."
+        )
+    else:
+        user_content = (
+            f"Вопрос: {question}\n\nОтветь на основании памяти о пользователе/проекте и истории диалога."
+        )
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+
+def _potential_image_count(chunks: list[RetrievedChunk]) -> int:
+    return min(
+        sum(bool((chunk.meta or {}).get("img_s3")) for chunk in source_chunks(chunks)),
+        settings.rag_vision_max_images,
+    )
+
+
+def _drop_lowest_source(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    for index in range(len(chunks) - 1, -1, -1):
+        if chunks[index].kind != "catalog":
+            return chunks[:index] + chunks[index + 1 :]
+    return chunks
+
+
 class ChatEngine:
     def __init__(self) -> None:
         self.client = AsyncOpenAI(
             base_url=settings.llm_base_url, api_key=settings.llm_api_key, timeout=300.0
         )
         self.storage = Storage()  # вырезанные кропы рисунков → vision on-demand
+        self.citation_verifier = CitationVerifier(
+            self.client,
+            model=settings.llm_model,
+            max_tokens=settings.rag_citation_verifier_max_tokens,
+        )
 
     async def summarize_history(self, prior_summary: str | None, messages: list[Any]) -> str:
         """Инкрементальная сводка вытесненных из окна реплик (§ 5 п.5)."""
@@ -225,6 +319,224 @@ class ChatEngine:
         )
         return (resp.choices[0].message.content or "").strip()
 
+    async def _fit_exact_context(
+        self,
+        question: str,
+        chunks: list[RetrievedChunk],
+        history: list[dict[str, str]],
+        *,
+        summary: str | None,
+        memory_block: str | None,
+        route: str,
+        max_tokens: int,
+        mode: GroundingMode,
+    ) -> PreparedChat:
+        candidate_chunks, compressed = compress_low_priority_chunks(
+            chunks,
+            question,
+            after_rank=settings.rag_context_compress_after_rank,
+            max_chars=settings.rag_context_compressed_chars,
+        )
+        candidate_history = list(history[-settings.rag_history_messages :])
+        dropped_history = 0
+        dropped_sources = 0
+        while True:
+            messages = _text_messages(
+                question,
+                candidate_chunks,
+                candidate_history,
+                summary=summary,
+                memory_block=memory_block,
+                route=route,
+                legacy_context=False,
+            )
+            token_count = await count_chat_tokens(
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+                messages=messages,
+            )
+            max_model_len = min(token_count.max_model_len, settings.chat_context_window)
+            input_limit = (
+                max_model_len
+                - max_tokens
+                - settings.rag_context_reserve_tokens
+                - (
+                    settings.rag_citation_verifier_max_tokens
+                    if settings.rag_citation_verification_mode != "off"
+                    else 0
+                )
+                - _potential_image_count(candidate_chunks) * settings.chat_image_tokens
+            )
+            if input_limit < 1:
+                raise GroundingError("резервы ответа и изображений исчерпали окно модели")
+            if token_count.count <= input_limit:
+                return PreparedChat(
+                    messages=messages,
+                    chunks=candidate_chunks,
+                    budget_audit=ContextBudgetAudit(
+                        mode=mode,
+                        exact_tokens=token_count.count,
+                        input_limit=input_limit,
+                        max_model_len=max_model_len,
+                        dropped_history=dropped_history,
+                        dropped_sources=dropped_sources,
+                        compressed_sources=compressed,
+                    ),
+                )
+            if candidate_history:
+                candidate_history.pop(0)
+                dropped_history += 1
+                continue
+            if any(chunk.kind == "catalog" for chunk in candidate_chunks):
+                candidate_chunks = [chunk for chunk in candidate_chunks if chunk.kind != "catalog"]
+                continue
+            if len(source_chunks(candidate_chunks)) > 1:
+                candidate_chunks = _drop_lowest_source(candidate_chunks)
+                dropped_sources += 1
+                continue
+            raise GroundingError("даже один целый источник не помещается в окно модели")
+
+    async def _attach_images(
+        self,
+        messages: list[dict[str, Any]],
+        chunks: list[RetrievedChunk],
+    ) -> int:
+        if not chunks:
+            return 0
+        text_block = messages[-1]["content"]
+        content: list[dict[str, Any]] = [{"type": "text", "text": text_block}]
+        attached = 0
+        for number, chunk in enumerate(source_chunks(chunks), 1):
+            img_key = (chunk.meta or {}).get("img_s3")
+            if not img_key or attached >= settings.rag_vision_max_images:
+                continue
+            try:
+                data = await self.storage.get_bytes(settings.bucket_artifacts, img_key)
+                b64 = base64.b64encode(_cap_image(data)).decode("ascii")
+            except Exception as exc:  # noqa: BLE001 - image evidence is optional
+                logger.warning("vision attach [%d] %s: %s", number, img_key, exc)
+                continue
+            content.append({"type": "text", "text": f"Изображение фрагмента [{number}]:"})
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            attached += 1
+        if attached:
+            messages[-1]["content"] = content
+        return attached
+
+    async def prepare_answer(
+        self,
+        question: str,
+        chunks: list[RetrievedChunk],
+        history: list[dict[str, str]],
+        *,
+        summary: str | None = None,
+        memory_block: str | None = None,
+        route: str = "doc_only",
+        max_tokens: int = 2048,
+        budget_mode: GroundingMode | None = None,
+    ) -> PreparedChat:
+        mode = budget_mode or settings.rag_context_budget_mode
+        exact: PreparedChat | None = None
+        if mode in {"shadow", "enforce"}:
+            try:
+                exact = await self._fit_exact_context(
+                    question,
+                    chunks,
+                    history,
+                    summary=summary,
+                    memory_block=memory_block,
+                    route=route,
+                    max_tokens=max_tokens,
+                    mode=mode,
+                )
+            except GroundingError as exc:
+                if mode == "enforce":
+                    raise
+                logger.warning("exact context budget shadow failed: %s", exc)
+                exact = PreparedChat(
+                    messages=[],
+                    chunks=chunks,
+                    budget_audit=ContextBudgetAudit(
+                        mode=mode,
+                        exact_tokens=None,
+                        input_limit=None,
+                        max_model_len=None,
+                        tokenizer_error=str(exc),
+                    ),
+                )
+        if mode == "enforce":
+            assert exact is not None
+            prepared = exact
+        else:
+            messages = _text_messages(
+                question,
+                chunks,
+                history,
+                summary=summary,
+                memory_block=memory_block,
+                route=route,
+                legacy_context=True,
+            )
+            _fit_context_window(messages, _potential_image_count(chunks))
+            prepared = PreparedChat(
+                messages=messages,
+                chunks=chunks,
+                budget_audit=exact.budget_audit if exact else None,
+            )
+        await self._attach_images(prepared.messages, prepared.chunks)
+        if prepared.budget_audit is not None:
+            audit = prepared.budget_audit
+            logger.info(
+                "exact context budget: mode=%s tokens=%s limit=%s history_dropped=%d "
+                "sources_dropped=%d sources_compressed=%d error=%s",
+                audit.mode,
+                audit.exact_tokens,
+                audit.input_limit,
+                audit.dropped_history,
+                audit.dropped_sources,
+                audit.compressed_sources,
+                audit.tokenizer_error,
+            )
+        return prepared
+
+    async def stream_prepared(
+        self,
+        prepared: PreparedChat,
+        *,
+        temperature: float = 0.2,
+        top_p: float = 0.8,
+        max_tokens: int = 2048,
+        seed: int | None = None,
+    ) -> AsyncIterator[str]:
+        stream = await self.client.chat.completions.create(
+            model=settings.llm_model,
+            messages=cast(list[ChatCompletionMessageParam], prepared.messages),
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            seed=seed,
+            stream=True,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                yield delta
+
+    async def verify_answer(
+        self,
+        answer: str,
+        chunks: list[RetrievedChunk],
+        *,
+        mode: GroundingMode | None = None,
+    ) -> CitationGuardResult:
+        return await self.citation_verifier.guard(
+            answer,
+            chunks,
+            mode=mode or settings.rag_citation_verification_mode,
+        )
+
     async def stream_answer(
         self,
         question: str,
@@ -238,72 +550,42 @@ class ChatEngine:
         max_tokens: int = 2048,
         seed: int | None = None,
     ) -> AsyncIterator[str]:
-        # Выбор промпта: есть фрагменты → строгий doc-only; out_of_scope (перевод/
-        # действие/не-вопрос) → общий ассистент; иначе (memory_only / пустой поиск,
-        # но есть память) → ответ из памяти.
-        if chunks:
-            system = CHAT_SYSTEM_PROMPT
-        elif route == "out_of_scope":
-            system = GENERAL_SYSTEM_PROMPT
-        else:
-            system = MEMORY_ONLY_SYSTEM_PROMPT
-        if summary:
-            system += f"\n\nКраткое содержание более ранней части диалога:\n{summary}"
-        # Блок памяти — ОТДЕЛЬНО от фрагментов документов и как contextual hints
-        # (§1, §6.2): не переопределяет факты/числа/цитаты документа.
-        if memory_block:
-            system += f"\n\n=== Память о пользователе и проекте ===\n{memory_block}"
-        messages: list[dict[str, str]] = [{"role": "system", "content": system}]
-        messages.extend(history[-settings.rag_history_messages :])
-        attached = 0
-        if chunks:
-            text_block = (
-                f"Фрагменты документов:\n\n{build_context_block(chunks)}\n\n"
-                f"Вопрос: {question}\n\n"
-                "Ответь по правилам (цитаты [n] обязательны)."
-            )
-            # vision on-demand: к найденным рисункам прикладываем вырезанные кропы —
-            # Qwen3.5 мультимодален, рассмотрит схему/формулы/обозначения на картинке
-            content: list[dict[str, Any]] = [{"type": "text", "text": text_block}]
-            attached = 0
-            # та же нумерация, что в build_context_block/extract_citations (без каталога)
-            for n, c in enumerate(source_chunks(chunks), 1):
-                img_key = (c.meta or {}).get("img_s3")
-                if not img_key or attached >= settings.rag_vision_max_images:
-                    continue
-                try:
-                    data = await self.storage.get_bytes(settings.bucket_artifacts, img_key)
-                    b64 = base64.b64encode(_cap_image(data)).decode("ascii")
-                except Exception as exc:  # noqa: BLE001 — рисунок необязателен
-                    logger.warning("vision attach [%d] %s: %s", n, img_key, exc)
-                    continue
-                content.append({"type": "text", "text": f"Изображение фрагмента [{n}]:"})
-                content.append(
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                )
-                attached += 1
-            user_content: Any = content if attached else text_block
-        else:
-            user_content = (
-                f"Вопрос: {question}\n\n"
-                "Ответь на основании памяти о пользователе/проекте и истории диалога."
-            )
-        messages.append({"role": "user", "content": user_content})
-        _fit_context_window(messages, attached)  # §4.5: не переполнить окно модели
-        stream = await self.client.chat.completions.create(
-            model=settings.llm_model,
-            messages=cast(list[ChatCompletionMessageParam], messages),
+        prepared = await self.prepare_answer(
+            question,
+            chunks,
+            history,
+            summary=summary,
+            memory_block=memory_block,
+            route=route,
+            max_tokens=max_tokens,
+        )
+        mode = settings.rag_citation_verification_mode
+        if mode == "enforce" and prepared.chunks:
+            parts: list[str] = []
+            async for delta in self.stream_prepared(
+                prepared,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                seed=seed,
+            ):
+                parts.append(delta)
+            guarded = await self.verify_answer("".join(parts).strip(), prepared.chunks, mode=mode)
+            yield guarded.answer
+            return
+        shadow_parts: list[str] = []
+        async for delta in self.stream_prepared(
+            prepared,
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
             seed=seed,
-            stream=True,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices else None
-            if delta:
-                yield delta
+        ):
+            if mode == "shadow" and prepared.chunks:
+                shadow_parts.append(delta)
+            yield delta
+        if shadow_parts:
+            await self.verify_answer("".join(shadow_parts).strip(), prepared.chunks, mode=mode)
 
 
 def make_session_title(question: str) -> str:

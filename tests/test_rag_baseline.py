@@ -21,6 +21,7 @@ from rag_app.eval.baseline import (
     RetrievedUnit,
     RuntimeModelRevision,
     aggregate_metrics,
+    evaluate_baseline,
     require_loopback_database_url,
     require_loopback_endpoint,
     require_loopback_url,
@@ -436,6 +437,10 @@ def test_baseline_scores_retrieval_citations_quantities_and_latency() -> None:
         retrieval_ms=20.0,
         generation_ms=30.0,
         total_ms=50.0,
+        semantic_claim_count=2,
+        semantic_supported_claim_count=1,
+        semantic_unsupported_claim_count=1,
+        citation_guard_failed_closed=True,
     )
 
     metrics = score_observation(record, sidecar, observation)
@@ -445,6 +450,7 @@ def test_baseline_scores_retrieval_citations_quantities_and_latency() -> None:
     assert metrics.citation["citation_precision"] == 1.0
     assert metrics.citation["citation_recall"] == 1.0
     assert metrics.quantities["quantity_unit_accuracy"] == 1.0
+    assert metrics.semantic_citation_precision == 0.5
 
     provenance = _SCRIPT._build_provenance(
         [record],
@@ -460,10 +466,79 @@ def test_baseline_scores_retrieval_citations_quantities_and_latency() -> None:
     )
     report = aggregate_metrics([metrics], provenance=provenance)
     assert report.answerability_accuracy == 1.0
+    assert report.mean_semantic_citation_precision == 0.5
+    assert report.semantic_unsupported_claim_rate == 0.5
+    assert report.citation_guard_failed_closed_rate == 1.0
+    assert report.citation_verifier_error_rate == 0.0
     assert report.latency_ms["total_p95"] == 50.0
     assert "answer" not in report.model_dump(mode="json")["cases"][0]
     assert report.provenance.runner == "retrieval_direct_answer"
     assert report.provenance.gold_artifact_sha256 == "a" * 64
+    assert report.provenance.configuration.context_budget_mode == "off"
+    assert report.provenance.configuration.citation_verification_mode == "off"
+
+
+def test_baseline_evaluation_batches_cases_with_bounded_concurrency() -> None:
+    record, sidecar, chunk_id = _case()
+
+    class ConcurrentRunner:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def run_case(
+            self,
+            current: GoldRecord,
+            current_sidecar: PrivateSidecarRecord,
+        ) -> BaselineObservation:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return BaselineObservation(
+                case_id=current.case_id,
+                gold_case_sha256=gold_record_case_sha256(current),
+                scope_id=current.scope_id,
+                answer="The required operating pressure is 42 bar [1].",
+                retrieved=(
+                    RetrievedUnit(
+                        chunk_id=chunk_id,
+                        document_id=current_sidecar.source_documents[0].document_id,
+                    ),
+                ),
+                retrieval_ms=1.0,
+                generation_ms=1.0,
+                total_ms=2.0,
+            )
+
+    runner = ConcurrentRunner()
+    provenance = _SCRIPT._build_provenance(
+        [record],
+        mode="release",
+        top_k=10,
+        concurrency=2,
+        gold_artifact_sha256="a" * 64,
+        sidecar_artifact_sha256="b" * 64,
+        evaluated_at=datetime(2026, 7, 13, 12, 0, tzinfo=UTC),
+        git_sha="c" * 40,
+        git_dirty=False,
+        runtime_corpus_snapshot_sha256="f" * 64,
+        model_revisions=_model_revisions(),
+    )
+
+    report = asyncio.run(
+        evaluate_baseline(
+            [record, record],
+            {record.case_id: sidecar},
+            runner,
+            provenance=provenance,
+            concurrency=2,
+        )
+    )
+
+    assert runner.max_active == 2
+    assert report.case_count == 2
+    assert report.provenance.configuration.evaluation_concurrency == 2
 
 
 def test_provenance_contains_only_reproducible_non_private_identifiers() -> None:

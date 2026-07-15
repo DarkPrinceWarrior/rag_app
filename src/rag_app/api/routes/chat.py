@@ -246,17 +246,39 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
         else:
             parts: list[str] = []
             try:
-                async for delta in app.state.chat_engine.stream_answer(
-                    body.message, chunks, history, summary=summary,
-                    memory_block=memory_block, route=route_info.route,
-                ):
+                prepared = await app.state.chat_engine.prepare_answer(
+                    body.message,
+                    chunks,
+                    history,
+                    summary=summary,
+                    memory_block=memory_block,
+                    route=route_info.route,
+                )
+                chunks = prepared.chunks
+                enforce_citations = settings.rag_citation_verification_mode == "enforce" and bool(chunks)
+                async for delta in app.state.chat_engine.stream_prepared(prepared):
                     parts.append(delta)
-                    yield _sse({"type": "delta", "text": delta})
+                    if not enforce_citations:
+                        yield _sse({"type": "delta", "text": delta})
+                draft = "".join(parts).strip()
+                if enforce_citations:
+                    guarded = await app.state.chat_engine.verify_answer(draft, chunks)
+                    answer = guarded.answer
+                    yield _sse({"type": "delta", "text": answer})
+                else:
+                    answer = draft
+                    if settings.rag_citation_verification_mode == "shadow" and chunks:
+                        guarded = await app.state.chat_engine.verify_answer(answer, chunks)
+                        if guarded.verification is not None:
+                            logger.info(
+                                "citation shadow: precision=%s unsupported=%d",
+                                guarded.verification.citation_precision,
+                                len(guarded.verification.unsupported_claims),
+                            )
             except Exception as exc:
                 logger.exception("LLM stream failed")
                 yield _sse({"type": "error", "detail": f"генерация не удалась: {exc}"})
                 return
-            answer = "".join(parts).strip()
 
         citations = extract_citations(answer, chunks) if chunks else []
         async with sessionmaker() as db:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -64,6 +65,11 @@ class BaselineObservation(_StrictModel):
     retrieval_ms: float = Field(ge=0)
     generation_ms: float = Field(ge=0)
     total_ms: float = Field(ge=0)
+    semantic_claim_count: int = Field(default=0, ge=0)
+    semantic_supported_claim_count: int = Field(default=0, ge=0)
+    semantic_unsupported_claim_count: int = Field(default=0, ge=0)
+    citation_guard_failed_closed: bool = False
+    citation_verifier_error: bool = False
 
     @model_validator(mode="after")
     def validate_observation(self) -> BaselineObservation:
@@ -72,6 +78,11 @@ class BaselineObservation(_StrictModel):
             raise ValueError("retrieved chunk IDs must be unique")
         if self.total_ms + 1e-6 < self.retrieval_ms + self.generation_ms:
             raise ValueError("total latency cannot be below component latency")
+        classified_claims = (
+            self.semantic_supported_claim_count + self.semantic_unsupported_claim_count
+        )
+        if classified_claims > self.semantic_claim_count:
+            raise ValueError("semantic claim counters are inconsistent")
         return self
 
 
@@ -89,6 +100,11 @@ class BaselineCaseMetrics(_StrictModel):
     ranked: dict[str, RankedScores]
     citation: dict[str, Any]
     quantities: dict[str, Any]
+    semantic_citation_precision: float | None = Field(default=None, ge=0, le=1)
+    semantic_claim_count: int = Field(default=0, ge=0)
+    semantic_unsupported_claim_count: int = Field(default=0, ge=0)
+    citation_guard_failed_closed: bool = False
+    citation_verifier_error: bool = False
     retrieval_ms: float
     generation_ms: float
     total_ms: float
@@ -135,6 +151,13 @@ class BaselineConfiguration(_StrictModel):
     context_max_chars: int = Field(ge=1)
     context_window_tokens: int = Field(ge=1)
     output_tokens: int = Field(ge=1)
+    context_budget_mode: Literal["off", "shadow", "enforce"] | None = None
+    context_reserve_tokens: int | None = Field(default=None, ge=1)
+    context_compress_after_rank: int | None = Field(default=None, ge=1)
+    context_compressed_chars: int | None = Field(default=None, ge=1)
+    citation_verification_mode: Literal["off", "shadow", "enforce"] | None = None
+    citation_verifier_max_tokens: int | None = Field(default=None, ge=1)
+    evaluation_concurrency: int | None = Field(default=None, ge=1, le=16)
     answer_route: Literal["doc_only"]
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     temperature: float = Field(ge=0, le=2)
@@ -195,6 +218,10 @@ class BaselineReport(_StrictModel):
     mean_quantity_unit_accuracy: float | None
     mean_quantity_unit_recall: float | None
     unsupported_number_rate: float
+    mean_semantic_citation_precision: float | None = Field(default=None, ge=0, le=1)
+    semantic_unsupported_claim_rate: float | None = Field(default=None, ge=0, le=1)
+    citation_guard_failed_closed_rate: float = Field(default=0, ge=0, le=1)
+    citation_verifier_error_rate: float = Field(default=0, ge=0, le=1)
     latency_ms: dict[str, float]
     cases: tuple[BaselineCaseMetrics, ...]
 
@@ -320,6 +347,11 @@ def score_observation(
     )
     abstained = is_abstention(observation.answer)
     answerability_correct = abstained if not record.answerable else not abstained
+    semantic_precision = (
+        observation.semantic_supported_claim_count / observation.semantic_claim_count
+        if observation.semantic_claim_count
+        else None
+    )
     return BaselineCaseMetrics(
         case_id=record.case_id,
         answerable=record.answerable,
@@ -328,6 +360,11 @@ def score_observation(
         ranked=ranked,
         citation=dict(citation),
         quantities=dict(quantities),
+        semantic_citation_precision=semantic_precision,
+        semantic_claim_count=observation.semantic_claim_count,
+        semantic_unsupported_claim_count=observation.semantic_unsupported_claim_count,
+        citation_guard_failed_closed=observation.citation_guard_failed_closed,
+        citation_verifier_error=observation.citation_verifier_error,
         retrieval_ms=observation.retrieval_ms,
         generation_ms=observation.generation_ms,
         total_ms=observation.total_ms,
@@ -366,6 +403,8 @@ def aggregate_metrics(
 
     total_mentions = sum(int(case.quantities["mentioned_number_count"]) for case in cases)
     unsupported = sum(int(case.quantities["unsupported_number_count"]) for case in cases)
+    semantic_claims = sum(case.semantic_claim_count for case in cases)
+    semantic_unsupported = sum(case.semantic_unsupported_claim_count for case in cases)
     totals = [case.total_ms for case in cases]
     retrieval = [case.retrieval_ms for case in cases]
     generation = [case.generation_ms for case in cases]
@@ -410,6 +449,18 @@ def aggregate_metrics(
             ]
         ),
         unsupported_number_rate=unsupported / total_mentions if total_mentions else 0.0,
+        mean_semantic_citation_precision=_mean_eligible(
+            [case.semantic_citation_precision for case in cases]
+        ),
+        semantic_unsupported_claim_rate=(
+            semantic_unsupported / semantic_claims if semantic_claims else None
+        ),
+        citation_guard_failed_closed_rate=(
+            sum(case.citation_guard_failed_closed for case in cases) / len(cases)
+        ),
+        citation_verifier_error_rate=(
+            sum(case.citation_verifier_error for case in cases) / len(cases)
+        ),
         latency_ms={
             "retrieval_mean": statistics.fmean(retrieval),
             "generation_mean": statistics.fmean(generation),
@@ -428,15 +479,22 @@ async def evaluate_baseline(
     *,
     provenance: BaselineProvenance,
     ks: Sequence[int] = (1, 5, 10),
+    concurrency: int = 1,
 ) -> BaselineReport:
-    results: list[BaselineCaseMetrics] = []
-    for record in records:
+    if not 1 <= concurrency <= 16:
+        raise BaselineEvaluationError("evaluation concurrency must be in [1, 16]")
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def evaluate(record: GoldRecord) -> BaselineCaseMetrics:
         try:
-            sidecar = sidecars[record.case_id]
-            observation = await runner.run_case(record, sidecar)
-            results.append(score_observation(record, sidecar, observation, ks=ks))
+            async with semaphore:
+                sidecar = sidecars[record.case_id]
+                observation = await runner.run_case(record, sidecar)
+                return score_observation(record, sidecar, observation, ks=ks)
         except (KeyError, ValueError) as error:
             raise BaselineEvaluationError(f"evaluation failed closed ({type(error).__name__})") from None
+
+    results = await asyncio.gather(*(evaluate(record) for record in records))
     return aggregate_metrics(results, provenance=provenance)
 
 

@@ -203,16 +203,21 @@ class Settings(BaseSettings):
     # обрезка одной реплики истории (ассистент вьювера вшивает текст страницы в
     # сообщение — без лимита история переполняет окно модели на 2-м ходу)
     rag_history_msg_chars: int = 1200
-    # бюджет блока фрагментов в финальном промпте (символы) — backstop против
-    # переполнения окна модели при multi-hop сборе (Qwen3.5 max-model-len 16384)
+    # Legacy-бюджет остаётся только для baseline/off. Candidate использует точный
+    # tokenizer текущего vLLM и включается через off -> shadow -> enforce.
     rag_context_max_chars: int = 28000
-    # §4.5 защита окна модели: вход (контекст+история+картинки) не должен
-    # переполнять окно. Бюджет = window − ответ − запас − картинки; если перебор,
-    # чат режет историю (старейшую), затем усекает контекст — вместо падения.
+    rag_context_budget_mode: Literal["off", "shadow", "enforce"] = "off"
+    rag_context_reserve_tokens: int = 400
+    rag_context_compress_after_rank: int = 3
+    rag_context_compressed_chars: int = 1800
+    # §4.5 защита окна модели. chat_context_window — консервативный потолок;
+    # enforce дополнительно сверяет его с max_model_len из /tokenize.
     chat_context_window: int = 16384
     chat_output_tokens: int = 2048
     chat_image_tokens: int = 1300  # ~стоимость одного приложенного кропа (1400px)
     chat_chars_per_token: int = 3  # грубая оценка ru/en (символов на токен)
+    rag_citation_verification_mode: Literal["off", "shadow", "enforce"] = "off"
+    rag_citation_verifier_max_tokens: int = 1200
     chunk_max_chars: int = 4000  # ~1K токенов
     chunk_min_chars: int = 200  # секции короче — клеим к соседней
 

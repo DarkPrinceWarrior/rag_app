@@ -423,6 +423,7 @@ def _build_provenance(
     *,
     mode: Literal["candidate", "release"],
     top_k: int,
+    concurrency: int = 1,
     sparse_backend: SparseBackend = "postgres_fts",
     gold_artifact_sha256: str,
     sidecar_artifact_sha256: str,
@@ -453,6 +454,13 @@ def _build_provenance(
         context_max_chars=settings.rag_context_max_chars,
         context_window_tokens=settings.chat_context_window,
         output_tokens=_BASELINE_OUTPUT_TOKENS,
+        context_budget_mode=settings.rag_context_budget_mode,
+        context_reserve_tokens=settings.rag_context_reserve_tokens,
+        context_compress_after_rank=settings.rag_context_compress_after_rank,
+        context_compressed_chars=settings.rag_context_compressed_chars,
+        citation_verification_mode=settings.rag_citation_verification_mode,
+        citation_verifier_max_tokens=settings.rag_citation_verifier_max_tokens,
+        evaluation_concurrency=concurrency,
         answer_route="doc_only",
         prompt_sha256=hashlib.sha256(CHAT_SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
         temperature=_BASELINE_TEMPERATURE,
@@ -867,23 +875,37 @@ class ProductionBaselineRunner:
             raise BaselineEvaluationError("retriever escaped the verified owner scope")
 
         generation_start = time.monotonic()
+        verification = None
+        guard_failed_closed = False
+        verifier_error = False
         if chunks:
-            parts: list[str] = []
-            async for delta in self.chat.stream_answer(
+            prepared = await self.chat.prepare_answer(
                 record.question,
                 chunks,
                 [],
                 route="doc_only",
+                max_tokens=_BASELINE_OUTPUT_TOKENS,
+            )
+            parts: list[str] = []
+            async for delta in self.chat.stream_prepared(
+                prepared,
                 temperature=_BASELINE_TEMPERATURE,
                 top_p=_BASELINE_TOP_P,
                 max_tokens=_BASELINE_OUTPUT_TOKENS,
                 seed=_case_seed(record.case_id),
             ):
                 parts.append(delta)
-            answer = "".join(parts).strip()
+            draft = "".join(parts).strip()
+            guarded = await self.chat.verify_answer(draft, prepared.chunks)
+            answer = guarded.answer
+            verification = guarded.verification
+            guard_failed_closed = guarded.failed_closed
+            verifier_error = guarded.error is not None
+            chunks = prepared.chunks
         else:
             answer = _NO_RESULTS_ANSWER
         generation_ms = (time.monotonic() - generation_start) * 1000
+        factual_claims = verification.factual_claims if verification is not None else []
         return BaselineObservation(
             case_id=record.case_id,
             gold_case_sha256=sidecar.gold_case_sha256,
@@ -895,6 +917,15 @@ class ProductionBaselineRunner:
             retrieval_ms=retrieval_ms,
             generation_ms=generation_ms,
             total_ms=(time.monotonic() - total_start) * 1000,
+            semantic_claim_count=len(factual_claims),
+            semantic_supported_claim_count=sum(
+                claim.verdict == "supported" for claim in factual_claims
+            ),
+            semantic_unsupported_claim_count=sum(
+                claim.verdict in {"unsupported", "contradicted"} for claim in factual_claims
+            ),
+            citation_guard_failed_closed=guard_failed_closed,
+            citation_verifier_error=verifier_error,
         )
 
 
@@ -912,6 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("sidecar", type=Path)
     parser.add_argument("--mode", choices=("candidate", "release"), default="release")
     parser.add_argument("--top-k", type=int, default=10, choices=range(10, 65))
+    parser.add_argument("--concurrency", type=int, default=1, choices=range(1, 17))
     parser.add_argument(
         "--sparse-backend",
         choices=("postgres_fts", "pg_textsearch"),
@@ -967,6 +999,7 @@ async def async_main() -> int:
                 records,
                 mode=args.mode,
                 top_k=args.top_k,
+                concurrency=args.concurrency,
                 sparse_backend=sparse_backend,
                 gold_artifact_sha256=gold_artifact_sha256,
                 sidecar_artifact_sha256=sidecar_artifact_sha256,
@@ -981,6 +1014,7 @@ async def async_main() -> int:
                 bound,
                 runner,
                 provenance=provenance,
+                concurrency=args.concurrency,
             )
             if await runner.verify_corpus_snapshot(records, bound) != runtime_snapshot:
                 raise BaselineEvaluationError("production corpus changed during evaluation")
