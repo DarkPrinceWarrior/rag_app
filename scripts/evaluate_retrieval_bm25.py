@@ -126,7 +126,7 @@ _PINNED_RERANKER_PROTOCOL: Literal["canonical-mean-score-per-query-input-v2"] = 
     "canonical-mean-score-per-query-input-v2"
 )
 _LOAD_RERANKER_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
-_RERANK_PREWARM_REPLAYS = 9
+_RERANK_PREWARM_REPLAYS = 21
 _RERANK_BATCH_SHAPE_SAMPLES_PER_SLICE = 16
 
 VariantName = Literal["baseline", "candidate"]
