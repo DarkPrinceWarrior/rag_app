@@ -1,10 +1,10 @@
 # Миграция ARQ без потери legacy-очереди
 
-По умолчанию `RAG_QUEUE_ROLLOUT_MODE=legacy`: `JobRouter` сохраняет новые
-задания в `arq:queue`. Переход на `split` допускается только после настоящего
-canary каждого worker startup-контекста. Откат — вернуть `legacy`; уже
-поставленные split job при этом дренируются своими worker. Split-workers
-устанавливаются отдельно и не входят в `rag-app.target`.
+Production-профиль использует `RAG_QUEUE_ROLLOUT_MODE=split` после успешного
+fake-UUID canary: профильная очередь была подтверждена, startup-контекст БД/S3
+создан, задача безопасно завершилась как `status=missing`, а очередь дренирована.
+Откат — вернуть `legacy`; уже поставленные split job при этом дренируются своими
+worker. Split-workers устанавливаются отдельно и не входят в `rag-app.target`.
 
 ## Фазы
 
