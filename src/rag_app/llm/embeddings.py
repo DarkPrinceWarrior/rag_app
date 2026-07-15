@@ -75,44 +75,14 @@ class Reranker:
         if settings.rerank_model.startswith("qwen3-reranker"):
             q = f"{_QWEN3_RR_PREFIX}<Instruct>: {settings.rerank_instruction}\n<Query>: {q}\n"
             docs = [f"<Document>: {d}{_QWEN3_RR_SUFFIX}" for d in docs]
-        snapshots: list[list[float]] = []
         async with httpx.AsyncClient(timeout=60.0) as client:
-            for _ in range(settings.rerank_score_repeats):
-                resp = await client.post(
-                    f"{settings.rerank_base_url}/v1/rerank",
-                    json={"model": settings.rerank_model, "query": q, "documents": docs},
-                )
-                resp.raise_for_status()
-                snapshots.append(_validated_rerank_scores(resp.json(), len(texts)))
-        return [
-            math.fsum(snapshot[index] for snapshot in snapshots) / len(snapshots)
-            for index in range(len(texts))
-        ]
-
-
-def _validated_rerank_scores(payload: object, expected: int) -> list[float]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        raise ValueError("reranker response is missing results")
-    scores = [0.0] * expected
-    seen: set[int] = set()
-    for item in payload["results"]:
-        if not isinstance(item, dict):
-            raise ValueError("reranker result is invalid")
-        index = item.get("index")
-        score = item.get("relevance_score")
-        if (
-            not isinstance(index, int)
-            or isinstance(index, bool)
-            or not 0 <= index < expected
-            or index in seen
-            or not isinstance(score, int | float)
-            or isinstance(score, bool)
-            or not math.isfinite(float(score))
-            or not 0.0 <= float(score) <= 1.0
-        ):
-            raise ValueError("reranker result is invalid")
-        seen.add(index)
-        scores[index] = float(score)
-    if len(seen) != expected:
-        raise ValueError("reranker response does not cover every document")
-    return scores
+            resp = await client.post(
+                f"{settings.rerank_base_url}/v1/rerank",
+                json={"model": settings.rerank_model, "query": q, "documents": docs},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        scores = [0.0] * len(texts)
+        for item in data["results"]:
+            scores[item["index"]] = float(item["relevance_score"])
+        return scores

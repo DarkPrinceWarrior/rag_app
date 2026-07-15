@@ -128,7 +128,6 @@ class Settings(BaseSettings):
 
     rerank_base_url: str = "http://127.0.0.1:8003"
     rerank_model: str = "qwen3-reranker-4b"
-    rerank_score_repeats: int = Field(default=3, ge=1, le=5)
     rerank_instruction: str = (
         "Given a search query, retrieve relevant passages from technical documentation"
         " that answer the query"

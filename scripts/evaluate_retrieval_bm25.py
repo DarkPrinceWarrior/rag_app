@@ -928,7 +928,6 @@ class _PairedReranker(Reranker):
             {
                 "model_revision": revision.model_dump(mode="json"),
                 "instruction": settings.rerank_instruction,
-                "live_score_repeats": settings.rerank_score_repeats,
                 "query_truncation_chars": 2000,
                 "document_truncation_chars": 4000,
                 "score_round_digits": _RERANK_SCORE_DIGITS,
