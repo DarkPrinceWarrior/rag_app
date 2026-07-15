@@ -18,7 +18,7 @@ vLLM и CUDA-зависимости у них одинаковы, а отдел�
 | Qwen3.5-35B-A3B | 3 | 18006 | текстовый и image_url chat, JSON schema, длинный контекст 16K, защита от падения на некорректном multimodal-вводе | запустить старый `vllm-qwen35` |
 | Hy-MT2-7B | 1 | 18005 | `smoke_candidate.py`, COMET-A/B, числа/термины, bf16 | `vllm-hymt2` |
 | Qwen3-Embedding-8B | 4 | 18002 | конечные векторы, dim 4096 до MRL, recall@5; сохранить eager+fp16 | `vllm-embedding` |
-| Qwen3-Reranker-4B | 4 | 18003 | порядок релевантной/нерелевантной пары, Gold ranking; проверить применение шаблона | `vllm-reranker` |
+| Qwen3-Reranker-4B | 4 | 18003 | index-aware EN/RU/ZH/числовые пары с официальным ручным шаблоном, Gold ranking; все пары обязаны иметь gap ≥ 0,05 | `vllm-reranker` |
 | Qwen3-VL-Embedding-8B | 2 | 18007 | реальные страницы, отсутствие NaN, visual recall; сохранить eager+fp16 | `vllm-visual-embedding` |
 | dots.mocr | 0 | 18120 | закрытый parser-корпус и сложные таблицы | `dots-mocr` |
 | MinerU 3.4.4 | 5 | не меняется | контрольный parse после окна | отдельный vLLM 0.21, не обновлять |
@@ -36,6 +36,11 @@ vLLM и CUDA-зависимости у них одинаковы, а отдел�
    кандидата откажется работать, пока production-юнит активен.
 4. Запустить `systemctl start vllm-candidate@<профиль>`; проверить `/v1/models`,
    затем `deploy/vllm/smoke_candidate.py <профиль>` и профильный Gold/A-B.
+   Для `reranker` smoke восстанавливает оценки по полю `index`, а не доверяет
+   уже отсортированному массиву `results`: неполные/повторные индексы, NaN,
+   неверный победитель или gap меньше 0,05 дают NO-GO. Порядок документов в
+   пробах намеренно различается. Smoke использует тот же официальный ручной
+   Qwen3-шаблон, что и клиент приложения; успешный smoke не заменяет Gold.
 5. Сохранить `requirements.freeze.txt`, логи, версии CUDA/драйвера и метрики.
    После успешной матрицы отдельным изменением перевести production-юниты на
    новый immutable-path. При любой регрессии остановить кандидат и запустить
@@ -49,3 +54,12 @@ production и кандидата на одной карте не поддерж�
 `prompt_embeds` в коде приложения: клиенты передают `messages` или текстовый
 `input`. Повторить эту проверку перед переключением и приложить результат к
 протоколу окна.
+
+Если native `vLLM --runner pooling` не проходит index-aware smoke, не менять
+порог и не инвертировать `classifier_from_token` без воспроизводимого Gold.
+Квалифицировать официальный direct-scoring: конкатенация ручных
+`query + document`, логиты последнего токена и softmax только по токенам
+`no`/`yes`, строго по одному запросу (`--max-num-seqs=1`, fp32 при проверке
+методологии). Репозиторный `scripts/direct_qwen3_reranker_server.py` реализует
+этот протокол и сохраняет исходные индексы; перевод production допускается
+только после повторения multilingual/numeric smoke и Gold ranking.
