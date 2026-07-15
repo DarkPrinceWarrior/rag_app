@@ -27,7 +27,7 @@ def test_runtime_flags_are_declarative_and_non_secret() -> None:
         "RAG_VISUAL_ENABLED=true",
         "RAG_PARSER_QUALITY_SHADOW_ENABLED=true",
         "RAG_PARSER_PAGE_ROUTER_MODE=shadow",
-        "RAG_QUEUE_ROLLOUT_MODE=split",
+        "RAG_QUEUE_ROLLOUT_MODE=legacy",
     }
 
 
