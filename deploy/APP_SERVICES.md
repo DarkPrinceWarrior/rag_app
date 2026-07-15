@@ -6,7 +6,9 @@
 `.env.api.local`/`.env.worker.local`; итоговые `/etc/docragenslate/api.env` и
 `worker.env` содержат ровно URL роли `rag_api` либо `rag_worker`. Поэтому auth,
 S3, Langfuse и остальная production-конфигурация не теряются, а owner-роль `rag`
-не попадает в runtime. Затем загружается отслеживаемый `deploy/rag-runtime.env`.
+и compose-only `RAG_PG_*` не попадают в runtime. `PYTHON_DOTENV_DISABLED=1`
+запрещает `observability.py` повторно подхватить корневой `.env`. Затем
+загружается отслеживаемый `deploy/rag-runtime.env`.
 
 Installer преобразует текущие `.env`, `.env.api.local` и `.env.worker.local` в
 systemd-совместимый формат: удаляет только префикс `export`, отклоняет произвольный

@@ -9,6 +9,7 @@ Type=simple
 WorkingDirectory=/root/projects/rag_app
 Environment=PYTHONPATH=/root/projects/rag_app/src
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHON_DOTENV_DISABLED=1
 # All split workers use the same dedicated BYPASSRLS worker role.
 EnvironmentFile=/etc/docragenslate/worker.env
 EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env

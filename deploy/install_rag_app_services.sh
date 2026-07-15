@@ -45,7 +45,7 @@ render_role_env() {
       sub(/^[[:space:]]*export[[:space:]]+/, "", line)
       sub(/^[[:space:]]+/, "", line)
       if (line !~ /^[A-Za-z_][A-Za-z0-9_]*=/) exit 42
-      if (line ~ /^RAG_DATABASE_URL=/) next
+      if (line ~ /^RAG_DATABASE_URL=/ || line ~ /^RAG_PG_(USER|PASSWORD|DB)=/) next
       print line
     }
   ' "$COMMON_ENV_SOURCE" >"$tmp"; then

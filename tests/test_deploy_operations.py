@@ -43,6 +43,7 @@ def test_app_units_load_tracked_flags_after_role_specific_env() -> None:
         runtime_env = text.index("EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env")
         assert local_env < runtime_env
         assert "EnvironmentFile=-/root/projects/rag_app/.env" not in text
+        assert "Environment=PYTHON_DOTENV_DISABLED=1" in text
         assert "Restart=on-failure" in text
     assert "TimeoutStopSec=3600" in _read("deploy/rag-worker.service")
 
@@ -71,6 +72,9 @@ def _run_env_preparation(
         "RAG_DATABASE_URL=postgresql+asyncpg://rag:owner-secret@db/rag_app\n"
         "RAG_AUTH_ENABLED=true\n"
         "RAG_S3_SECRET_KEY=s3-secret\n"
+        "RAG_PG_USER=rag\n"
+        "RAG_PG_PASSWORD=compose-owner-secret\n"
+        "RAG_PG_DB=rag_app\n"
     ),
 ) -> subprocess.CompletedProcess[str]:
     common = tmp_path / "common.source"
@@ -109,12 +113,16 @@ def test_installer_normalizes_role_env_without_printing_secrets(tmp_path: Path) 
     assert "worker-secret" not in result.stdout + result.stderr
     assert "owner-secret" not in result.stdout + result.stderr
     assert "s3-secret" not in result.stdout + result.stderr
+    assert "compose-owner-secret" not in result.stdout + result.stderr
     api = tmp_path / "service-env/api.env"
     worker = tmp_path / "service-env/worker.env"
     assert "RAG_AUTH_ENABLED=true" in api.read_text()
     assert "RAG_AUTH_ENABLED=true" in worker.read_text()
     assert "RAG_S3_SECRET_KEY=s3-secret" in api.read_text()
     assert "rag:owner-secret" not in api.read_text() + worker.read_text()
+    assert "RAG_PG_USER=" not in api.read_text() + worker.read_text()
+    assert "RAG_PG_PASSWORD=" not in api.read_text() + worker.read_text()
+    assert "RAG_PG_DB=" not in api.read_text() + worker.read_text()
     assert api.read_text().count("RAG_DATABASE_URL=") == 1
     assert worker.read_text().count("RAG_DATABASE_URL=") == 1
     assert "export " not in api.read_text() + worker.read_text()
