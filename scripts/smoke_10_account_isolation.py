@@ -23,14 +23,17 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from rag_app.config import settings
 from rag_app.db.rls import assert_api_rls_role, reset_principal, set_principal
+from rag_app.rag.retrieve import _HIERARCHICAL_EXPANSION_SQL
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -43,6 +46,7 @@ class Config:
     keycloak_container: str
     account_count: int
     report_path: Path
+    hierarchical_rls_evidence_path: Path | None
     search_query: str
 
 
@@ -357,9 +361,34 @@ def _api_database_url() -> str:
     raise RuntimeError("could not read RAG_DATABASE_URL from the running API process")
 
 
+async def _hierarchy_rows(
+    session: AsyncSession,
+    *,
+    anchor_ids: list[uuid.UUID],
+    owner_sub: str | None,
+) -> list[Any]:
+    return list(
+        (
+            await session.execute(
+                text(_HIERARCHICAL_EXPANSION_SQL),
+                {
+                    "doc_id": None,
+                    "doc_ids": None,
+                    "folder_id": None,
+                    "owner": owner_sub,
+                    "anchor_ids": anchor_ids,
+                    "page_radius": settings.rag_hierarchical_page_radius,
+                    "per_anchor_k": settings.rag_hierarchical_per_anchor_k,
+                    "expansion_k": settings.rag_hierarchical_max_candidates,
+                },
+            )
+        ).all()
+    )
+
+
 async def _simulate_rls_principals(
     user_ids: list[str],
-) -> tuple[dict[str, Any], set[str]]:
+) -> tuple[dict[str, Any], set[str], dict[str, Any]]:
     engine = create_async_engine(_api_database_url(), pool_pre_ping=True)
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -370,14 +399,28 @@ async def _simulate_rls_principals(
                 all_document_ids = set(
                     await session.scalars(text("SELECT id::text FROM documents ORDER BY id"))
                 )
+                all_chunk_rows = (
+                    await session.execute(
+                        text(
+                            "SELECT c.id, c.document_id::text AS document_id, d.owner_sub "
+                            "FROM chunks c JOIN documents d ON d.id = c.document_id ORDER BY c.id"
+                        )
+                    )
+                ).all()
         finally:
             reset_principal(admin_context)
 
         results: list[dict[str, Any]] = []
         visible_by_subject: dict[str, set[str]] = {}
+        hierarchy_leak_count = 0
+        hierarchy_scope_violation_count = 0
         for user_id in user_ids:
             subject = _subject_hash(user_id)
             errors: list[str] = []
+            foreign_chunk_id = next(
+                (row.id for row in all_chunk_rows if row.owner_sub != user_id),
+                None,
+            )
             principal_context = set_principal(user_id, False)
             try:
                 async with sessionmaker() as session:
@@ -394,14 +437,15 @@ async def _simulate_rls_principals(
                         await session.execute(text("SELECT id::text, owner_sub FROM documents ORDER BY id"))
                     ).all()
                     document_ids = {row.id for row in document_rows}
-                    chunk_document_ids = set(
-                        await session.scalars(
+                    chunk_rows = (
+                        await session.execute(
                             text(
-                                "SELECT DISTINCT c.document_id::text FROM chunks c "
-                                "JOIN documents d ON d.id = c.document_id"
+                                "SELECT c.id, c.document_id::text AS document_id FROM chunks c "
+                                "JOIN documents d ON d.id = c.document_id ORDER BY c.id"
                             )
                         )
-                    )
+                    ).all()
+                    chunk_document_ids = {row.document_id for row in chunk_rows}
                     foreign_candidates = sorted(all_document_ids - document_ids)
                     foreign_visible = False
                     if foreign_candidates:
@@ -414,6 +458,17 @@ async def _simulate_rls_principals(
                                 {"document_id": foreign_candidates[0]},
                             )
                         ) is True
+                    own_anchor_ids = [chunk_rows[0].id] if chunk_rows else []
+                    own_hierarchy_rows = await _hierarchy_rows(
+                        session,
+                        anchor_ids=own_anchor_ids,
+                        owner_sub=user_id,
+                    )
+                    foreign_hierarchy_rows = await _hierarchy_rows(
+                        session,
+                        anchor_ids=[] if foreign_chunk_id is None else [foreign_chunk_id],
+                        owner_sub=user_id,
+                    )
             finally:
                 reset_principal(principal_context)
 
@@ -427,6 +482,17 @@ async def _simulate_rls_principals(
                 errors.append("retrieval_chunk_outside_document_scope")
             if foreign_candidates and foreign_visible:
                 errors.append("foreign_document_lookup_visible")
+            if foreign_chunk_id is None:
+                errors.append("no_foreign_hierarchy_canary")
+            if foreign_hierarchy_rows:
+                errors.append("foreign_hierarchy_anchor_visible")
+            hierarchy_scope_violations = sum(
+                str(row.document_id) not in document_ids for row in own_hierarchy_rows
+            )
+            if hierarchy_scope_violations:
+                errors.append("hierarchy_expansion_escaped_document_scope")
+            hierarchy_leak_count += len(foreign_hierarchy_rows)
+            hierarchy_scope_violation_count += hierarchy_scope_violations
             visible_by_subject[subject] = document_ids
             results.append(
                 {
@@ -435,9 +501,20 @@ async def _simulate_rls_principals(
                     "document_count": len(document_ids),
                     "retrieval_document_count": len(chunk_document_ids),
                     "foreign_lookup_empty": bool(foreign_candidates) and not foreign_visible,
+                    "hierarchy_own_anchor_count": len(own_anchor_ids),
+                    "hierarchy_related_count": len(own_hierarchy_rows),
+                    "foreign_hierarchy_visible_count": len(foreign_hierarchy_rows),
+                    "hierarchy_scope_violation_count": hierarchy_scope_violations,
                     "errors": errors,
                     "passed": not errors,
                 }
+            )
+
+        async with sessionmaker() as session:
+            anonymous_hierarchy_rows = await _hierarchy_rows(
+                session,
+                anchor_ids=[all_chunk_rows[0].id] if all_chunk_rows else [],
+                owner_sub=None,
             )
 
         overlap_count = 0
@@ -451,16 +528,42 @@ async def _simulate_rls_principals(
                             result["errors"].append("document_visible_to_multiple_simulated_principals")
                             result["passed"] = False
 
+        if anonymous_hierarchy_rows:
+            hierarchy_leak_count += len(anonymous_hierarchy_rows)
         passed = sum(bool(result["passed"]) for result in results)
+        owner_scope_count = sum(bool(document_ids) for document_ids in visible_by_subject.values())
+        hierarchy_evidence_passed = (
+            len(results) >= 10
+            and owner_scope_count >= 2
+            and bool(all_chunk_rows)
+            and not anonymous_hierarchy_rows
+            and hierarchy_leak_count == 0
+            and hierarchy_scope_violation_count == 0
+            and passed == len(results)
+        )
+        hierarchy_evidence = {
+            "schema_version": "hierarchical-rls-evidence-v1",
+            "principal_count": len(results),
+            "owner_scope_count": owner_scope_count,
+            "probe_count": len(results) * 2 + 1,
+            "admin_foreign_truth_count": len(all_chunk_rows),
+            "anonymous_visible_count": len(anonymous_hierarchy_rows),
+            "leak_count": hierarchy_leak_count,
+            "scope_violation_count": hierarchy_scope_violation_count,
+            "passed": hierarchy_evidence_passed,
+        }
         return (
             {
                 "tested_principal_count": len(results),
                 "passed_principal_count": passed,
                 "failed_principal_count": len(results) - passed,
                 "pairwise_document_overlap_count": overlap_count,
+                "hierarchy_probe_count": hierarchy_evidence["probe_count"],
+                "hierarchy_rls_passed": hierarchy_evidence_passed,
                 "principals": results,
             },
             all_document_ids,
+            hierarchy_evidence,
         )
     finally:
         await engine.dispose()
@@ -524,9 +627,14 @@ def run(config: Config) -> dict[str, Any]:
         for token in tokens:
             if "user" not in token.roles or "admin" in token.roles:
                 raise RuntimeError("selected non-admin token has unexpected realm roles")
-        rls_summary, all_document_ids = asyncio.run(
+        rls_summary, all_document_ids, hierarchical_rls_evidence = asyncio.run(
             _simulate_rls_principals(normal_ids[: config.account_count])
         )
+        if config.hierarchical_rls_evidence_path is not None:
+            _write_private_report(
+                config.hierarchical_rls_evidence_path,
+                hierarchical_rls_evidence,
+            )
 
         results: list[dict[str, Any]] = []
         visible_by_subject: dict[str, set[str]] = {}
@@ -630,7 +738,10 @@ def run(config: Config) -> dict[str, Any]:
             result["passed"] = not result["errors"]
 
         passed = sum(bool(result["passed"]) for result in results)
-        rls_passed = rls_summary["failed_principal_count"] == 0
+        rls_passed = (
+            rls_summary["failed_principal_count"] == 0
+            and hierarchical_rls_evidence["passed"] is True
+        )
         overall_passed = passed == len(results) and rls_passed
         report = {
             "schema_version": 1,
@@ -661,6 +772,7 @@ def run(config: Config) -> dict[str, Any]:
             "http_accounts": results,
             "rls_admin_visible_document_count": len(all_document_ids),
             "rls_simulation": rls_summary,
+            "hierarchical_rls_evidence": hierarchical_rls_evidence,
             "limitation": (
                 None
                 if len(results) == config.account_count
@@ -676,6 +788,11 @@ def run(config: Config) -> dict[str, Any]:
             "http_passed_accounts": passed,
             "rls_simulated_principals": rls_summary["tested_principal_count"],
             "rls_passed_principals": rls_summary["passed_principal_count"],
+            "hierarchical_rls_evidence": (
+                str(config.hierarchical_rls_evidence_path)
+                if config.hierarchical_rls_evidence_path is not None
+                else None
+            ),
             "report": str(config.report_path),
         }
     finally:
@@ -700,6 +817,7 @@ def _parse_args() -> Config:
         type=Path,
         default=Path("/root/parser_trials/rag_eval_v1/account_isolation_smoke_2026-07-13.json"),
     )
+    parser.add_argument("--hierarchical-rls-evidence", type=Path)
     parser.add_argument("--search-query", default="требования документа")
     args = parser.parse_args()
     if args.accounts < 10:
@@ -713,6 +831,7 @@ def _parse_args() -> Config:
         keycloak_container=args.keycloak_container,
         account_count=args.accounts,
         report_path=args.report,
+        hierarchical_rls_evidence_path=args.hierarchical_rls_evidence,
         search_query=args.search_query,
     )
 
