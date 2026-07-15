@@ -29,7 +29,8 @@ def test_runtime_flags_are_declarative_and_non_secret() -> None:
         "RAG_PARSER_QUALITY_SHADOW_ENABLED=true",
         "RAG_PARSER_PAGE_ROUTER_MODE=shadow",
         "RAG_TRANSLATION_ENTITY_GUARD_MODE=shadow",
-        "RAG_TRANSLATION_MEMORY_MODE=shadow",
+        "RAG_TRANSLATION_MEMORY_MODE=enforce",
+        "RAG_TRANSLATION_MEMORY_NEAREST_TOP_K=0",
         "RAG_QUEUE_ROLLOUT_MODE=split",
     }
 
