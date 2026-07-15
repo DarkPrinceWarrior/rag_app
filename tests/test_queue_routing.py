@@ -31,6 +31,29 @@ from rag_app.workers.tasks import parse_document
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_split_worker_settings_are_declared_directly_for_arq_cli() -> None:
+    # arq.cli.get_kwargs reads settings_cls.__dict__ rather than inherited attrs.
+    required = {
+        "functions",
+        "queue_name",
+        "cron_jobs",
+        "on_startup",
+        "on_shutdown",
+        "redis_settings",
+        "job_timeout",
+        "keep_result",
+        "max_tries",
+        "max_jobs",
+    }
+    for worker in (
+        ParseWorkerSettings,
+        TranslateWorkerSettings,
+        ExportIndexWorkerSettings,
+        MemoryWorkerSettings,
+    ):
+        assert required <= worker.__dict__.keys()
+
+
 class FakeRedis:
     def __init__(self) -> None:
         self.jobs: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []

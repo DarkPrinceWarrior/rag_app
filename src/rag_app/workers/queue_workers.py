@@ -20,27 +20,35 @@ from rag_app.workers.tasks import (
 )
 
 
-class _BaseWorkerSettings:
-    cron_jobs: list = []
-    on_startup = startup
-    on_shutdown = shutdown
-    redis_settings = RedisSettings(
+def _redis_settings() -> RedisSettings:
+    return RedisSettings(
         host=settings.redis_host,
         port=settings.redis_port,
         database=settings.redis_db,
     )
+
+
+class ParseWorkerSettings:
+    cron_jobs: list = []
+    on_startup = startup
+    on_shutdown = shutdown
+    redis_settings = _redis_settings()
     job_timeout = settings.job_timeout_s
     keep_result = 3600
     max_tries = settings.queue_max_tries
-
-
-class ParseWorkerSettings(_BaseWorkerSettings):
     queue_name = settings.queue_parse_name
     functions = [instrument_job(parse_document, "parse")]
     max_jobs = 1
 
 
-class TranslateWorkerSettings(_BaseWorkerSettings):
+class TranslateWorkerSettings:
+    cron_jobs: list = []
+    on_startup = startup
+    on_shutdown = shutdown
+    redis_settings = _redis_settings()
+    job_timeout = settings.job_timeout_s
+    keep_result = 3600
+    max_tries = settings.queue_max_tries
     queue_name = settings.queue_translate_name
     functions = [
         instrument_job(translate_document, "translate"),
@@ -49,7 +57,14 @@ class TranslateWorkerSettings(_BaseWorkerSettings):
     max_jobs = 2
 
 
-class ExportIndexWorkerSettings(_BaseWorkerSettings):
+class ExportIndexWorkerSettings:
+    cron_jobs: list = []
+    on_startup = startup
+    on_shutdown = shutdown
+    redis_settings = _redis_settings()
+    job_timeout = settings.job_timeout_s
+    keep_result = 3600
+    max_tries = settings.queue_max_tries
     queue_name = settings.queue_export_index_name
     functions = [
         instrument_job(export_document, "export_index"),
@@ -61,7 +76,14 @@ class ExportIndexWorkerSettings(_BaseWorkerSettings):
     max_jobs = 2
 
 
-class MemoryWorkerSettings(_BaseWorkerSettings):
+class MemoryWorkerSettings:
+    cron_jobs: list = []
+    on_startup = startup
+    on_shutdown = shutdown
+    redis_settings = _redis_settings()
+    job_timeout = settings.job_timeout_s
+    keep_result = 3600
+    max_tries = settings.queue_max_tries
     queue_name = settings.queue_memory_name
     functions = [
         instrument_job(extract_memory, "memory"),
