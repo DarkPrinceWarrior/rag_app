@@ -247,6 +247,7 @@ function Chat() {
         content: t.rows.length ? '' : 'По запросу не удалось собрать таблицу — уточните формулировку.',
       }))
     } catch (e) {
+      setInput((current) => current.trim() || text)
       patchLast((m) => ({ ...m, trace: [], error: String(e) }))
     }
     setBusy(false)
