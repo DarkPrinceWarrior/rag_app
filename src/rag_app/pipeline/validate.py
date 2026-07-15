@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 
 from rag_app.pipeline.technical_entities import STANDARD_PATTERN
 
-# Число с возможными разделителями тысяч и десятичной частью.
-_NUMBER = re.compile(r"\d+(?:[  ,]\d{3})*(?:[.,]\d+)?")
+# Число с возможными знаком, разделителями тысяч и десятичной частью. Граница
+# перед знаком не даёт принять дефис диапазона ``10-20`` за минус второго числа.
+_NUMBER = re.compile(r"(?:(?<!\w)[+\-−＋－])?\d+(?:[  ,]\d{3})*(?:[.,]\d+)?")
 
 
 def extract_numbers(text: str) -> Counter[str]:
@@ -22,11 +23,21 @@ def extract_numbers(text: str) -> Counter[str]:
     # Полноширинные цифры ０-９ (китайский вывод Hy-MT) → ASCII, иначе числовая
     # валидация для цели zh даёт ложные «потери» (ТЗ §4.3.2/§4.3.7).
     text = text.translate(
-        {**{0xFF10 + i: str(i) for i in range(10)}, ord("，"): ",", ord("．"): "."}
+        {
+            **{0xFF10 + i: str(i) for i in range(10)},
+            ord("，"): ",",
+            ord("．"): ".",
+            ord("−"): "-",
+            ord("＋"): "+",
+            ord("－"): "-",
+        }
     )
     out: Counter[str] = Counter()
     for m in _NUMBER.finditer(text):
         raw = m.group(0)
+        sign = raw[0] if raw[0] in {"+", "-"} else ""
+        if sign:
+            raw = raw[1:]
         # убрать разделители тысяч (пробел/неразрывный пробел/запятая перед тройкой цифр)
         norm = re.sub(r"[  ,](?=\d{3}(?:\D|$))", "", raw)
         # десятичная запятая → точка
@@ -35,6 +46,8 @@ def extract_numbers(text: str) -> Counter[str]:
         if "." in norm:
             norm = norm.rstrip("0").rstrip(".")
         norm = norm.lstrip("0") or "0"
+        if norm != "0":
+            norm = sign + norm
         out[norm] += 1
     return out
 

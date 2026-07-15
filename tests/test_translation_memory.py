@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
@@ -10,10 +12,53 @@ from rag_app.config import Settings
 from rag_app.db.models import TranslationMemory
 from rag_app.pipeline.translation_memory import (
     TranslationMemoryScope,
+    TranslationMemoryService,
     _scope_predicates,
     normalize_source,
     source_hash,
 )
+
+
+class _Rows:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _Rows:
+        return self
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _Session:
+    def __init__(self, responses: list[list[object]]) -> None:
+        self._responses = responses
+
+    async def __aenter__(self) -> _Session:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def execute(self, _statement: object) -> _Rows:
+        return _Rows(self._responses.pop(0))
+
+
+class _SessionMaker:
+    def __init__(self, sessions: list[_Session]) -> None:
+        self._sessions = sessions
+
+    def __call__(self) -> _Session:
+        return self._sessions.pop(0)
+
+
+class _Embedder:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str], batch: int | None = None) -> list[list[float]]:
+        self.calls.append(texts)
+        return [[0.0] * 1024 for _ in texts]
 
 
 def test_normalization_is_unicode_and_whitespace_stable_but_case_sensitive() -> None:
@@ -51,6 +96,41 @@ def test_translation_memory_rollout_defaults_off() -> None:
 
     assert configured.translation_memory_mode == "off"
     assert configured.translation_memory_nearest_top_k == 2
+
+
+def test_exact_lookup_is_scoped_and_bypasses_embedding() -> None:
+    text = "Pressure 16.5 MPa"
+    row = SimpleNamespace(
+        id=uuid.UUID("10000000-0000-0000-0000-000000000001"),
+        source_hash=source_hash(text),
+        source_normalized=normalize_source(text),
+        source_text=text,
+        approved_translation="Давление 16.5 MPa",
+    )
+    embedder = _Embedder()
+    service = TranslationMemoryService(
+        _SessionMaker([_Session([[row]])]),  # type: ignore[arg-type]
+        embedder,
+    )
+
+    result = asyncio.run(
+        service.lookup_batch(
+            [text, text, "   "],
+            source_lang="en",
+            target_lang="ru",
+            scope=TranslationMemoryScope(
+                owner_sub="owner-a",
+                folder_id=None,
+                project=None,
+            ),
+        )
+    )
+
+    assert list(result) == [text]
+    assert result[text].exact is not None
+    assert result[text].exact.translation == "Давление 16.5 MPa"
+    assert result[text].nearest == ()
+    assert embedder.calls == []
 
 
 def test_translation_memory_migration_is_rls_and_revocation_safe() -> None:

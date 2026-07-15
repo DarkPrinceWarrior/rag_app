@@ -58,3 +58,15 @@ def test_chinese_measurement_with_fullwidth_digits_is_protected() -> None:
 
     assert protected.counts == {"measurement": 2}
     assert restore_entities(protected.text, protected).text == "设计压力为１６．５兆帕，温度２０摄氏度。"
+
+
+def test_signed_measurements_are_protected_with_their_signs() -> None:
+    source = "Design temperature −40 °C, test pressure +16 MPa, 最低温度－２０摄氏度。"
+
+    protected = protect_entities(source)
+
+    assert protected.counts == {"measurement": 3}
+    assert "−40" not in protected.text
+    assert "+16" not in protected.text
+    assert "－２０" not in protected.text
+    assert restore_entities(protected.text, protected).text == source

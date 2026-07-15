@@ -13,6 +13,16 @@ def test_fullwidth_decimal_equivalence() -> None:
     assert validate_numbers("压力１６．５兆帕", "давление 16,5 МПа").ok
 
 
+def test_sign_is_preserved_and_fullwidth_signs_are_normalized() -> None:
+    assert extract_numbers("−40 °C; ＋16 MPa") == extract_numbers("-40 °C; +16 MPa")
+    assert not validate_numbers("temperature -40 °C", "температура 40 °C").ok
+    assert not validate_numbers("temperature -40 °C", "температура +40 °C").ok
+
+
+def test_range_separator_is_not_treated_as_negative_sign() -> None:
+    assert extract_numbers("range 10-20 MPa") == extract_numbers("диапазон 10–20 МПа")
+
+
 def test_thousands_separators() -> None:
     assert extract_numbers("1,000 bolts") == extract_numbers("1000 болтов")
     assert extract_numbers("1 000 000") == extract_numbers("1000000")
