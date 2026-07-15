@@ -1,17 +1,18 @@
 # API и worker под systemd
 
 `rag-api.service` и `rag-worker.service` заменяют только tmux-процессы приложения;
-модельные сервисы и Docker Compose не затрагиваются. API загружает только
-`/etc/docragenslate/api.env` с ролью БД `rag_api`, legacy/split workers — только
-`worker.env` с ролью `rag_worker`; отсутствие или подмена роли останавливает
-установку/старт. Затем загружается отслеживаемый `deploy/rag-runtime.env`, поэтому
-несекретные режимы одинаковы после интерактивного и автоматического рестарта.
+модельные сервисы и Docker Compose не затрагиваются. Installer объединяет
+действующий общий `.env` **без** owner-значения `RAG_DATABASE_URL` с
+`.env.api.local`/`.env.worker.local`; итоговые `/etc/docragenslate/api.env` и
+`worker.env` содержат ровно URL роли `rag_api` либо `rag_worker`. Поэтому auth,
+S3, Langfuse и остальная production-конфигурация не теряются, а owner-роль `rag`
+не попадает в runtime. Затем загружается отслеживаемый `deploy/rag-runtime.env`.
 
-Installer преобразует текущие `.env.api.local` и `.env.worker.local` в
+Installer преобразует текущие `.env`, `.env.api.local` и `.env.worker.local` в
 systemd-совместимый формат: удаляет только префикс `export`, отклоняет произвольный
 shell-синтаксис, проверяет имя роли в `RAG_DATABASE_URL`, пишет через временный
 файл и атомарный `mv`. Каталог имеет режим `0700`, файлы — `0600`; значения в
-stdout/journal не выводятся. Общий `.env` с owner-role приложению не передаётся.
+stdout/journal не выводятся. Owner URL из общего `.env` приложению не передаётся.
 Exporter метрик получает только loopback-настройки Redis, запускается вне каталога
 репозитория (чтобы `Settings.env_file=.env` не подхватил owner-env неявно) и не
 читает DB/S3/OIDC env.

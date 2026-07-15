@@ -67,15 +67,23 @@ def _run_env_preparation(
     tmp_path: Path,
     api_source: str,
     worker_source: str,
+    common_source: str = (
+        "RAG_DATABASE_URL=postgresql+asyncpg://rag:owner-secret@db/rag_app\n"
+        "RAG_AUTH_ENABLED=true\n"
+        "RAG_S3_SECRET_KEY=s3-secret\n"
+    ),
 ) -> subprocess.CompletedProcess[str]:
+    common = tmp_path / "common.source"
     api = tmp_path / "api.source"
     worker = tmp_path / "worker.source"
+    common.write_text(common_source, encoding="utf-8")
     api.write_text(api_source, encoding="utf-8")
     worker.write_text(worker_source, encoding="utf-8")
     env = {
         **os.environ,
         "REPO_DIR": str(ROOT),
         "SERVICE_ENV_DIR": str(tmp_path / "service-env"),
+        "COMMON_ENV_SOURCE": str(common),
         "API_ENV_SOURCE": str(api),
         "WORKER_ENV_SOURCE": str(worker),
         "PYTHON_BIN": str(ROOT / ".venv/bin/python"),
@@ -99,10 +107,16 @@ def test_installer_normalizes_role_env_without_printing_secrets(tmp_path: Path) 
     assert result.returncode == 0, result.stderr
     assert "api-secret" not in result.stdout + result.stderr
     assert "worker-secret" not in result.stdout + result.stderr
+    assert "owner-secret" not in result.stdout + result.stderr
+    assert "s3-secret" not in result.stdout + result.stderr
     api = tmp_path / "service-env/api.env"
     worker = tmp_path / "service-env/worker.env"
-    assert api.read_text().startswith("RAG_DATABASE_URL=")
-    assert worker.read_text().startswith("RAG_DATABASE_URL=")
+    assert "RAG_AUTH_ENABLED=true" in api.read_text()
+    assert "RAG_AUTH_ENABLED=true" in worker.read_text()
+    assert "RAG_S3_SECRET_KEY=s3-secret" in api.read_text()
+    assert "rag:owner-secret" not in api.read_text() + worker.read_text()
+    assert api.read_text().count("RAG_DATABASE_URL=") == 1
+    assert worker.read_text().count("RAG_DATABASE_URL=") == 1
     assert "export " not in api.read_text() + worker.read_text()
     assert stat.S_IMODE(api.stat().st_mode) == 0o600
     assert stat.S_IMODE(worker.stat().st_mode) == 0o600
@@ -129,6 +143,18 @@ def test_installer_rejects_shell_commands_in_role_env(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert "неподдерживаемый синтаксис" in result.stderr
+    assert not (tmp_path / "service-env").exists()
+
+
+def test_installer_rejects_shell_commands_in_common_env(tmp_path: Path) -> None:
+    result = _run_env_preparation(
+        tmp_path,
+        "RAG_DATABASE_URL=postgresql+asyncpg://rag_api:secret@db/rag_app\n",
+        "RAG_DATABASE_URL=postgresql+asyncpg://rag_worker:secret@db/rag_app\n",
+        common_source="source /tmp/unsafe\nRAG_AUTH_ENABLED=true\n",
+    )
+    assert result.returncode != 0
+    assert "общая production-конфигурация имеет неподдерживаемый синтаксис" in result.stderr
     assert not (tmp_path / "service-env").exists()
 
 

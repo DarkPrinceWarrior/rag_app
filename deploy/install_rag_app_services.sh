@@ -6,6 +6,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/root/projects/rag_app}"
 SERVICE_ENV_DIR="${SERVICE_ENV_DIR:-/etc/docragenslate}"
+COMMON_ENV_SOURCE="${COMMON_ENV_SOURCE:-$REPO_DIR/.env}"
 API_ENV_SOURCE="${API_ENV_SOURCE:-$REPO_DIR/.env.api.local}"
 WORKER_ENV_SOURCE="${WORKER_ENV_SOURCE:-$REPO_DIR/.env.worker.local}"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_DIR/.venv/bin/python}"
@@ -26,11 +27,32 @@ esac
 
 render_role_env() {
   local source="$1" destination="$2" expected_role="$3" tmp
+  test -r "$COMMON_ENV_SOURCE" || {
+    echo "нет общей production-конфигурации" >&2
+    return 1
+  }
   test -r "$source" || {
     echo "нет role-specific env для $expected_role" >&2
     return 1
   }
   tmp="$(mktemp "${destination}.tmp.XXXXXX")"
+  # Сохраняем действующую production-конфигурацию, но никогда не переносим
+  # owner URL базы: единственный RAG_DATABASE_URL приходит из role-specific env.
+  if ! awk '
+    /^[[:space:]]*($|#)/ { print; next }
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      sub(/^[[:space:]]+/, "", line)
+      if (line !~ /^[A-Za-z_][A-Za-z0-9_]*=/) exit 42
+      if (line ~ /^RAG_DATABASE_URL=/) next
+      print line
+    }
+  ' "$COMMON_ENV_SOURCE" >"$tmp"; then
+    rm -f "$tmp"
+    echo "общая production-конфигурация имеет неподдерживаемый синтаксис" >&2
+    return 1
+  fi
   if ! awk '
     /^[[:space:]]*($|#)/ { print; next }
     {
@@ -40,7 +62,7 @@ render_role_env() {
       if (line !~ /^[A-Za-z_][A-Za-z0-9_]*=/) exit 42
       print line
     }
-  ' "$source" >"$tmp"; then
+  ' "$source" >>"$tmp"; then
     rm -f "$tmp"
     echo "role-specific env имеет неподдерживаемый синтаксис" >&2
     return 1
