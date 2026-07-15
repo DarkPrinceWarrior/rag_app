@@ -6,8 +6,10 @@ import {
   Check,
   Download,
   Eye,
+  Files,
   Folder as FolderIcon,
   Loader2,
+  MessagesSquare,
   Table as TableIcon,
   Timer,
   Trash2,
@@ -18,6 +20,7 @@ import { authFetch } from '@/lib/auth'
 import { cn } from '@/lib/utils'
 import { streamChat } from '@/lib/sse'
 import { Button } from '@/components/ui/button'
+import { Modal } from '@/components/ui/modal'
 import { Markdown } from '@/components/Markdown'
 import { SegmentBody } from '@/components/SegmentBody'
 import { dedupeCitations } from '@/lib/citations'
@@ -64,6 +67,7 @@ function Chat() {
   const queryClient = useQueryClient()
   const [scope, setScope] = useState<Scope>(doc ? { kind: 'docs', docIds: [doc] } : { kind: 'all' })
   const [sideTab, setSideTab] = useState<'docs' | 'sessions'>('docs')
+  const [mobilePanel, setMobilePanel] = useState<'docs' | 'sessions' | null>(null)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -236,6 +240,14 @@ function Chat() {
   }
 
   const started = messages.length > 0
+  const scopeLabel =
+    scope.kind === 'all'
+      ? 'Вся библиотека'
+      : scope.kind === 'folder'
+        ? (foldersQ.data ?? []).find((folder) => folder.id === scope.folderId)?.name ?? 'Папка'
+        : scope.docIds.length === 1
+          ? (docsQ.data ?? []).find((document) => document.id === scope.docIds[0])?.filename ?? '1 документ'
+          : `${scope.docIds.length} документа`
 
   return (
     <div className="mx-auto flex h-[calc(100vh-97px)] max-w-[1136px] gap-6 px-4 py-8">
@@ -294,6 +306,25 @@ function Chat() {
 
       {/* Колонка чата */}
       <div className="flex min-w-0 flex-1 flex-col">
+        <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2 md:hidden">
+          <button
+            type="button"
+            onClick={() => setMobilePanel('docs')}
+            className="flex min-h-11 min-w-0 items-center gap-2 rounded-xl border border-[#e5e5e5] bg-white px-3 text-left shadow-sm transition active:scale-[0.99]"
+            aria-label={`Область чата: ${scopeLabel}`}
+          >
+            <Files className="h-4 w-4 shrink-0 text-[#4b4ce6]" />
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[#222226]">{scopeLabel}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobilePanel('sessions')}
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-[#e5e5e5] bg-white px-3 text-[#424247] shadow-sm transition active:scale-[0.98]"
+            aria-label={`История чатов: ${(sessionsQ.data ?? []).length}`}
+          >
+            <MessagesSquare className="h-4 w-4" />
+          </button>
+        </div>
         {!started ? (
           <div className="flex flex-1 flex-col items-center justify-center px-2 pb-12 text-center">
             <h2 className="text-xl font-semibold text-[#222226]">Чат с документами</h2>
@@ -340,6 +371,72 @@ function Chat() {
       </div>
 
       {source && <SourcePanel citation={source} onClose={() => setSource(null)} />}
+
+      <Modal
+        open={mobilePanel !== null}
+        onClose={() => setMobilePanel(null)}
+        labelledBy="mobile-chat-panel-title"
+        className="mt-auto -mb-4 max-h-[82vh] max-w-none overflow-hidden rounded-b-none rounded-t-[28px] border-x-0 border-b-0 md:hidden"
+      >
+        <header className="flex items-center gap-3 border-b border-[#e5e5e5] px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#222226]/35">Чат с документами</p>
+            <h2 id="mobile-chat-panel-title" className="mt-0.5 text-lg font-semibold text-[#222226]">
+              {mobilePanel === 'docs' ? 'Область поиска' : 'Мои чаты'}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMobilePanel(null)}
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-[#222226]/5 text-[#424247]"
+            aria-label="Закрыть панель"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+        <div className="max-h-[calc(82vh-77px)] overflow-y-auto px-5 py-5">
+          {mobilePanel === 'docs' ? (
+            <>
+              <DocPicker
+                scope={scope}
+                onChange={(next) => {
+                  onScopeChange(next)
+                  setMobilePanel(null)
+                }}
+                docs={docsQ.data ?? []}
+                folders={foldersQ.data ?? []}
+              />
+              {scope.kind !== 'all' && (
+                <Button
+                  variant="outline"
+                  className="mt-5 min-h-11 w-full"
+                  onClick={() => {
+                    onScopeChange({ kind: 'all' })
+                    setMobilePanel(null)
+                  }}
+                >
+                  Искать по всей библиотеке
+                </Button>
+              )}
+            </>
+          ) : (
+            <SessionList
+              sessions={sessionsQ.data ?? []}
+              activeSid={sid}
+              onOpen={(session) => {
+                openSession(session)
+                setMobilePanel(null)
+              }}
+              onDelete={deleteSession}
+              onNewChat={() => {
+                newChat()
+                setMobilePanel(null)
+              }}
+              busy={busy}
+            />
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }
@@ -377,7 +474,7 @@ function DocPicker({
                 type="button"
                 onClick={() => onChange(active ? { kind: 'all' } : { kind: 'folder', folderId: f.id })}
                 className={cn(
-                  'flex items-center gap-2 rounded-lg px-1 py-1.5 text-left text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] transition',
+                  'flex min-h-11 items-center gap-2 rounded-lg px-1 py-1.5 text-left text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] transition md:min-h-0',
                   active ? 'text-[#222226]' : 'text-[#222226]/70 hover:bg-[#222226]/[0.04]',
                 )}
               >
@@ -393,7 +490,7 @@ function DocPicker({
       <div className="flex flex-col gap-3">
         {docs.length === 0 && <p className="px-1 text-[13px] text-[#c1c1c1]">Нет готовых документов</p>}
         {docs.map((d) => (
-          <label key={d.id} className="flex cursor-pointer items-center gap-2.5">
+          <label key={d.id} className="flex min-h-11 cursor-pointer items-center gap-2.5 md:min-h-0">
             <span
               className={cn(
                 'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition',

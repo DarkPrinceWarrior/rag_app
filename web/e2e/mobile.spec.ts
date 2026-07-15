@@ -88,6 +88,20 @@ test('390px core flows have no overflow, named controls, and usable touch target
 
   await page.goto('/chat')
   await expectAccessibleViewport(page)
+  const scopeButton = page.getByRole('button', { name: 'Область чата: Вся библиотека' })
+  await expectTouchTarget(scopeButton)
+  await scopeButton.click()
+  await expect(page.getByRole('heading', { name: 'Область поиска' })).toBeVisible()
+  await page.getByRole('dialog').getByText(document.filename, { exact: true }).click()
+  await expect(page.getByRole('button', { name: `Область чата: ${document.filename}` })).toBeVisible()
+
+  const sessionsButton = page.getByRole('button', { name: 'История чатов: 0' })
+  await expectTouchTarget(sessionsButton)
+  await sessionsButton.click()
+  await expect(page.getByRole('heading', { name: 'Мои чаты' })).toBeVisible()
+  await expectTouchTarget(page.getByRole('button', { name: 'Новый чат' }))
+  await page.getByRole('button', { name: 'Закрыть панель' }).click()
+
   await page.getByPlaceholder('Введите запрос').fill('Проверка')
   await expectTouchTarget(page.getByTitle('Отправить'))
 })
