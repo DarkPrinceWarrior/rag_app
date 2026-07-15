@@ -621,7 +621,7 @@ function Composer({
             onClick={onTable}
             disabled={busy || !value.trim()}
             title="Собрать структурированную таблицу из найденных фрагментов (с экспортом в XLSX)"
-            className="flex items-center gap-1.5 rounded-lg bg-[#222226]/[0.02] px-3 py-1.5 text-[13px] font-medium text-[#222226]/70 transition hover:bg-[#222226]/[0.05] disabled:opacity-40"
+            className="flex min-h-11 items-center gap-1.5 rounded-lg bg-[#222226]/[0.02] px-3 py-1.5 text-[13px] font-medium text-[#222226]/70 transition hover:bg-[#222226]/[0.05] disabled:opacity-40"
           >
             <TableIcon className="h-4 w-4" />
             Таблица
@@ -632,7 +632,7 @@ function Composer({
               onClick={() => setTemporary(!temporary)}
               title="Не сохранять и не использовать долговременную память в этом чате"
               className={cn(
-                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition',
+                'flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition',
                 temporary
                   ? 'bg-[#4b4ce6]/10 text-[#222226]'
                   : 'bg-[#222226]/[0.02] text-[#222226]/70 hover:bg-[#222226]/[0.05]',
@@ -648,7 +648,7 @@ function Composer({
           onClick={onSend}
           disabled={busy || !value.trim()}
           title="Отправить"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#222226]/5 text-[#222226] transition hover:bg-[#222226]/10 disabled:opacity-40"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#222226]/5 text-[#222226] transition hover:bg-[#222226]/10 disabled:opacity-40"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
         </button>

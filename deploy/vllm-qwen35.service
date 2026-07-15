@@ -1,4 +1,4 @@
-# vLLM Qwen3.5-35B-A3B-GPTQ-Int4 — воркхорс (перевод + RAG-чат + structured-output),
+# vLLM Qwen3.5-35B-A3B-GPTQ-Int4 — RAG-чат, анализ, VL и structured-output,
 # GPU3, порт 8006 (занимает слот ретайрнутого Hunyuan-MT-7B; roadmap § 12.1 п.2).
 # MoE 35B/3B-активных, гибрид Gated-DeltaNet: на старте JIT-компиляция CUDA-расширения
 # → нужен ninja (он в венв-bin, PATH ниже его подхватывает). float16 падает → строго

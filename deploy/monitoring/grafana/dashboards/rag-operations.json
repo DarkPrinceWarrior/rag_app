@@ -1,0 +1,86 @@
+{
+  "uid": "rag-operations",
+  "title": "DocRAGenslate — очереди, GPU и SLO",
+  "tags": ["rag", "operations"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Глубина очередей",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "rag_arq_queue_depth", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Возраст старейшей задачи",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "rag_arq_queue_oldest_age_seconds", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "p95 стадий документа",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_document_stage_duration_seconds_bucket[15m])))", "legendFormat": "{{stage}}" }]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Ошибки и retry split-worker",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (queue) (rate(rag_arq_job_errors_total[5m]))", "legendFormat": "error {{queue}}" },
+        { "refId": "B", "expr": "sum by (queue) (rate(rag_arq_job_retries_total[5m]))", "legendFormat": "retry {{queue}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "DLQ",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "targets": [{ "refId": "A", "expr": "sum(rag_arq_dlq_depth)", "legendFormat": "jobs" }]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Неподтверждённые числа",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "rag_translation_number_unconfirmed_ratio", "legendFormat": "ratio" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "vLLM TTFT p95",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, service) (rate(vllm:time_to_first_token_seconds_bucket[5m])))", "legendFormat": "{{service}}" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "GPU память",
+      "datasource": { "type": "prometheus", "uid": "rag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [{ "refId": "A", "expr": "DCGM_FI_DEV_FB_USED / clamp_min(DCGM_FI_DEV_FB_TOTAL, 1)", "legendFormat": "GPU {{gpu}}" }]
+    }
+  ]
+}

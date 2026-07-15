@@ -2,6 +2,9 @@ global:
   scrape_interval: 15s
   scrape_timeout: 10s
 
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: rag-api
     metrics_path: /metrics
@@ -10,3 +13,50 @@ scrape_configs:
       - targets: ["127.0.0.1:8100"]
         labels:
           service: rag-api
+
+  - job_name: rag-pipeline
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:9108"]
+        labels:
+          service: rag-metrics-exporter
+
+  - job_name: vllm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8006"]
+        labels: { service: qwen35, gpu: "3" }
+      - targets: ["127.0.0.1:8005"]
+        labels: { service: hymt2, gpu: "1" }
+      - targets: ["127.0.0.1:8002"]
+        labels: { service: text-embedding, gpu: "4" }
+      - targets: ["127.0.0.1:8003"]
+        labels: { service: text-reranker, gpu: "4" }
+      - targets: ["127.0.0.1:8007"]
+        labels: { service: visual-embedding, gpu: "2" }
+      - targets: ["127.0.0.1:8120"]
+        labels: { service: dots-mocr, gpu: "0" }
+      - targets: ["127.0.0.1:30010"]
+        labels: { service: mineru, gpu: "5" }
+      - targets: ["127.0.0.1:8118"]
+        labels: { service: paddle-ocr-vl, gpu: "0" }
+
+  - job_name: dcgm
+    static_configs:
+      - targets: ["127.0.0.1:9400"]
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ["127.0.0.1:9187"]
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ["127.0.0.1:9121"]
+
+  # MinIO имеет встроенный Prometheus exporter. Токен создаётся локально и
+  # хранится только в deploy/monitoring/secrets/minio_metrics_token.
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    bearer_token_file: /etc/prometheus/secrets/minio_metrics_token
+    static_configs:
+      - targets: ["127.0.0.1:9000"]

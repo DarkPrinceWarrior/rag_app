@@ -22,6 +22,8 @@ from rag_app.llm.visual import VisualEmbedder
 from rag_app.rag.memory import MemoryService
 from rag_app.storage.s3 import Storage
 from rag_app.workers.memory_tasks import consolidate_memory, extract_memory
+from rag_app.workers.queueing import JobRouter
+from rag_app.workers.recovery import recover_stale_documents
 from rag_app.workers.tasks import (
     describe_images,
     export_document,
@@ -37,6 +39,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 
 async def startup(ctx: dict) -> None:
+    # Обработка старых job остаётся на legacy queue, но следующий этап после
+    # переключения rollout уже уходит в профильную очередь.
+    ctx["redis"] = JobRouter(ctx["redis"])
     ctx["engine"] = create_engine()
     try:
         await assert_worker_rls_role(ctx["engine"])
@@ -76,9 +81,18 @@ class WorkerSettings:
         describe_images,
         extract_memory,
         consolidate_memory,
+        recover_stale_documents,
     ]
     # consolidation памяти раз в полчаса (auto-accept + позже purge)
-    cron_jobs = [cron(consolidate_memory, minute={0, 30}, run_at_startup=False)]
+    cron_jobs = [
+        cron(consolidate_memory, minute={0, 30}, run_at_startup=False),
+        cron(
+            recover_stale_documents,
+            minute=set(range(0, 60, 5)),
+            run_at_startup=True,
+            keep_result=0,
+        ),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings(

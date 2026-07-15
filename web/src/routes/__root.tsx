@@ -58,7 +58,7 @@ function HeaderSearch() {
             type="button"
             aria-label="Очистить поиск"
             onClick={clearSearch}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[#222226]/35 transition hover:bg-white hover:text-[#222226]/70"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[#222226]/35 transition hover:bg-white hover:text-[#222226]/70 max-md:h-11 max-md:w-11"
           >
             <X className="h-4 w-4" />
           </button>
@@ -70,7 +70,7 @@ function HeaderSearch() {
             aria-expanded={filtersOpen}
             onClick={() => setFiltersOpen((v) => !v)}
             className={cn(
-              'relative flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full px-2 text-[#222226]/45 transition',
+              'relative flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full px-2 text-[#222226]/45 transition max-md:h-11 max-md:min-w-11',
               filtersOpen || activeFilterCount
                 ? 'bg-white text-[#222226] shadow-[0_1px_4px_rgba(34,34,38,0.08)]'
                 : 'hover:bg-white hover:text-[#222226]/70',
@@ -161,7 +161,7 @@ function FilterKindPicker({ value, onChange }: { value: string; onChange: (value
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 min-w-0 items-center gap-2 rounded-xl border border-[#222226]/[0.08] bg-[#f7f7f7] pl-3 pr-2 text-left text-sm font-medium text-[#222226] outline-none transition hover:bg-[#f1f1f1] focus:border-[#6269f3]"
+        className="flex h-9 min-w-0 items-center gap-2 rounded-xl border border-[#222226]/[0.08] bg-[#f7f7f7] pl-3 pr-2 text-left text-sm font-medium text-[#222226] outline-none transition hover:bg-[#f1f1f1] focus:border-[#6269f3] max-md:h-11"
       >
         <span className="min-w-0 flex-1 truncate">{current.label}</span>
         <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#222226]/40 transition', open && 'rotate-180')} />
@@ -177,7 +177,7 @@ function FilterKindPicker({ value, onChange }: { value: string; onChange: (value
                 setOpen(false)
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-[#222226] transition hover:bg-[#222226]/[0.05]',
+                'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-[#222226] transition hover:bg-[#222226]/[0.05] max-md:min-h-11',
                 value === option.value && 'bg-[#222226]/[0.05] font-semibold',
               )}
             >
@@ -201,7 +201,7 @@ function ProfileButton() {
       title={`Профиль: ${user.username}`}
       aria-label="Профиль"
       className={cn(
-        'relative block h-10 w-10 shrink-0 overflow-hidden rounded-full transition',
+        'relative block h-10 w-10 shrink-0 overflow-hidden rounded-full transition max-md:h-11 max-md:w-11',
         active && 'ring-2 ring-[#6269f3] ring-offset-2',
       )}
     >
@@ -219,7 +219,7 @@ function TabLink({ to, label }: { to: string; label: string }) {
     <Link
       to={to}
       className={cn(
-        'flex items-start px-4 py-2 text-[16px] font-medium leading-[1.5] text-[#222226] transition',
+        'flex min-h-11 items-center px-4 py-2 text-[16px] font-medium leading-[1.5] text-[#222226] transition',
         active
           ? 'border-b-2 border-[#6269f3] bg-gradient-to-b from-white/0 to-[rgba(75,76,230,0.08)]'
           : 'opacity-50 hover:opacity-80',

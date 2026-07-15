@@ -1,0 +1,21 @@
+# Опциональный production-оверлей: добавляет pgBackRest и архивирование WAL.
+# RAG_BACKUP_ROOT обязан указывать на отдельный смонтированный носитель.
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: deploy/backup/postgres.Dockerfile
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=pgbackrest --stanza=rag-app archive-push %p
+      - -c
+      - archive_timeout=60s
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ${RAG_BACKUP_ROOT:?задайте отдельный носитель}/pgbackrest:/backup/pgbackrest
+      - ./deploy/backup/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro

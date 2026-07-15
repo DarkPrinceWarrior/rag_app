@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
+from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
@@ -65,20 +68,46 @@ _QWEN3_RR_PREFIX = (
 _QWEN3_RR_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
 
+def build_rerank_payload(query: str, texts: list[str]) -> dict[str, Any]:
+    """Собрать точный HTTP payload, включая официальный Qwen3-шаблон.
+
+    Вынесено отдельно, чтобы квалификация могла доказать, что шаблон находится
+    в фактически отправляемых строках, а не полагаться на серверный флаг,
+    который отдельные версии vLLM могли молча игнорировать.
+    """
+
+    q = query[:2000]
+    docs = [text[:4000] for text in texts]
+    if settings.rerank_model.startswith("qwen3-reranker"):
+        q = f"{_QWEN3_RR_PREFIX}<Instruct>: {settings.rerank_instruction}\n<Query>: {q}\n"
+        docs = [f"<Document>: {document}{_QWEN3_RR_SUFFIX}" for document in docs]
+    return {"model": settings.rerank_model, "query": q, "documents": docs}
+
+
+def reranker_template_sha256() -> str:
+    """Хеш версии клиентского шаблона и инструкции для runtime attestation."""
+
+    payload = {
+        "model": settings.rerank_model,
+        "instruction": settings.rerank_instruction,
+        "qwen3_prefix": _QWEN3_RR_PREFIX,
+        "qwen3_suffix": _QWEN3_RR_SUFFIX,
+        "protocol": "manual-qwen3-reranker-template-v1",
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class Reranker:
     async def rerank(self, query: str, texts: list[str]) -> list[float]:
         """Релевантности (в исходном порядке texts) через /v1/rerank (Cohere-совместимый)."""
         if not texts:
             return []
-        q = query[:2000]
-        docs = [t[:4000] for t in texts]
-        if settings.rerank_model.startswith("qwen3-reranker"):
-            q = f"{_QWEN3_RR_PREFIX}<Instruct>: {settings.rerank_instruction}\n<Query>: {q}\n"
-            docs = [f"<Document>: {d}{_QWEN3_RR_SUFFIX}" for d in docs]
+        payload = build_rerank_payload(query, texts)
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{settings.rerank_base_url}/v1/rerank",
-                json={"model": settings.rerank_model, "query": q, "documents": docs},
+                json=payload,
             )
             resp.raise_for_status()
             data = resp.json()

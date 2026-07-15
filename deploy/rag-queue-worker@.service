@@ -1,0 +1,25 @@
+[Unit]
+Description=DocRAGenslate split ARQ worker (%i)
+After=network-online.target
+Wants=network-online.target
+PartOf=rag-split-workers.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/rag_app
+Environment=PYTHONPATH=/root/projects/rag_app/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/root/projects/rag_app/.env
+EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
+ExecStart=/root/projects/rag_app/deploy/run_queue_worker.sh %i
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=3600
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=rag-split-workers.target

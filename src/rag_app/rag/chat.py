@@ -30,6 +30,7 @@ from rag_app.rag.grounding import (
     count_chat_tokens,
 )
 from rag_app.rag.retrieve import RetrievedChunk
+from rag_app.rag.selective_citations import LocalHttpClaimScoreBackend
 from rag_app.storage.s3 import Storage
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,13 @@ class ChatEngine:
             self.client,
             model=settings.llm_model,
             max_tokens=settings.rag_citation_verifier_max_tokens,
+            selective_backend=LocalHttpClaimScoreBackend(
+                settings.rag_citation_verifier_url,
+                model=settings.rag_citation_verifier_model,
+                adapter=settings.rag_citation_verifier_backend,
+                timeout_s=settings.rag_citation_verifier_timeout_s,
+            ),
+            selective_threshold=settings.rag_citation_verifier_threshold,
         )
 
     async def summarize_history(self, prior_summary: str | None, messages: list[Any]) -> str:
@@ -560,7 +568,7 @@ class ChatEngine:
             max_tokens=max_tokens,
         )
         mode = settings.rag_citation_verification_mode
-        if mode == "enforce" and prepared.chunks:
+        if mode in {"enforce", "selective"} and prepared.chunks:
             parts: list[str] = []
             async for delta in self.stream_prepared(
                 prepared,

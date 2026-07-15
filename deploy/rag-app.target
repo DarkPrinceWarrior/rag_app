@@ -1,0 +1,7 @@
+[Unit]
+Description=DocRAGenslate application services
+Wants=rag-api.service rag-worker.service rag-metrics-exporter.service
+After=rag-api.service rag-worker.service rag-metrics-exporter.service
+
+[Install]
+WantedBy=multi-user.target

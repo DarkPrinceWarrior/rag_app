@@ -611,8 +611,22 @@ class _AlternatingReranker:
     async def rerank(self, query: str, texts: list[str]) -> list[float]:
         del query
         self.calls += 1
-        scores = [0.9, 0.1]
-        return scores if self.calls % 2 else list(reversed(scores))
+        assert len(texts) == 1
+        replay = (self.calls - 1) // 2
+        first = texts[0].endswith("a")
+        return [0.9 if first == (replay % 2 == 0) else 0.1]
+
+
+class _DriftingSameOrderReranker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def rerank(self, query: str, texts: list[str]) -> list[float]:
+        del query
+        assert len(texts) == 1
+        replay = (self.calls // 2) % 3
+        self.calls += 1
+        return [0.9 - 0.1 * replay if texts[0].endswith("a") else 0.2 + 0.05 * replay]
 
 
 class _InvalidReranker:
@@ -676,11 +690,14 @@ def test_paired_reranker_canonical_prewarms_then_freezes() -> None:
     first = asyncio.run(reranker.rerank("private query", ["private a", "private b"]))
     second = asyncio.run(reranker.rerank("private query", ["private b", "private a"]))
 
-    assert calls_after_prewarm == 5
+    assert calls_after_prewarm == 10
+    assert delegate.calls[:6] == delegate.calls[:2] * 3
     assert len(delegate.calls) == calls_after_prewarm
     assert first == list(reversed(second))
     assert evidence.unique_pair_count == 2
     assert evidence.live_pair_score_count == 6
+    assert evidence.live_batch_count == evidence.live_pair_score_count
+    assert evidence.scoring_mode == "strictly-sequential-single-pair-v1"
     assert evidence.min_split_half_rank_agreement == 1.0
     assert evidence.min_same_set_single_replay_rank_agreement == 1.0
     assert evidence.min_single_replay_common_rank_agreement == 1.0
@@ -693,6 +710,23 @@ def test_paired_reranker_canonical_prewarms_then_freezes() -> None:
     assert evidence.min_batch_shape_rank_agreement == 1.0
     assert "private" not in evidence.model_dump_json()
     assert reranker.cache_stats() == (4, 0)
+
+
+def test_paired_reranker_allows_raw_score_drift_when_ranking_is_stable() -> None:
+    reranker = runner._PairedReranker(_DriftingSameOrderReranker())
+
+    evidence = asyncio.run(
+        reranker.preload(
+            _collected_rerank_sets(),
+            questions=["private query"],
+            revision=_reranker_revision(),
+            replay_count=3,
+        )
+    )
+
+    assert evidence.max_repeat_score_delta > runner._MAX_RERANK_REPEAT_DELTA
+    assert evidence.min_split_half_rank_agreement == 1.0
+    assert evidence.min_same_set_single_replay_rank_agreement == 1.0
 
 
 def test_paired_reranker_frozen_miss_fails_without_live_call() -> None:
@@ -940,8 +974,7 @@ def test_paired_reranker_coalesces_identical_truncated_inputs() -> None:
     scores = asyncio.run(reranker.rerank("private query", [prefix + "a", prefix + "b"]))
 
     assert evidence.unique_pair_count == 1
-    assert [len(texts) for _, texts in delegate.calls].count(1) == 3
-    assert [len(texts) for _, texts in delegate.calls].count(2) == 2
+    assert [len(texts) for _, texts in delegate.calls] == [1] * 7
     assert scores == [0.8, 0.8]
     assert reranker.cache_stats() == (2, 0)
 

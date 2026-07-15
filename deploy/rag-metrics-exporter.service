@@ -1,0 +1,22 @@
+[Unit]
+Description=DocRAGenslate queue and quality metrics exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/rag_app
+Environment=PYTHONPATH=/root/projects/rag_app/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/root/projects/rag_app/.env
+EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
+ExecStart=/root/projects/rag_app/.venv/bin/uvicorn rag_app.metrics_exporter:app --host 127.0.0.1 --port 9108
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=rag-app.target

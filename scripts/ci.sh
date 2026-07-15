@@ -40,8 +40,13 @@ pytest_check() {
   HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --locked pytest -q
 }
 
+rls_db_check() {
+  uv run --locked python scripts/prepare_ci_rls_db.py
+  uv run --locked alembic upgrade head
+}
+
 ruff_check() {
-  uv run --locked ruff check src tests alembic scripts/check_ci_policy.py
+  uv run --locked ruff check src tests alembic scripts/check_ci_policy.py scripts/prepare_ci_rls_db.py
 }
 
 mypy_check() {
@@ -75,6 +80,7 @@ web_check() {
   pnpm --dir web install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
   pnpm --dir web lint
   pnpm --dir web build
+  pnpm --dir web test:e2e
 }
 
 extension_check() {
@@ -86,6 +92,7 @@ extension_check() {
 all_checks() {
   preflight
   python_sync
+  rls_db_check
   pytest_check
   ruff_check
   mypy_check
@@ -98,6 +105,7 @@ all_checks() {
 case "${1:-all}" in
   preflight) preflight ;;
   python-sync) python_sync ;;
+  rls-db) rls_db_check ;;
   pytest) pytest_check ;;
   ruff) ruff_check ;;
   mypy) mypy_check ;;

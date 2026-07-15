@@ -1,0 +1,12 @@
+[Unit]
+Description=DocRAGenslate MinIO versioned mirror
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=REPO_DIR=/root/projects/rag_app
+Environment=BACKUP_ENV=/etc/docragenslate/backup.env
+ExecStart=/root/projects/rag_app/deploy/backup/minio_mirror.sh
+UMask=0077
+Nice=10

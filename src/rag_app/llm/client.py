@@ -85,6 +85,10 @@ class SegmentContext:
     # направление перевода документа (по умолчанию EN→RU — текущий MVP)
     source_lang: str = "en"
     target_lang: str = "ru"
+    # (entry_id, approved translation) и близкие (source, translation, score).
+    # Заполняются только scoped lookup'ом translation memory.
+    translation_memory_exact: tuple[str, str] | None = None
+    translation_memory_examples: list[tuple[str, str, float]] = field(default_factory=list)
 
 
 def pick_glossary_terms(
@@ -144,8 +148,23 @@ class Translator:
         if context and context.glossary:
             terms = "\n".join(f"- {en} → {ru}" for en, ru in context.glossary)
             parts.append(f"ОБЯЗАТЕЛЬНАЯ терминология (использовать именно эти переводы):\n{terms}")
+        if (
+            settings.translation_memory_mode == "enforce"
+            and context
+            and context.translation_memory_examples
+        ):
+            examples = "\n".join(
+                f"- {source[:500]} → {translation[:500]}"
+                for source, translation, _score in context.translation_memory_examples
+            )
+            parts.append(
+                "Утверждённые похожие переводы из того же проекта; используй как примеры, "
+                f"но переводи текущий текст:\n{examples}"
+            )
         if feedback:
             parts.append(f"Предыдущая попытка перевода была отклонена. Причина: {feedback}")
+        if "⟪DRG" in text:
+            parts.append("Все плейсхолдеры вида ⟪DRG_*⟫ перенеси в ответ ровно один раз без изменений.")
         parts.append(
             f"Переведи на русский ТОЛЬКО текст между маркерами <doc> и </doc>:\n<doc>\n{text}\n</doc>"
         )

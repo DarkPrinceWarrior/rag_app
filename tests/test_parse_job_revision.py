@@ -66,7 +66,10 @@ def test_worker_claim_is_guarded_by_status_and_revision() -> None:
     sql_text, params = _compiled(session.statements[0])
     assert "documents.status =" in sql_text
     assert "documents.parse_revision =" in sql_text
-    assert DocumentStatus.uploaded in params.values()
+    reclaim_statuses = next(value for value in params.values() if isinstance(value, list))
+    assert reclaim_statuses == [DocumentStatus.uploaded, DocumentStatus.parsing]
+    assert DocumentStatus.error in params.values()
+    assert "парсинг:%" in params.values()
     assert 7 in params.values()
 
 

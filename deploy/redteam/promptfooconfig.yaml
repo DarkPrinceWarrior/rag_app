@@ -1,0 +1,15 @@
+description: DocRAGenslate local RAG red-team smoke
+
+providers:
+  - id: file://provider.mjs
+    label: local-docragenslate
+
+prompts:
+  - '{{attack}}'
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://assertions.mjs:noInternalLeak
+
+tests: cases.yaml

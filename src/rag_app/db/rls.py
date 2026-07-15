@@ -73,6 +73,7 @@ PROTECTED_TABLES: tuple[str, ...] = (
     "segments",
     "document_translations",
     "segment_versions",
+    "translation_memory",
     "page_embeddings",
     "document_structured_artifacts",
     "chat_sessions",

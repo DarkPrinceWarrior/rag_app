@@ -36,6 +36,7 @@ from rag_app.eval.baseline import (
     require_loopback_endpoint,
     require_loopback_url,
 )
+from rag_app.eval.citation_calibration import CalibrationCase, CalibrationClaim
 from rag_app.eval.gold_set import (
     DocumentSnapshot,
     GoldRecord,
@@ -460,6 +461,9 @@ def _build_provenance(
         context_compressed_chars=settings.rag_context_compressed_chars,
         citation_verification_mode=settings.rag_citation_verification_mode,
         citation_verifier_max_tokens=settings.rag_citation_verifier_max_tokens,
+        citation_verifier_backend=settings.rag_citation_verifier_backend,
+        citation_verifier_model=settings.rag_citation_verifier_model,
+        citation_verifier_threshold=settings.rag_citation_verifier_threshold,
         evaluation_concurrency=concurrency,
         answer_route="doc_only",
         prompt_sha256=hashlib.sha256(CHAT_SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
@@ -591,6 +595,7 @@ class ProductionBaselineRunner:
         *,
         top_k: int,
         sparse_backend: SparseBackend = "postgres_fts",
+        collect_citation_calibration: bool = False,
     ) -> None:
         require_loopback_url(settings.embed_base_url, name="embedding endpoint")
         require_loopback_url(settings.rerank_base_url, name="reranker endpoint")
@@ -603,6 +608,8 @@ class ProductionBaselineRunner:
         self.sessionmaker = sessionmaker
         self.top_k = top_k
         self.sparse_backend = sparse_backend
+        self.collect_citation_calibration = collect_citation_calibration
+        self.citation_calibration: dict[str, CalibrationCase] = {}
         self.storage = Storage()
         self.embedder = Embedder()
         visual_embedder = VisualEmbedder() if settings.visual_enabled else None
@@ -896,6 +903,24 @@ class ProductionBaselineRunner:
             ):
                 parts.append(delta)
             draft = "".join(parts).strip()
+            if getattr(self, "collect_citation_calibration", False):
+                teacher = await self.chat.citation_verifier.verify(draft, prepared.chunks)
+                scores = await self.chat.citation_verifier.score_report_claims(
+                    teacher,
+                    prepared.chunks,
+                )
+                self.citation_calibration[record.case_id] = CalibrationCase(
+                    case_id=record.case_id,
+                    answerable=record.answerable,
+                    language=record.language,
+                    claims=tuple(
+                        CalibrationClaim(
+                            score=score,
+                            supported=claim.verdict == "supported",
+                        )
+                        for claim, score in zip(teacher.factual_claims, scores, strict=True)
+                    ),
+                )
             guarded = await self.chat.verify_answer(draft, prepared.chunks)
             answer = guarded.answer
             verification = guarded.verification
@@ -904,6 +929,13 @@ class ProductionBaselineRunner:
             chunks = prepared.chunks
         else:
             answer = _NO_RESULTS_ANSWER
+            if getattr(self, "collect_citation_calibration", False):
+                self.citation_calibration[record.case_id] = CalibrationCase(
+                    case_id=record.case_id,
+                    answerable=record.answerable,
+                    language=record.language,
+                    claims=(),
+                )
         generation_ms = (time.monotonic() - generation_start) * 1000
         factual_claims = verification.factual_claims if verification is not None else []
         return BaselineObservation(
@@ -952,6 +984,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=Path)
     parser.add_argument("--attestation", type=Path)
     parser.add_argument("--attestation-key", type=Path)
+    parser.add_argument(
+        "--citation-calibration-observations",
+        type=Path,
+        help="private numeric claim-score artifact for selective threshold calibration",
+    )
     return parser
 
 
@@ -972,6 +1009,13 @@ async def async_main() -> int:
         attestation_path = args.attestation.expanduser() if args.attestation is not None else None
         if attestation_path is not None:
             ensure_private_gold_path(attestation_path, REPOSITORY_ROOT)
+        calibration_path = (
+            args.citation_calibration_observations.expanduser()
+            if args.citation_calibration_observations is not None
+            else None
+        )
+        if calibration_path is not None:
+            ensure_private_gold_path(calibration_path, REPOSITORY_ROOT)
         gold_artifact = read_private_bytes(args.gold, max_bytes=256 * 1024 * 1024)
         sidecar_artifact = read_private_bytes(args.sidecar, max_bytes=256 * 1024 * 1024)
         records, _ = parse_gold_set_bytes(gold_artifact.raw_bytes, mode=args.mode)
@@ -989,6 +1033,7 @@ async def async_main() -> int:
             sessionmaker,
             top_k=args.top_k,
             sparse_backend=sparse_backend,
+            collect_citation_calibration=calibration_path is not None,
         )
         try:
             runtime_snapshot = await runner.verify_corpus_snapshot(records, bound)
@@ -1020,9 +1065,25 @@ async def async_main() -> int:
                 raise BaselineEvaluationError("production corpus changed during evaluation")
             if await _collect_model_revisions() != model_revisions:
                 raise BaselineEvaluationError("runtime model changed during evaluation")
+            calibration_cases = tuple(
+                runner.citation_calibration[case_id]
+                for case_id in sorted(runner.citation_calibration)
+            )
         finally:
             await runner.close()
         payload = report.model_dump(mode="json")
+        if calibration_path is not None:
+            if len(calibration_cases) != len(records):
+                raise BaselineEvaluationError("citation calibration did not cover every gold case")
+            calibration_payload = {
+                "schema_version": "citation-calibration-observations-v1",
+                "case_count": len(calibration_cases),
+                "cases": [case.model_dump(mode="json") for case in calibration_cases],
+            }
+            write_private_json_fresh(
+                calibration_path,
+                (json.dumps(calibration_payload, ensure_ascii=False, sort_keys=True) + "\n").encode(),
+            )
         if report_path is not None:
             report_bytes = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
                 "utf-8"

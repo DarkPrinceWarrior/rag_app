@@ -12,7 +12,7 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import text as sql
 
 from rag_app.api.audit import audit
@@ -22,6 +22,11 @@ from rag_app.config import settings
 from rag_app.db.models import Document, DocumentStatus, DocumentTranslation, Segment
 from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
+from rag_app.workers.recovery import (
+    RECOVERABLE_DOCUMENT_STATUSES,
+    RECOVERABLE_TRANSLATION_STATUSES,
+    stale_status_cutoff,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[require_user])
@@ -29,19 +34,21 @@ router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[re
 
 async def _enqueue_parse_job(request: Request, doc_id: uuid.UUID, parse_revision: int) -> None:
     try:
-        await request.app.state.arq.enqueue_job(
+        job = await request.app.state.arq.enqueue_job(
             "parse_document",
             str(doc_id),
             parse_revision,
             _job_id=f"parse:{doc_id}:{parse_revision}",
         )
+        if job is None:
+            raise RuntimeError("ARQ отклонил задачу с существующим job_id")
     except Exception as exc:
         async with request.app.state.sessionmaker() as session:
             stmt = update(Document).where(
-                    Document.id == doc_id,
-                    Document.parse_revision == parse_revision,
-                    Document.status == DocumentStatus.uploaded,
-                )
+                Document.id == doc_id,
+                Document.parse_revision == parse_revision,
+                Document.status == DocumentStatus.uploaded,
+            )
             stmt = _owner_filter(stmt, request.state.user).values(
                 status=DocumentStatus.error, error=f"очередь парсинга: {exc}"
             )
@@ -55,15 +62,19 @@ async def _queue_reparse(
     doc_id: uuid.UUID,
     **changes: object,
 ) -> int:
-    """Атомарно создать следующую ревизию парсинга для свободного документа."""
+    """Атомарно создать следующую ревизию для свободного или просроченного документа."""
 
     user: User = request.state.user
+    recoverable = or_(
+        Document.status.in_((DocumentStatus.error, DocumentStatus.done)),
+        and_(
+            Document.status.in_(RECOVERABLE_DOCUMENT_STATUSES),
+            Document.updated_at < stale_status_cutoff(),
+        ),
+    )
     async with request.app.state.sessionmaker() as session:
         stmt = _owner_filter(
-            update(Document).where(
-                Document.id == doc_id,
-                Document.status.in_((DocumentStatus.error, DocumentStatus.done)),
-            ),
+            update(Document).where(Document.id == doc_id, recoverable),
             user,
         )
         revision = (
@@ -452,19 +463,38 @@ async def create_translation(request: Request, doc_id: uuid.UUID, body: Translat
         raise HTTPException(422, f"документ уже на языке «{target}» — переводить не нужно")
     if doc.status not in (DocumentStatus.done, DocumentStatus.translated, DocumentStatus.exporting):
         raise HTTPException(409, "документ ещё не обработан — дождитесь готовности")
+
+    previous: dict[str, object] | None = None
     async with request.app.state.sessionmaker() as db:
         row = (
             await db.execute(
-                select(DocumentTranslation).where(
+                select(DocumentTranslation)
+                .where(
                     DocumentTranslation.document_id == doc_id,
                     DocumentTranslation.target_lang == target,
                 )
+                .with_for_update()
             )
         ).scalar_one_or_none()
         if row is None:
             row = DocumentTranslation(document_id=doc_id, target_lang=target, status="translating")
             db.add(row)
-        else:  # перезапуск — сброс прошлого результата
+        else:
+            if (
+                row.status in RECOVERABLE_TRANSLATION_STATUSES
+                and (row.updated_at is None or row.updated_at >= stale_status_cutoff())
+            ):
+                raise HTTPException(409, f"перевод уже выполняется (статус {row.status})")
+            previous = {
+                "status": row.status,
+                "error": row.error,
+                "data": dict(row.data or {}),
+                "segment_count": row.segment_count,
+                "translated_count": row.translated_count,
+                "needs_review_count": row.needs_review_count,
+                "s3_key_docx": row.s3_key_docx,
+                "s3_key_source": row.s3_key_source,
+            }
             row.status = "translating"
             row.error = None
             row.data = {}
@@ -472,9 +502,36 @@ async def create_translation(request: Request, doc_id: uuid.UUID, body: Translat
             row.s3_key_docx = None
             row.s3_key_source = None
         await db.commit()
-    await request.app.state.arq.enqueue_job(
-        "translate_to_language", str(doc_id), target, _job_id=f"translate_lang:{doc_id}:{target}"
-    )
+
+    try:
+        job = await request.app.state.arq.enqueue_job(
+            "translate_to_language",
+            str(doc_id),
+            target,
+            _job_id=f"translate_lang:{doc_id}:{target}:{uuid.uuid4().hex[:8]}",
+        )
+        if job is None:
+            raise RuntimeError("ARQ отклонил задачу")
+    except Exception as exc:
+        async with request.app.state.sessionmaker() as db:
+            row = (
+                await db.execute(
+                    select(DocumentTranslation).where(
+                        DocumentTranslation.document_id == doc_id,
+                        DocumentTranslation.target_lang == target,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                if previous is None:
+                    row.status = "error"
+                    row.error = f"очередь дополнительного перевода: {exc}"
+                else:
+                    for field, value in previous.items():
+                        setattr(row, field, value)
+                await db.commit()
+        raise HTTPException(503, "не удалось поставить дополнительный перевод в очередь") from None
+
     await audit(request, "translate_lang", "document", str(doc_id), {"target_lang": target})
     return {"target_lang": target, "status": "translating"}
 
@@ -826,6 +883,12 @@ async def delete_document(request: Request, doc_id: uuid.UUID) -> None:
         await storage.remove_document_objects(settings.bucket_artifacts, doc_id)
     except Exception:  # noqa: BLE001 — orphan cleanup не блокирует удаление документа
         logger.exception("artifact prefix cleanup failed for document %s", doc_id)
+    try:
+        # Удаляет также view_orig/view_ru и артефакты дополнительных переводов,
+        # которые не представлены отдельными полями в Document.
+        await storage.remove_document_objects(settings.bucket_exports, doc_id)
+    except Exception:  # noqa: BLE001 — сохраняем удаление БД и legacy-cleanup ниже
+        logger.exception("export prefix cleanup failed for document %s", doc_id)
     for attr, _media in _EXPORT_KINDS.values():
         key = getattr(doc, attr)
         if key:

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Эмбеддер и reranker (GPU4): Qwen3-Embedding-0.6B + Qwen3-Reranker-4B
+# Эмбеддер и reranker (GPU4): Qwen3-Embedding-8B + Qwen3-Reranker-4B
 # (§ 12.1 шаг 1). Выводит из эксплуатации старые bge-юниты, если стояли.
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/root/projects/rag_app}"
 
-[ -d /root/models/Qwen3-Embedding-0.6B ] || { echo "нет /root/models/Qwen3-Embedding-0.6B"; exit 1; }
+[ -d /root/models/Qwen3-Embedding-8B ] || { echo "нет /root/models/Qwen3-Embedding-8B"; exit 1; }
 [ -d /root/models/Qwen3-Reranker-4B ] || { echo "нет /root/models/Qwen3-Reranker-4B"; exit 1; }
 
 # вывод старых bge-юнитов. ВАЖНО: глушить безусловно — SO_REUSEPORT позволяет

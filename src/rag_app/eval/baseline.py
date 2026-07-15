@@ -155,8 +155,11 @@ class BaselineConfiguration(_StrictModel):
     context_reserve_tokens: int | None = Field(default=None, ge=1)
     context_compress_after_rank: int | None = Field(default=None, ge=1)
     context_compressed_chars: int | None = Field(default=None, ge=1)
-    citation_verification_mode: Literal["off", "shadow", "enforce"] | None = None
+    citation_verification_mode: Literal["off", "shadow", "enforce", "selective"] | None = None
     citation_verifier_max_tokens: int | None = Field(default=None, ge=1)
+    citation_verifier_backend: Literal["hhem", "lettuce"] | None = None
+    citation_verifier_model: str | None = None
+    citation_verifier_threshold: float | None = Field(default=None, ge=0, le=1)
     evaluation_concurrency: int | None = Field(default=None, ge=1, le=16)
     answer_route: Literal["doc_only"]
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -222,6 +225,9 @@ class BaselineReport(_StrictModel):
     semantic_unsupported_claim_rate: float | None = Field(default=None, ge=0, le=1)
     citation_guard_failed_closed_rate: float = Field(default=0, ge=0, le=1)
     citation_verifier_error_rate: float = Field(default=0, ge=0, le=1)
+    selective_qualification_passed: bool | None = None
+    selective_answerability_target: float = Field(default=0.85, ge=0, le=1)
+    selective_semantic_precision_target: float = Field(default=0.90, ge=0, le=1)
     latency_ms: dict[str, float]
     cases: tuple[BaselineCaseMetrics, ...]
 
@@ -408,6 +414,16 @@ def aggregate_metrics(
     totals = [case.total_ms for case in cases]
     retrieval = [case.retrieval_ms for case in cases]
     generation = [case.generation_ms for case in cases]
+    mean_semantic_precision = _mean_eligible(
+        [case.semantic_citation_precision for case in cases]
+    )
+    selective_passed = None
+    if provenance.configuration.citation_verification_mode == "selective":
+        selective_passed = (
+            sum(case.answerability_correct for case in cases) / len(cases) >= 0.85
+            and mean_semantic_precision is not None
+            and mean_semantic_precision >= 0.90
+        )
     return BaselineReport(
         schema_version="rag-baseline-report-v1",
         provenance=provenance,
@@ -449,9 +465,7 @@ def aggregate_metrics(
             ]
         ),
         unsupported_number_rate=unsupported / total_mentions if total_mentions else 0.0,
-        mean_semantic_citation_precision=_mean_eligible(
-            [case.semantic_citation_precision for case in cases]
-        ),
+        mean_semantic_citation_precision=mean_semantic_precision,
         semantic_unsupported_claim_rate=(
             semantic_unsupported / semantic_claims if semantic_claims else None
         ),
@@ -461,6 +475,7 @@ def aggregate_metrics(
         citation_verifier_error_rate=(
             sum(case.citation_verifier_error for case in cases) / len(cases)
         ),
+        selective_qualification_passed=selective_passed,
         latency_ms={
             "retrieval_mean": statistics.fmean(retrieval),
             "generation_mean": statistics.fmean(generation),

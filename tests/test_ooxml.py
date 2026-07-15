@@ -3,12 +3,27 @@ from __future__ import annotations
 from pathlib import Path
 
 from docx import Document as DocxDocument
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from openpyxl import Workbook, load_workbook
 from pptx import Presentation
 from pptx.util import Inches
 
 from rag_app.db.models import SegmentKind
 from rag_app.pipeline import ooxml
+
+
+def _add_hyperlink(paragraph, text: str, url: str) -> None:
+    relationship_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship_id)
+    run = OxmlElement("w:r")
+    text_node = OxmlElement("w:t")
+    text_node.text = text
+    run.append(text_node)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
 
 
 def test_docx_roundtrip(tmp_path: Path) -> None:
@@ -44,6 +59,34 @@ def test_docx_roundtrip(tmp_path: Path) -> None:
     assert "RU:Scope" in out_texts
     assert "RU:Design pressure is 16.5 MPa" in out_texts
     assert out.tables[0].cell(0, 0).text == "RU:Item"
+
+
+def test_docx_injection_does_not_duplicate_hyperlink_text(tmp_path: Path) -> None:
+    src = tmp_path / "hyperlink.docx"
+    doc = DocxDocument()
+    paragraph = doc.add_paragraph("See spec at ")
+    _add_hyperlink(paragraph, "example.com/spec", "https://example.com/spec")
+    only_link = doc.add_paragraph()
+    _add_hyperlink(only_link, "original link", "https://example.com")
+    doc.save(src)
+
+    drafts = ooxml.extract_docx(src)
+    assert [draft.source_text for draft in drafts] == [
+        "See spec at example.com/spec",
+        "original link",
+    ]
+    translations = {
+        ooxml.location_key(drafts[0].meta["location"]): "См. спецификацию",
+        ooxml.location_key(drafts[1].meta["location"]): "Переведённая ссылка",
+    }
+    dst = tmp_path / "translated.docx"
+    assert ooxml.inject_docx(src, dst, translations) == 2
+
+    out = DocxDocument(dst)
+    assert [paragraph.text for paragraph in out.paragraphs] == [
+        "См. спецификацию",
+        "Переведённая ссылка",
+    ]
 
 
 def test_xlsx_roundtrip(tmp_path: Path) -> None:

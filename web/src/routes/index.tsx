@@ -624,6 +624,10 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
     mutationFn: (folderId: string | null) => api.moveDocument(d.id, folderId),
     onSuccess: refresh,
   })
+  const retry = useMutation({
+    mutationFn: () => api.retry(d.id),
+    onSuccess: refresh,
+  })
   // доп. переводы документа (ТЗ §4.3): RU→EN/RU→ZH
   const translations = useQuery({
     queryKey: ['translations', d.id],
@@ -830,13 +834,20 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
             </span>
           )}
           {del.isError && <span className="text-destructive">Ошибка удаления</span>}
+          {retry.isError && <span className="text-destructive">Не удалось повторить обработку</span>}
           {d.error && <span className="text-destructive">{d.error.slice(0, 80)}</span>}
         </div>
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-4">
           {d.status === 'error' ? (
-            <Button variant="ghost" size="sm" className="h-8 rounded-xl px-2.5" onClick={() => void api.retry(d.id)}>
-              Повторить
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 rounded-xl px-2.5"
+              disabled={retry.isPending}
+              onClick={() => retry.mutate()}
+            >
+              {retry.isPending ? 'Повторяю…' : 'Повторить'}
             </Button>
           ) : d.status !== 'done' ? (
             <span className="text-xs text-muted-foreground">Обработка…</span>

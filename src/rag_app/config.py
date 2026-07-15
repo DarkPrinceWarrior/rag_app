@@ -22,6 +22,17 @@ class Settings(BaseSettings):
     redis_host: str = "127.0.0.1"
     redis_port: int = 6379
     redis_db: int = 0
+    # Миграция очередей: legacy сохраняет все enqueue в arq:queue; split маршрутизирует
+    # только новые job, старый WorkerSettings продолжает drain накопленного хвоста.
+    queue_rollout_mode: Literal["legacy", "split"] = "legacy"
+    queue_parse_name: str = "arq:parse"
+    queue_translate_name: str = "arq:translate"
+    queue_export_index_name: str = "arq:export-index"
+    queue_memory_name: str = "arq:memory"
+    queue_max_tries: int = Field(default=3, ge=1, le=10)
+    queue_retry_base_s: int = Field(default=15, ge=1, le=3600)
+    queue_retry_cap_s: int = Field(default=300, ge=1, le=7200)
+    queue_dlq_max_entries: int = Field(default=1000, ge=10, le=100_000)
 
     # --- MinIO (S3) ---
     s3_endpoint: str = "127.0.0.1:9000"
@@ -34,7 +45,8 @@ class Settings(BaseSettings):
     bucket_exports: str = "exports"
 
     # --- LLM (vLLM, OpenAI-совместимый endpoint) ---
-    # Воркхорс перевода + RAG-чата — Qwen3.5-35B-A3B (GPU3:8006). Qwen3-32B-AWQ
+    # Воркхорс RAG-чата, анализа и мультимодального контура — Qwen3.5-35B-A3B
+    # (GPU3:8006). Документы переводит Hy-MT2-7B. Qwen3-32B-AWQ
     # (:8001) ретайрнут 2026-06-18 (GPU0 освобождена) — на дефолт его не возвращаем.
     llm_base_url: str = "http://127.0.0.1:8006/v1"
     llm_api_key: str = "local"
@@ -42,6 +54,16 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 4096
     translate_concurrency: int = 12
     translate_max_retries: int = 3
+    # Детерминированная защита формул, стандартов, чисел и единиц:
+    # off — прежнее поведение; shadow — только измерение; enforce — плейсхолдеры.
+    translation_entity_guard_mode: Literal["off", "shadow", "enforce"] = "off"
+    # Память переводов: shadow выполняет scoped lookup, но не меняет промпт/ответ;
+    # enforce разрешает exact approved bypass и nearest-примеры для Hy-MT2.
+    translation_memory_mode: Literal["off", "shadow", "enforce"] = "off"
+    translation_memory_nearest_top_k: int = Field(default=2, ge=0, le=5)
+    translation_memory_candidate_pool: int = Field(default=8, ge=1, le=50)
+    translation_memory_dense_min_similarity: float = Field(default=0.75, ge=0.0, le=1.0)
+    translation_memory_lexical_min_similarity: float = Field(default=0.35, ge=0.0, le=1.0)
     # Рендер OOXML (docx/xlsx/pptx) в PDF через LibreOffice headless — для просмотра
     # «как в Microsoft» (оригинал и перевод в pdf.js-вьювере, а не плоским текстом).
     office_render_enabled: bool = True
@@ -85,11 +107,9 @@ class Settings(BaseSettings):
         " that answer the query"
     )
     # --- Визуальный контур сканов (§ 12.1 шаг 4): эмбеддинг страниц-картинок ---
-    # ЗАПАРКОВАН 2026-06-18: фича почти не использовалась (page_embeddings = 1 строка,
-    # RAG-чат по ней не ходит — только /api/search/visual), а сервис держал ~23 ГБ
-    # GPU5. `vllm-visual-embedding` погашен, флаг выключен (index_pages_visual и ручка
-    # визпоиска становятся no-op/503). Ревайв — отдельной задачей (визуальный retrieval
-    # в чат), модель остаётся Qwen3-VL-Embedding (Apache-2.0), полный dim 4096.
+    # Реактивирован 2026-06-19 на GPU2 вместе с визуальным реранкером (:8009) и
+    # подключен к RAG-чату. Production включает его декларативно через
+    # deploy/rag-runtime.env; дефолт остается fail-safe для локальной разработки.
     visual_enabled: bool = False
     visual_embed_base_url: str = "http://127.0.0.1:8007"
     visual_embed_model: str = "qwen3-vl-embedding-8b"
@@ -108,14 +128,14 @@ class Settings(BaseSettings):
     visual_rerank_base_url: str = "http://127.0.0.1:8009"
     visual_rerank_model: str = "qwen3-vl-reranker-2b"
 
-    # --- Генеративный VL для описания/объяснения рисунков (GPU2 :8008) ---
-    # Qwen3-VL-8B-Instruct: для сканов-чертежей, P&ID, схем, графиков, фото —
-    # раскрывает СМЫСЛ изображения текстом (на русском). В отличие от visual_*
-    # (только эмбеддинги для поиска) — этот генерирует описание.
+    # --- Генеративный VL для описания/объяснения рисунков (GPU3 :8006) ---
+    # Мультимодальный Qwen3.5: для сканов-чертежей, P&ID, схем, графиков и фото
+    # раскрывает смысл изображения текстом. В отличие от visual_* (эмбеддинги и
+    # реранжирование для поиска), этот контур генерирует описание.
     vl_enabled: bool = True
     # Генеративный VL — воркхорс Qwen3.5-35B-A3B (:8006, мультимодальный; отдельный
     # Qwen3-VL-8B на GPU2 ретайрнут 2026-06-19). Картинка капается до vl_max_side px
-    # (vision.py) — GPU3 тесная (ctx 8192), большой чертёж иначе переполняет контекст.
+    # (vision.py) — GPU3 тесная (ctx 16384), большой чертёж иначе переполняет контекст.
     vl_base_url: str = "http://127.0.0.1:8006/v1"
     vl_model: str = "qwen3.5-35b-a3b"
     vl_max_tokens: int = 1200
@@ -193,7 +213,7 @@ class Settings(BaseSettings):
         default=1, ge=0, le=3, validation_alias="RAG_HIERARCHICAL_PAGE_RADIUS"
     )
     # сколько вырезанных рисунков (img_s3 среди найденных чанков) приложить кропами
-    # в мультимодальный запрос Qwen3.5 (vision on-demand в чате) — кап под ctx 8192
+    # в мультимодальный запрос Qwen3.5 (vision on-demand в чате) — кап под ctx 16384
     rag_vision_max_images: int = 3
     # визуальный контур (§12.1 шаг4): сколько страниц поднимает page_embeddings и
     # сколько image-чанков добавить в контекст после визуального реранка
@@ -216,8 +236,15 @@ class Settings(BaseSettings):
     chat_output_tokens: int = 2048
     chat_image_tokens: int = 1300  # ~стоимость одного приложенного кропа (1400px)
     chat_chars_per_token: int = 3  # грубая оценка ru/en (символов на токен)
-    rag_citation_verification_mode: Literal["off", "shadow", "enforce"] = "off"
+    rag_citation_verification_mode: Literal["off", "shadow", "enforce", "selective"] = "off"
     rag_citation_verifier_max_tokens: int = 1200
+    # selective: локальный HHEM/Lettuce-compatible HTTP scorer; веса и лицензия
+    # управляются отдельным on-prem сервисом, приложение передаёт только пары.
+    rag_citation_verifier_backend: Literal["hhem", "lettuce"] = "hhem"
+    rag_citation_verifier_url: str = "http://127.0.0.1:8011/score"
+    rag_citation_verifier_model: str = "/models/hhem-2.1-open"
+    rag_citation_verifier_threshold: float = Field(default=0.7, ge=0, le=1)
+    rag_citation_verifier_timeout_s: float = Field(default=15.0, gt=0, le=120)
     chunk_max_chars: int = 4000  # ~1K токенов
     chunk_min_chars: int = 200  # секции короче — клеим к соседней
 
@@ -258,8 +285,8 @@ class Settings(BaseSettings):
     memory_extract_window: int = 12  # последних реплик в окно экстракции
 
     # --- MinerU (парсинг) ---
-    # GPU2 отдан генеративному VL (:8008) — парсинг MinerU уводим на GPU4
-    # (embed/rerank, есть запас памяти), иначе MinerU и VL конфликтуют по памяти.
+    # Основной MinerU2.5-Pro работает отдельным HTTP-сервисом на GPU5 (:30010).
+    # mineru_device относится только к локальному pipeline-fallback на GPU4.
     mineru_device: str = "cuda:4"
     # Путь к бинарю mineru: пусто → сосед текущего python (общий venv). Для VLM
     # через vllm — изолированный venv (.venv-mineru, torch 2.11), чтобы не понижать
@@ -279,7 +306,7 @@ class Settings(BaseSettings):
     mineru_method: str = "auto"  # auto: текстовый слой / OCR постранично (roadmap § 3.1)
     mineru_lang: str = "en"  # подсказка OCR (pipeline-бэкенд)
     mineru_timeout_s: int = 1800
-    # Бэкенд для форс-OCR (битый cmap): hybrid-engine (MinerU 3.3) — нативный
+    # Бэкенд для форс-OCR (битый cmap): hybrid-engine (MinerU 3.4.4) — нативный
     # текст для тела/оглавления (полнота, без пропусков) + VLM для таблиц/сложных
     # шрифтов (кириллица/надстрочные). vlm-engine — чистый VLM (теряет плотные
     # списки/оглавления); pipeline — быстрый PP-OCR, но искажает битый cmap.
@@ -289,7 +316,7 @@ class Settings(BaseSettings):
     # mineru → MinerU2.5-Pro (VLM) + добор из текстового слоя (дефолт, единственный
     # с middle.json-геометрией для bbox/цитат); dots_mocr → rednote-hilab/dots.mocr
     # (3B, чистые слитые таблицы); paddle_vl → PaddleOCR-VL 1.6 (0.9B). dots/paddle —
-    # альтернативные движки для сравнения, грузятся на GPU4.
+    # альтернативные постоянные сервисы для сравнения на GPU0.
     pdf_parser_backend: str = "mineru"  # mineru | dots_mocr | paddle_vl
     parser_quality_shadow_enabled: bool = False
     # Постраничная маршрутизация пока только scaffold: off не вычисляет решения,
@@ -319,7 +346,7 @@ class Settings(BaseSettings):
     structured_model_max_tokens: int = 4096
     structured_job_lease_s: int = 240
     structured_job_max_attempts: int = 3
-    # dots.mocr: постоянный vLLM-сервис на GPU4 (deploy/dots-mocr.service) + CLI parser.py
+    # dots.mocr: постоянный vLLM-сервис на GPU0 (deploy/dots-mocr.service) + CLI parser.py
     dots_url: str = "http://127.0.0.1:8120"
     dots_model_name: str = "model"
     dots_repo: str = "/root/parser_trials/dots.mocr"
@@ -465,6 +492,23 @@ class Settings(BaseSettings):
             raise ValueError("structured model timeout must be below sidecar job timeout")
         if self.structured_job_lease_s <= self.parser_sidecar_timeout_s:
             raise ValueError("structured job lease must exceed sidecar job timeout")
+        return self
+
+    @model_validator(mode="after")
+    def validate_split_queue_settings(self) -> Settings:
+        names = (
+            self.queue_parse_name,
+            self.queue_translate_name,
+            self.queue_export_index_name,
+            self.queue_memory_name,
+        )
+        if len(set(names)) != len(names) or any(
+            name == "arq:queue" or not re.fullmatch(r"arq:[a-z0-9][a-z0-9:-]{0,63}", name)
+            for name in names
+        ):
+            raise ValueError("split queues must be unique non-legacy arq:* names")
+        if self.queue_retry_base_s > self.queue_retry_cap_s:
+            raise ValueError("queue retry base must not exceed retry cap")
         return self
 
 

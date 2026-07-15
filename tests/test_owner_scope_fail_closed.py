@@ -242,6 +242,30 @@ async def test_agent_tools_catalog_uses_exact_owner_filter() -> None:
     assert "user-a" in params.values()
 
 
+@pytest.mark.asyncio
+async def test_agent_tools_find_figure_stays_inside_document_set() -> None:
+    selected = [uuid.uuid4(), uuid.uuid4()]
+    outside = uuid.uuid4()
+    session = _Session(execute_results=(_Result(scalars=()),))
+    tools = AgentTools(
+        _SessionMaker(session),
+        retriever=object(),  # type: ignore[arg-type]
+        document_id=None,
+        document_ids=selected,
+        folder_id=None,
+        session_id=uuid.uuid4(),
+        owner_sub="user-a",
+    )
+
+    await tools.find_figure("рисунок 3", str(outside))
+
+    sql, params = _compiled(session.statements[0])
+    assert "chunks.document_id IN" in sql
+    assert "documents.owner_sub =" in sql
+    assert selected in params.values()
+    assert outside not in params.values()
+
+
 def test_library_retriever_and_agent_sources_have_no_null_owner_allowance() -> None:
     for sql in (
         retrieve_module._SCOPE,

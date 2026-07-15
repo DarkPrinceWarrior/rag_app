@@ -1,0 +1,13 @@
+[Unit]
+Description=DocRAGenslate split ARQ workers
+Wants=rag-queue-worker@parse.service
+Wants=rag-queue-worker@translate.service
+Wants=rag-queue-worker@export-index.service
+Wants=rag-queue-worker@memory.service
+After=rag-queue-worker@parse.service
+After=rag-queue-worker@translate.service
+After=rag-queue-worker@export-index.service
+After=rag-queue-worker@memory.service
+
+[Install]
+WantedBy=multi-user.target

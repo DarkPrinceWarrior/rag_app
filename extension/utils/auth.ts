@@ -19,6 +19,13 @@ interface Tokens {
 
 const TOKENS_KEY = 'oidc_tokens';
 let cfgCache: { base: string; cfg: OidcConfig } | null = null;
+let refreshPromise: Promise<Tokens> | null = null;
+
+class TokenEndpointError extends Error {
+  constructor(readonly status: number) {
+    super(`OIDC token endpoint: ${status}`);
+  }
+}
 
 const b64url = (buf: ArrayBuffer): string =>
   btoa(String.fromCharCode(...new Uint8Array(buf)))
@@ -57,7 +64,7 @@ async function tokenRequest(cfg: OidcConfig, body: Record<string, string>): Prom
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body),
   });
-  if (!resp.ok) throw new Error(`OIDC token endpoint: ${resp.status}`);
+  if (!resp.ok) throw new TokenEndpointError(resp.status);
   const data = await resp.json();
   const tokens: Tokens = {
     access_token: data.access_token,
@@ -66,6 +73,19 @@ async function tokenRequest(cfg: OidcConfig, body: Record<string, string>): Prom
   };
   await saveTokens(tokens);
   return tokens;
+}
+
+function refreshTokens(cfg: OidcConfig, refreshToken: string): Promise<Tokens> {
+  if (!refreshPromise) {
+    refreshPromise = tokenRequest(cfg, {
+      grant_type: 'refresh_token',
+      client_id: cfg.oidc_client_id,
+      refresh_token: refreshToken,
+    }).finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
 }
 
 async function interactiveLogin(cfg: OidcConfig): Promise<Tokens> {
@@ -105,14 +125,14 @@ export async function getAccessToken(interactive = false): Promise<string | null
   if (tokens && Date.now() < tokens.exp) return tokens.access_token;
   if (tokens?.refresh_token) {
     try {
-      const refreshed = await tokenRequest(cfg, {
-        grant_type: 'refresh_token',
-        client_id: cfg.oidc_client_id,
-        refresh_token: tokens.refresh_token,
-      });
+      const refreshed = await refreshTokens(cfg, tokens.refresh_token);
       return refreshed.access_token;
-    } catch {
-      await saveTokens(null);
+    } catch (error) {
+      if (error instanceof TokenEndpointError && (error.status === 400 || error.status === 401)) {
+        await saveTokens(null);
+      } else {
+        throw error;
+      }
     }
   }
   if (!interactive) return null;

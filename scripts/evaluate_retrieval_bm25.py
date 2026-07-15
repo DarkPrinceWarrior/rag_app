@@ -72,6 +72,7 @@ from rag_app.eval.report_attestation import (
     load_private_artifact_attestation,
     verify_private_artifact_attestation,
 )
+from rag_app.eval.reranker_runtime import Precision, RerankerRuntimeEvidence
 from rag_app.eval.retrieval_gate import (
     LoadEvidence,
     MetricDecision,
@@ -122,8 +123,8 @@ _QUERY_EMBEDDING_PROTOCOL: Literal["single-live-vector-per-question-v1"] = (
     "single-live-vector-per-question-v1"
 )
 _LOAD_EMBEDDING_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
-_PINNED_RERANKER_PROTOCOL: Literal["canonical-mean-score-per-query-input-v2"] = (
-    "canonical-mean-score-per-query-input-v2"
+_PINNED_RERANKER_PROTOCOL: Literal["canonical-sequential-rank-consensus-v3"] = (
+    "canonical-sequential-rank-consensus-v3"
 )
 _LOAD_RERANKER_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
 _RERANK_PREWARM_REPLAYS = 21
@@ -256,7 +257,7 @@ class CaseArtifact(_StrictModel):
     question_sha256: str = Field(pattern=_SHA256_PATTERN)
     query_embedding_protocol: Literal["single-live-vector-per-question-v1"]
     query_embedding_sha256: str = Field(pattern=_SHA256_PATTERN)
-    reranker_score_protocol: Literal["live-repeated-v1", "canonical-mean-score-per-query-input-v2"]
+    reranker_score_protocol: Literal["live-repeated-v1", "canonical-sequential-rank-consensus-v3"]
     scope_id: str
     language: Literal["ru", "en", "zh"]
     hop_type: Literal["single", "multi", "cross_document"]
@@ -535,14 +536,17 @@ class RerankerStabilitySlice(_StrictModel):
 
 
 class RerankerScoreEvidence(_StrictModel):
-    protocol: Literal["canonical-mean-score-per-query-input-v2"]
+    protocol: Literal["canonical-sequential-rank-consensus-v3"]
+    scoring_mode: Literal["strictly-sequential-single-pair-v1"]
+    runtime_profile_sha256: str = Field(pattern=_SHA256_PATTERN)
+    precision: Precision
     attempt_id: str = Field(pattern=_SHA256_PATTERN)
     cache_scope: Literal["run"]
     reuse_scope: Literal["tuning+locked+variants+repeats"]
     replay_count: int = Field(ge=3, le=21)
     unique_pair_count: int = Field(ge=1, le=100_000)
     live_pair_score_count: int = Field(ge=1, le=2_100_000)
-    live_batch_count: int = Field(ge=1, le=100_000)
+    live_batch_count: int = Field(ge=1, le=2_100_000)
     candidate_set_count: int = Field(ge=1, le=100_000)
     nonempty_candidate_set_count: int = Field(ge=1, le=100_000)
     min_split_half_rank_agreement: float = Field(ge=0.0, le=1.0)
@@ -568,6 +572,8 @@ class RerankerScoreEvidence(_StrictModel):
             raise ValueError("reranker live score count does not cover every replayed pair")
         if self.live_batch_count < self.replay_count:
             raise ValueError("reranker live-batch count is incomplete")
+        if self.live_batch_count != self.live_pair_score_count:
+            raise ValueError("sequential reranker must issue exactly one pair per live call")
         if self.nonempty_candidate_set_count > self.candidate_set_count:
             raise ValueError("reranker nonempty candidate-set count is invalid")
         if self.single_replay_set_comparison_count != self.nonempty_candidate_set_count * self.replay_count:
@@ -923,6 +929,24 @@ class _PairedReranker(Reranker):
         self._cache_hit_count = 0
         self._cache_miss_count = 0
 
+    async def _score_sequential(self, query: str, texts: Sequence[str]) -> list[float]:
+        """Оценить пары строго по одной в фиксированном порядке.
+
+        Это устраняет зависимость результата от состава batch; `--max-num-seqs=1`
+        отдельно доказывается runtime-evidence временного vLLM.
+        """
+
+        scores: list[float] = []
+        for document in texts:
+            values = await self._delegate.rerank(query, [document])
+            if len(values) != 1:
+                raise RetrievalEvaluationError("sequential reranker returned an invalid pair count")
+            score = float(values[0])
+            if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+                raise RetrievalEvaluationError("live reranker prewarm scores are invalid")
+            scores.append(score)
+        return scores
+
     def config_sha256(self, revision: ModelEndpointRevision) -> str:
         return _sha256_json(
             {
@@ -947,6 +971,8 @@ class _PairedReranker(Reranker):
         *,
         questions: Sequence[str],
         revision: ModelEndpointRevision,
+        runtime_profile_sha256: str = "0000000000000000000000000000000000000000000000000000000000000000",
+        precision: Precision = "float32",
         replay_count: int = _RERANK_PREWARM_REPLAYS,
         attempt_output: Path | None = None,
     ) -> RerankerScoreEvidence:
@@ -982,7 +1008,14 @@ class _PairedReranker(Reranker):
             key=lambda row: (row["case_id"], row["config_sha256"], row["backend"]),
         )
         coverage_manifest_sha256 = _sha256_json(coverage_rows)
-        config_sha256 = self.config_sha256(revision)
+        config_sha256 = _sha256_json(
+            {
+                "reranker": self.config_sha256(revision),
+                "runtime_profile_sha256": runtime_profile_sha256,
+                "precision": precision,
+                "scoring_mode": "strictly-sequential-single-pair-v1",
+            }
+        )
         attempt_id = _sha256_json(
             {
                 "protocol": _PINNED_RERANKER_PROTOCOL,
@@ -1023,7 +1056,7 @@ class _PairedReranker(Reranker):
             )
             snapshots: list[list[float]] = []
             for _ in range(replay_count):
-                scores = await self._delegate.rerank(query, texts)
+                scores = await self._score_sequential(query, texts)
                 if len(scores) != len(texts) or not all(
                     math.isfinite(score) and 0.0 <= score <= 1.0 for score in scores
                 ):
@@ -1031,7 +1064,7 @@ class _PairedReranker(Reranker):
                         f"live reranker prewarm scores are invalid (attempt_id={attempt_id})"
                     )
                 snapshots.append([float(score) for score in scores])
-                live_batch_count += 1
+                live_batch_count += len(texts)
                 live_pair_score_count += len(scores)
             for index, text in enumerate(texts):
                 values = tuple(snapshot[index] for snapshot in snapshots)
@@ -1178,7 +1211,7 @@ class _PairedReranker(Reranker):
                         f"agreement={individual_agreement:.6f})"
                     )
             if (item.case_id, item.split, item.config_sha256, item.backend) in sampled_keys:
-                live_scores = await self._delegate.rerank(
+                live_scores = await self._score_sequential(
                     item.query,
                     [text for _, text in item.candidates],
                 )
@@ -1313,6 +1346,9 @@ class _PairedReranker(Reranker):
         )
         self._evidence = RerankerScoreEvidence(
             protocol=_PINNED_RERANKER_PROTOCOL,
+            scoring_mode="strictly-sequential-single-pair-v1",
+            runtime_profile_sha256=runtime_profile_sha256,
+            precision=precision,
             attempt_id=attempt_id,
             cache_scope="run",
             reuse_scope="tuning+locked+variants+repeats",
@@ -1857,7 +1893,7 @@ def load_resumed_case(
     query_embedding_sha256: str,
     binding: _CaseBinding,
     reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v2"
+        "live-repeated-v1", "canonical-sequential-rank-consensus-v3"
     ] = "live-repeated-v1",
     hmac_key: bytes | None = None,
 ) -> CaseArtifact | None:
@@ -2726,6 +2762,27 @@ def _load_model_revision(
     return artifact.value, artifact.sha256
 
 
+def _load_reranker_runtime_evidence(
+    path: Path,
+    *,
+    expected_model: str,
+    expected_endpoint: str,
+) -> tuple[RerankerRuntimeEvidence, str]:
+    try:
+        artifact = read_private_json(
+            path,
+            parser=lambda raw: RerankerRuntimeEvidence.model_validate_json(raw, strict=True),
+        )
+    except (PrivateArtifactFormatError, ValueError):
+        raise RetrievalEvaluationError("reranker runtime evidence is invalid") from None
+    evidence = artifact.value
+    if evidence.model != expected_model:
+        raise RetrievalEvaluationError("reranker runtime evidence model does not match runtime")
+    if evidence.endpoint.rstrip("/") != expected_endpoint.rstrip("/"):
+        raise RetrievalEvaluationError("reranker runtime evidence endpoint does not match runtime")
+    return evidence, artifact.sha256
+
+
 async def _database_evidence(
     engine: AsyncEngine,
     *,
@@ -2958,7 +3015,7 @@ async def _execute_case(
     repeat_count: int,
     query_embedding_sha256: str,
     reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v2"
+        "live-repeated-v1", "canonical-sequential-rank-consensus-v3"
     ] = "live-repeated-v1",
 ) -> CaseArtifact:
     pool_orders: dict[PoolName, list[tuple[uuid.UUID, ...]]] = defaultdict(list)
@@ -3175,7 +3232,7 @@ async def _run_or_resume_case(
     repeat_count: int,
     query_embedding_sha256: str,
     reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v2"
+        "live-repeated-v1", "canonical-sequential-rank-consensus-v3"
     ] = "live-repeated-v1",
     hmac_key: bytes | None = None,
 ) -> CaseArtifact:
@@ -4239,6 +4296,8 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
         raise RetrievalEvaluationError(
             "qualification must generate load evidence and the signed report in one fresh run"
         )
+    if mode == "qualification" and getattr(args, "reranker_runtime_evidence", None) is None:
+        raise RetrievalEvaluationError("qualification requires reranker runtime evidence")
     if mode == "qualification" and any(work_dir.iterdir()):
         raise RetrievalEvaluationError("qualification requires an empty fresh work directory")
 
@@ -4338,6 +4397,15 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             embedding_artifact_sha256=embedding_artifact_sha256,
             reranker_artifact_sha256=reranker_artifact_sha256,
         )
+        runtime_profile_sha256 = "0" * 64
+        reranker_precision: Precision = "float32"
+        if getattr(args, "reranker_runtime_evidence", None) is not None:
+            runtime_profile, runtime_profile_sha256 = _load_reranker_runtime_evidence(
+                args.reranker_runtime_evidence,
+                expected_model=settings.rerank_model,
+                expected_endpoint=settings.rerank_base_url,
+            )
+            reranker_precision = runtime_profile.precision
         evidence_paths = _evidence_paths_from_args(
             args.evidence,
             mode=mode,
@@ -4403,6 +4471,8 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             collected_rerank_sets,
             questions=[record.question for record in records],
             revision=reranker_revision,
+            runtime_profile_sha256=runtime_profile_sha256,
+            precision=reranker_precision,
             attempt_output=(work_dir / "reranker-attempt.json" if mode == "qualification" else None),
         )
         runtime_binding_sha256 = _sha256_json(
@@ -4792,6 +4862,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--extension-binary-path", type=Path, required=True)
     parser.add_argument("--embedding-revision-evidence", type=Path, required=True)
     parser.add_argument("--reranker-revision-evidence", type=Path, required=True)
+    parser.add_argument("--reranker-runtime-evidence", type=Path)
     parser.add_argument("--hmac-key", type=Path)
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--operational-evidence", type=Path)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check } from 'lucide-react'
 import { api, type Segment } from '@/lib/api'
 import { Markdown } from '@/components/Markdown'
@@ -50,8 +50,10 @@ function LoadedSegmentEditor({
   sourceLang?: string | null
 }) {
   const navigate = Route.useNavigate()
+  const queryClient = useQueryClient()
   const [text, setText] = useState(target.translated_text ?? '')
   const [needsReview, setNeedsReview] = useState(target.needs_review)
+  const [memoryCandidate, setMemoryCandidate] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -63,7 +65,10 @@ function LoadedSegmentEditor({
     setSaving(true)
     setError('')
     try {
-      await api.patchSegment(target.id, text, needsReview)
+      const updated = await api.patchSegment(target.id, text, needsReview, memoryCandidate)
+      queryClient.setQueryData<Segment[]>(['segments', id], (segments) =>
+        segments?.map((segment) => (segment.id === updated.id ? updated : segment)),
+      )
       goBack()
     } catch {
       setError('Ошибка сохранения')
@@ -89,8 +94,14 @@ function LoadedSegmentEditor({
                 Требует проверки
               </span>
             )}
+            {(target.validation?.translation_memory as { origin?: string } | undefined)?.origin === 'exact' && (
+              <span className="inline-flex w-fit items-center rounded-full bg-[#2d9560]/10 px-2 py-1 text-[11px] font-medium text-[#23764b]">
+                Из утверждённой памяти переводов
+              </span>
+            )}
             <textarea
               autoFocus
+              aria-label="Перевод"
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={Math.max(3, Math.ceil(text.length / 60))}
@@ -118,6 +129,30 @@ function LoadedSegmentEditor({
                 {needsReview && <Check className="h-3 w-3 text-white" />}
               </span>
               Требует проверки
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMemoryCandidate((value) => !value)
+                if (!memoryCandidate) setNeedsReview(false)
+              }}
+              className={cn(
+                'flex w-fit items-center gap-2 rounded-lg px-4 py-3 text-[16px] font-medium transition',
+                memoryCandidate
+                  ? 'bg-[#2d9560]/10 text-[#23764b]'
+                  : 'bg-[#222226]/[0.02] text-[#424247] hover:bg-[#222226]/[0.05]',
+              )}
+            >
+              <span
+                className={cn(
+                  'flex h-5 w-5 shrink-0 items-center justify-center rounded border',
+                  memoryCandidate ? 'border-[#23764b] bg-[#23764b]' : 'border-[#e5e5e5] bg-white',
+                )}
+              >
+                {memoryCandidate && <Check className="h-3 w-3 text-white" />}
+              </span>
+              Создать кандидата памяти переводов
             </button>
 
             <div className="h-px bg-[#e5e5e5]" />

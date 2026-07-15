@@ -50,9 +50,12 @@ web/stats*.html
 # Демо-скриншоты Playwright
 demo-*.png
 spa-*.png
+web/test-results/
+web/playwright-report/
 
 # Секреты деплоя (TLS-сертификаты Keycloak и т.п.)
 deploy/keycloak/certs/
+deploy/monitoring/secrets/
 *.crt
 *.key
 *.pem

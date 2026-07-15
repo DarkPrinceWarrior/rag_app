@@ -89,9 +89,9 @@ open-weight модели, ни один байт документов не по�
 - `src/rag_app/pipeline/` — парсинг, сегментация, перевод, DOCX-экспорт.
 - `src/rag_app/db/models.py` — схема Postgres (documents, segments, …).
 - `docker-compose.yml` — инфраструктура: Postgres 17 + pgvector, Redis, MinIO.
-- `deploy/` — systemd-юниты vLLM и скрипты раскладки моделей по GPU (см.
-  `docs/roadmap.md` § 4.3: GPU0–1 Qwen3-32B, GPU2 Qwen3-VL, GPU3 Hunyuan-MT,
-  GPU4 TEI/OCR, GPU5 резерв).
+- `deploy/` — systemd-юниты приложения/моделей и эксплуатационные scaffold.
+  `docs/roadmap.md` § 4.3 — исторический снимок; эталон текущей раскладки —
+  `deploy/*.service` и блок статуса ниже.
 
 Статус: **все 5 этапов MVP завершены** (пайплайн перевода PDF/OOXML/сканов,
 adaptive agentic-RAG-чат с цитатами — классификатор single/multi-hop + tool-цикл
@@ -113,14 +113,14 @@ LLM-сервисы на a100 (раскладка на 2026-06-18, roadmap § 12.
 даёт мусор; `doc_translate_backend=hymt2`, без Qwen-фолбэка); **Qwen3-Embedding-8B**
 GPU4 `:8002` (dim 1024 MRL, `--enforce-eager --dtype float16` обязательны на Ampere;
 recall@5 0.975 vs 0.887 у 0.6B на реальной библиотеке), Qwen3-Reranker-4B GPU4
-`:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + dots.mocr GPU0
-`:8120` (альт., перенесён с GPU4 для разгрузки 2026-06-18); PaddleOCR-VL 1.6 —
-on-demand (3-й парсер на выбор, `parser_backend`). GPU0 занял dots.mocr (после
-ретайра Qwen3-32B-AWQ фолбэка); **свободна GPU2** (отдана соседнему приложению
-Alma; генеративный Qwen3-VL-8B `:8008` погашен) — единственный кандидат под
-генеративный VL-апгрейд. **Визуальный эмбеддер Qwen3-VL-Embedding-8B GPU5 `:8007`
-запаркован** (`visual_enabled=false` — почти не использовался; ревайв = отдельная
-задача). Правило выбора моделей:
+`:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + постоянные
+dots.mocr GPU0 `:8120` и PaddleOCR-VL 1.6 GPU0 `:8118` (альтернативы по
+`parser_backend`). На GPU2 совместно с приложением Alma активен визуальный
+контур: Qwen3-VL-Embedding-8B `:8007` + Qwen3-VL-Reranker-2B `:8009`;
+генеративный Qwen3-VL-8B `:8008` погашен, его роль выполняет мультимодальный
+Qwen3.5 на GPU3. Фактическая раскладка: GPU0 — dots/Paddle, GPU1 — Hy-MT2,
+GPU2 — visual embed/rerank, GPU3 — Qwen3.5, GPU4 — text embed/rerank, GPU5 —
+MinerU. Правило выбора моделей:
 **on-prem+коммерция → только Apache-2.0** (jina-v4/Nemotron — non-commercial, мимо).
 systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1.
 Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,

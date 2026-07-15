@@ -117,7 +117,12 @@ class AgentTools:
         doc = self.document_id
         if document_id:
             try:
-                doc = uuid.UUID(document_id)
+                requested_doc = uuid.UUID(document_id)
+                if self.document_ids:
+                    if requested_doc in self.document_ids:
+                        doc = requested_doc
+                elif self.document_id is None or requested_doc == self.document_id:
+                    doc = requested_doc
             except ValueError:
                 pass
 
@@ -210,7 +215,12 @@ class AgentTools:
         doc = self.document_id
         if document_id:
             try:
-                doc = uuid.UUID(document_id)
+                requested_doc = uuid.UUID(document_id)
+                if self.document_ids:
+                    if requested_doc in self.document_ids:
+                        doc = requested_doc
+                elif self.document_id is None or requested_doc == self.document_id:
+                    doc = requested_doc
             except ValueError:
                 pass
 
@@ -225,6 +235,8 @@ class AgentTools:
             )
             if doc is not None:
                 stmt = stmt.where(Chunk.document_id == doc)
+            elif self.document_ids:
+                stmt = stmt.where(Chunk.document_id.in_(self.document_ids))
             elif self.folder_id is not None:
                 stmt = stmt.where(Document.folder_id == self.folder_id)
             if self.owner_sub is not None:

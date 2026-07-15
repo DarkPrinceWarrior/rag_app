@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Воркхорс Qwen3.5-35B-A3B-GPTQ-Int4 на GPU3, порт 8006 (от root, на сервере).
+# RAG/analysis/VL Qwen3.5-35B-A3B-GPTQ-Int4 на GPU3, порт 8006 (от root, на сервере).
 # Веса: /root/services/vllm-qwen32b/.venv/bin/hf download \
 #         Qwen/Qwen3.5-35B-A3B-GPTQ-Int4 --local-dir /root/models/Qwen3.5-35B-A3B-GPTQ-Int4
 # Освободить GPU3: systemctl disable --now vllm-hunyuan (его роль у HY-MT1.5 :8005).

@@ -5,12 +5,19 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 
 from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
-from rag_app.db.models import Document, DocumentStatus, Segment, SegmentVersion
+from rag_app.db.models import (
+    Document,
+    DocumentStatus,
+    Segment,
+    SegmentVersion,
+    TranslationMemory,
+)
+from rag_app.pipeline.translation_memory import normalize_source, source_hash
 
 router = APIRouter(prefix="/api", tags=["segments"], dependencies=[require_user])
 
@@ -70,6 +77,8 @@ class SegmentPatch(BaseModel):
     # ручной флаг «Требует проверки» (отдельный экран правки, Figma 44:775):
     # если не передан — правка текста снимает флаг автоматически, как раньше.
     needs_review: bool | None = None
+    memory_candidate: bool = False
+    memory_domain: str = Field(default="technical", min_length=2, max_length=128)
 
 
 @router.get("/documents/{doc_id}/segments", response_model=list[SegmentOut])
@@ -118,21 +127,61 @@ async def patch_segment(request: Request, segment_id: uuid.UUID, body: SegmentPa
         seg = await _segment_or_404(session, segment_id, user)
         old = seg.translated_text
         changed = old != body.translated_text
+        if body.memory_candidate and not changed:
+            raise HTTPException(409, "кандидат памяти требует новой ручной правки")
+        if body.memory_candidate and (body.needs_review is True or not body.translated_text.strip()):
+            raise HTTPException(422, "в память можно отправить только подтверждённый перевод")
+        candidate_created = False
         if changed:  # история правок (ТЗ §4.7.2): версионируем только реальное изменение
-            session.add(
-                SegmentVersion(
-                    segment_id=seg.id, document_id=seg.document_id,
-                    old_text=old, new_text=body.translated_text,
-                    editor_sub=user.sub, editor_name=user.username,
-                )
+            version = SegmentVersion(
+                segment_id=seg.id,
+                document_id=seg.document_id,
+                old_text=old,
+                new_text=body.translated_text,
+                editor_sub=user.sub,
+                editor_name=user.username,
             )
+            session.add(version)
+            await session.flush()
+            if body.memory_candidate:
+                doc = await session.get(Document, seg.document_id)
+                if doc is None:
+                    raise HTTPException(404, "документ не найден")
+                if doc.source_lang == doc.target_lang:
+                    raise HTTPException(422, "память не принимает identity-переводы")
+                normalized = normalize_source(seg.source_text)
+                session.add(
+                    TranslationMemory(
+                        source_text=seg.source_text,
+                        source_normalized=normalized,
+                        source_hash=source_hash(seg.source_text),
+                        approved_translation=body.translated_text,
+                        source_lang=doc.source_lang,
+                        target_lang=doc.target_lang,
+                        domain=body.memory_domain.strip(),
+                        project=doc.project_object,
+                        folder_id=doc.folder_id,
+                        owner_sub=doc.owner_sub,
+                        editor_sub=user.sub,
+                        editor_name=user.username,
+                        status="candidate",
+                        segment_version_id=version.id,
+                        document_id=doc.id,
+                        segment_id=seg.id,
+                    )
+                )
+                candidate_created = True
         seg.translated_text = body.translated_text
         seg.needs_review = body.needs_review if body.needs_review is not None else False
         await session.commit()
         await session.refresh(seg)
     await audit(
         request, "segment_edit", "segment", str(segment_id),
-        {"document_id": str(seg.document_id), "changed": changed},
+        {
+            "document_id": str(seg.document_id),
+            "changed": changed,
+            "translation_memory_candidate": candidate_created,
+        },
     )
     return SegmentOut.model_validate(seg)
 
@@ -176,11 +225,34 @@ async def reexport_document(request: Request, doc_id: uuid.UUID) -> dict:
             raise HTTPException(404, "документ не найден")
         if doc.status not in (DocumentStatus.done, DocumentStatus.error):
             raise HTTPException(409, f"документ в работе (статус {doc.status.value})")
-        await session.execute(
-            update(Document).where(Document.id == doc_id).values(status=DocumentStatus.translated)
+        previous_status = doc.status
+        previous_error = doc.error
+        parse_revision = doc.parse_revision
+        claimed = await session.execute(
+            update(Document)
+            .where(Document.id == doc_id, Document.status == previous_status)
+            .values(status=DocumentStatus.translated, error=None)
         )
+        if claimed.rowcount != 1:
+            raise HTTPException(409, "документ уже поставлен на повторный экспорт")
         await session.commit()
-    await request.app.state.arq.enqueue_job(
-        "export_document", str(doc_id), _job_id=f"export:{doc_id}:{uuid.uuid4().hex[:8]}"
-    )
+
+    try:
+        job = await request.app.state.arq.enqueue_job(
+            "export_document",
+            str(doc_id),
+            parse_revision,
+            _job_id=f"export:{doc_id}:{parse_revision}:{uuid.uuid4().hex[:8]}",
+        )
+        if job is None:
+            raise RuntimeError("ARQ отклонил задачу")
+    except Exception:
+        async with request.app.state.sessionmaker() as session:
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_id, Document.status == DocumentStatus.translated)
+                .values(status=previous_status, error=previous_error)
+            )
+            await session.commit()
+        raise HTTPException(503, "не удалось поставить повторный экспорт в очередь") from None
     return {"status": "queued"}

@@ -254,10 +254,11 @@ export const api = {
     jsend<{ status: string; ocr_lang: string }>(`/api/documents/${id}/reparse-ocr`, 'POST', { lang }),
   reparse: (id: string, backend: string) =>
     jsend<{ status: string; backend: string }>(`/api/documents/${id}/reparse`, 'POST', { backend }),
-  patchSegment: (segId: string, text: string, needsReview?: boolean) =>
+  patchSegment: (segId: string, text: string, needsReview?: boolean, memoryCandidate = false) =>
     jsend<Segment>(`/api/segments/${segId}`, 'PATCH', {
       translated_text: text,
       ...(needsReview !== undefined ? { needs_review: needsReview } : {}),
+      memory_candidate: memoryCandidate,
     }),
 
   listFolders: () => jget<Folder[]>('/api/folders'),

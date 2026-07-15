@@ -14,10 +14,11 @@ import tempfile
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from rag_app.config import settings
 from rag_app.db.models import (
@@ -76,6 +77,16 @@ from rag_app.pipeline.parse import (
 from rag_app.pipeline.parse_quality import evaluate_parse, quality_metadata
 from rag_app.pipeline.scan_pdf import build_scan_overlay
 from rag_app.pipeline.segments import SegmentDraft, content_list_to_segments
+from rag_app.pipeline.technical_entities import (
+    audit_unconfirmed_entities,
+    protect_entities,
+    restore_entities,
+)
+from rag_app.pipeline.translation_memory import (
+    TranslationMemoryMatch,
+    TranslationMemoryScope,
+    TranslationMemoryService,
+)
 from rag_app.pipeline.validate import ValidationResult, validate_numbers, validate_standards
 from rag_app.rag.chunking import segments_to_chunks
 from rag_app.storage.s3 import Storage
@@ -108,15 +119,24 @@ async def _get_doc(ctx: dict, doc_id: uuid.UUID) -> Document:
 
 
 async def _claim_parse(ctx: dict, doc_id: uuid.UUID, parse_revision: int | None) -> int | None:
-    """Атомарно занять uploaded-ревизию; дубль или старая задача вернет None."""
+    """Атомарно занять или перезахватить ту же ревизию после прерывания."""
 
     async with ctx["sessionmaker"]() as session:
-        stmt = update(Document).where(
-            Document.id == doc_id,
-            Document.status == DocumentStatus.uploaded,
-        )
-        if parse_revision is not None:
-            stmt = stmt.where(Document.parse_revision == parse_revision)
+        stmt = update(Document).where(Document.id == doc_id)
+        if parse_revision is None:
+            # Совместимость со старыми задачами без ревизии: только первый claim.
+            stmt = stmt.where(Document.status == DocumentStatus.uploaded)
+        else:
+            stmt = stmt.where(
+                Document.parse_revision == parse_revision,
+                or_(
+                    Document.status.in_((DocumentStatus.uploaded, DocumentStatus.parsing)),
+                    and_(
+                        Document.status == DocumentStatus.error,
+                        Document.error.like("парсинг:%"),
+                    ),
+                ),
+            )
         claimed = (
             await session.execute(
                 stmt.values(status=DocumentStatus.parsing, error=None).returning(
@@ -126,6 +146,44 @@ async def _claim_parse(ctx: dict, doc_id: uuid.UUID, parse_revision: int | None)
         ).scalar_one_or_none()
         await session.commit()
         return claimed
+
+
+async def _claim_document_stage(
+    ctx: dict,
+    doc_id: uuid.UUID,
+    parse_revision: int | None,
+    *,
+    ready: DocumentStatus,
+    running: DocumentStatus,
+    error_prefix: str,
+) -> bool:
+    """Revision-safe claim для downstream-стадии; legacy job остаётся совместимым."""
+
+    if parse_revision is None:
+        await _set_status(ctx, doc_id, running)
+        return True
+
+    async with ctx["sessionmaker"]() as session:
+        claimed = (
+            await session.execute(
+                update(Document)
+                .where(
+                    Document.id == doc_id,
+                    Document.parse_revision == parse_revision,
+                    or_(
+                        Document.status.in_((ready, running)),
+                        and_(
+                            Document.status == DocumentStatus.error,
+                            Document.error.like(f"{error_prefix}%"),
+                        ),
+                    ),
+                )
+                .values(status=running, error=None)
+                .returning(Document.id)
+            )
+        ).scalar_one_or_none()
+        await session.commit()
+    return claimed is not None
 
 
 async def _upload_segment_images(
@@ -592,17 +650,36 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 raise RuntimeError(f"устаревшая ревизия парсинга: {claimed_revision}")
             await session.commit()
 
-        await ctx["redis"].enqueue_job(
-            "translate_document", doc_id_str, _job_id=f"translate:{doc_id}:{uuid.uuid4().hex[:8]}"
+        next_job = await ctx["redis"].enqueue_job(
+            "translate_document",
+            doc_id_str,
+            claimed_revision,
+            _job_id=f"translate:{doc_id}:{claimed_revision}",
         )
+        if next_job is None:
+            raise RuntimeError("очередь отклонила задачу перевода")
         # OOXML: ранний рендер оригинала в PDF параллельно переводу — чтобы
         # «как в Microsoft» (дефолт DOCX) открывался сразу, не ждя экспорта.
         if kind in (DocumentKind.docx, DocumentKind.xlsx, DocumentKind.pptx):
-            await ctx["redis"].enqueue_job(
-                "render_original_view", doc_id_str, _job_id=f"vieworig:{doc_id}:{uuid.uuid4().hex[:8]}"
-            )
+            try:
+                await ctx["redis"].enqueue_job(
+                    "render_original_view",
+                    doc_id_str,
+                    _job_id=f"vieworig:{doc_id}:{claimed_revision}",
+                )
+            except Exception as exc:  # ранний preview не блокирует основной pipeline
+                logger.warning("render original %s enqueue failed: %s", doc_id, exc)
         return f"parsed [{kind.value}]: {len(drafts)} segments, {n_pages} pages"
 
+    except asyncio.CancelledError:
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.error,
+            "парсинг: задача отменена или воркер остановлен",
+            parse_revision=claimed_revision,
+        )
+        raise
     except Exception as exc:
         logger.exception("parse %s failed", doc_id)
         await _set_status(
@@ -620,7 +697,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
 async def _translate_validated(
     translator: Translator, text: str, context: SegmentContext
 ) -> tuple[str, ValidationResult]:
-    """Перевод + числовая валидация; один ре-перевод с фидбеком (roadmap § 3.4 п.3)."""
+    """Перевод + детерминированная защита сущностей и один повтор с фидбеком."""
     # Документ уже на целевом языке (русский → русский) — переводить нечего,
     # сегмент остаётся как есть. Иначе — гейт по целевому скрипту: переводим
     # любой не-русский текст, включая английские вставки в китайском документе.
@@ -628,10 +705,92 @@ async def _translate_validated(
         text, context.source_lang, context.target_lang
     ):
         return text, ValidationResult(ok=True)
-    translated = await translator.translate(text, context)
-    result = validate_numbers(text, translated)
-    result.standards = validate_standards(text, translated)  # §4.3.5
-    result.ok = result.ok and not result.standards
+    tm_mode = settings.translation_memory_mode
+    exact = context.translation_memory_exact
+    nearest_count = len(context.translation_memory_examples)
+    exact_rejected = False
+    if tm_mode == "enforce" and exact is not None:
+        translated = exact[1]
+        result = validate_numbers(text, translated)
+        result.standards = validate_standards(text, translated)
+        result.ok = result.ok and not result.standards
+        result.translation_memory = {
+            "schema_version": 1,
+            "mode": tm_mode,
+            "origin": "exact",
+            "entry_id": exact[0],
+            "exact_candidate": True,
+            "exact_rejected": not result.ok,
+            "nearest_candidates": nearest_count,
+        }
+        if result.ok:
+            logger.info("translation_memory mode=enforce origin=exact entry_id=%s", exact[0])
+            return translated, result
+        exact_rejected = True
+    mode = settings.translation_entity_guard_mode
+    protected = protect_entities(text) if mode != "off" else None
+
+    async def run(feedback: str | None = None) -> tuple[str, ValidationResult]:
+        model_input = protected.text if mode == "enforce" and protected is not None else text
+        raw = await translator.translate(model_input, context, feedback=feedback)
+        restoration = restore_entities(raw, protected) if mode == "enforce" and protected else None
+        translated = restoration.text if restoration else raw
+        result = validate_numbers(text, translated)
+        result.standards = validate_standards(text, translated)  # §4.3.5
+        result.ok = result.ok and not result.standards
+        if tm_mode != "off":
+            result.translation_memory = {
+                "schema_version": 1,
+                "mode": tm_mode,
+                "origin": "model",
+                "entry_id": None,
+                "exact_candidate": exact is not None,
+                "exact_rejected": exact_rejected,
+                "nearest_candidates": nearest_count,
+            }
+            logger.info(
+                "translation_memory mode=%s origin=model exact_candidate=%s "
+                "exact_rejected=%s nearest_candidates=%d",
+                tm_mode,
+                exact is not None,
+                exact_rejected,
+                nearest_count,
+            )
+
+        if protected is not None:
+            unconfirmed = audit_unconfirmed_entities(text, translated)
+            unconfirmed_total = sum(len(values) for values in unconfirmed.values())
+            protected_total = len(protected.entities)
+            placeholder_errors = 0
+            if restoration is not None:
+                placeholder_errors = (
+                    len(restoration.missing_tokens)
+                    + len(restoration.duplicated_tokens)
+                    + len(restoration.unknown_tokens)
+                )
+                result.ok = result.ok and restoration.ok
+            result.entity_guard = {
+                "schema_version": 1,
+                "mode": mode,
+                "protected": protected.counts,
+                "protected_total": protected_total,
+                "unconfirmed": {kind: len(values) for kind, values in unconfirmed.items()},
+                "unconfirmed_total": unconfirmed_total,
+                "unconfirmed_rate": unconfirmed_total / protected_total if protected_total else 0.0,
+                "placeholder_errors": placeholder_errors,
+            }
+            logger.info(
+                "translation_entity_guard mode=%s protected=%d unconfirmed=%d "
+                "unconfirmed_rate=%.6f placeholder_errors=%d",
+                mode,
+                protected_total,
+                unconfirmed_total,
+                result.entity_guard["unconfirmed_rate"],
+                placeholder_errors,
+            )
+        return translated, result
+
+    translated, result = await run()
     if result.ok:
         return translated, result
     issues = []
@@ -639,18 +798,62 @@ async def _translate_validated(
         issues.append(f"числа искажены/потеряны: {', '.join(result.missing)}")
     if result.standards:
         issues.append(f"обозначения стандартов искажены/потеряны: {', '.join(result.standards)}")
+    if result.entity_guard and result.entity_guard["placeholder_errors"]:
+        issues.append("защитные плейсхолдеры технических сущностей потеряны или дублированы")
     feedback = (
         f"{'; '.join(issues)}. Перенеси ВСЕ числа, единицы измерения и обозначения "
         "стандартов (ГОСТ/ISO/API/ASTM и т.п.) без изменений."
     )
-    translated2 = await translator.translate(text, context, feedback=feedback)
-    result2 = validate_numbers(text, translated2)
-    result2.standards = validate_standards(text, translated2)
-    result2.ok = result2.ok and not result2.standards
-    return translated2, result2
+    return await run(feedback)
 
 
-async def _translate_segment(translator: Translator, seg: Segment, context: SegmentContext) -> dict[str, Any]:
+def _context_with_memory(
+    context: SegmentContext,
+    text: str,
+    memory_matches: Mapping[str, TranslationMemoryMatch] | None,
+) -> SegmentContext:
+    match = memory_matches.get(text) if memory_matches else None
+    if match is None:
+        return context
+    exact = (
+        (str(match.exact.entry_id), match.exact.translation)
+        if match.exact is not None
+        else None
+    )
+    examples = [
+        (item.source_text, item.translation, item.score) for item in match.nearest
+    ]
+    return replace(
+        context,
+        translation_memory_exact=exact,
+        translation_memory_examples=examples,
+    )
+
+
+def _translation_unit_texts(seg: Segment) -> list[str]:
+    if seg.kind != SegmentKind.table:
+        return [seg.source_text]
+    meta = seg.meta or {}
+    values: list[str] = []
+    caption = meta.get("caption") or ""
+    if caption:
+        values.append(caption)
+    values.extend(cell for row in (meta.get("table_rows") or []) for cell in row if cell)
+    values.extend(
+        cell.get("text", "")
+        for row in (meta.get("table_cells") or [])
+        for cell in row
+        if cell.get("text")
+    )
+    return list(dict.fromkeys(values))
+
+
+async def _translate_segment(
+    translator: Translator,
+    seg: Segment,
+    context: SegmentContext,
+    memory_matches: Mapping[str, TranslationMemoryMatch] | None = None,
+) -> dict[str, Any]:
     """Возвращает values для UPDATE сегмента."""
     if seg.kind == SegmentKind.table:
         grid: list[list[str]] = seg.meta.get("table_rows") or []
@@ -658,11 +861,55 @@ async def _translate_segment(translator: Translator, seg: Segment, context: Segm
         caption: str = seg.meta.get("caption") or ""
         failures: list[dict[str, Any]] = []
         cache: dict[str, str] = {}  # перевод каждой уникальной ячейки один раз
+        guard_aggregate: dict[str, Any] = {
+            "schema_version": 1,
+            "mode": settings.translation_entity_guard_mode,
+            "observations": 0,
+            "protected": {},
+            "protected_total": 0,
+            "unconfirmed": {},
+            "unconfirmed_total": 0,
+            "unconfirmed_rate": 0.0,
+            "placeholder_errors": 0,
+        }
+        memory_aggregate: dict[str, Any] = {
+            "schema_version": 1,
+            "mode": settings.translation_memory_mode,
+            "observations": 0,
+            "origins": {},
+            "exact_candidates": 0,
+            "exact_rejected": 0,
+            "nearest_candidates": 0,
+        }
 
         async def tr(text: str, loc: dict[str, Any] | None = None) -> str:
             if text not in cache:
-                ru, vr = await _translate_validated(translator, text, context)
+                local_context = _context_with_memory(context, text, memory_matches)
+                ru, vr = await _translate_validated(translator, text, local_context)
                 cache[text] = ru
+                if vr.entity_guard is not None:
+                    guard_aggregate["observations"] += 1
+                    for field in ("protected", "unconfirmed"):
+                        for kind, count in vr.entity_guard[field].items():
+                            current = guard_aggregate[field].get(kind, 0)
+                            guard_aggregate[field][kind] = current + count
+                    for field in ("protected_total", "unconfirmed_total", "placeholder_errors"):
+                        guard_aggregate[field] += vr.entity_guard[field]
+                if vr.translation_memory is not None:
+                    memory_aggregate["observations"] += 1
+                    origin = vr.translation_memory["origin"]
+                    memory_aggregate["origins"][origin] = (
+                        memory_aggregate["origins"].get(origin, 0) + 1
+                    )
+                    memory_aggregate["exact_candidates"] += int(
+                        vr.translation_memory["exact_candidate"]
+                    )
+                    memory_aggregate["exact_rejected"] += int(
+                        vr.translation_memory["exact_rejected"]
+                    )
+                    memory_aggregate["nearest_candidates"] += vr.translation_memory[
+                        "nearest_candidates"
+                    ]
                 if not vr.ok and loc is not None:
                     failures.append({**loc, **vr.as_dict()})
             return cache[text]
@@ -694,26 +941,55 @@ async def _translate_segment(translator: Translator, seg: Segment, context: Segm
         else:
             preview = "\n".join(" | ".join(r) for r in rows_ru)
 
+        validation: dict[str, Any] = {}
+        if failures:
+            validation["cells"] = failures
+        if guard_aggregate["observations"]:
+            protected_total = guard_aggregate["protected_total"]
+            guard_aggregate["unconfirmed_rate"] = (
+                guard_aggregate["unconfirmed_total"] / protected_total
+                if protected_total
+                else 0.0
+            )
+            validation["entity_guard"] = guard_aggregate
+        if memory_aggregate["observations"]:
+            validation["translation_memory"] = memory_aggregate
         return {
             "translated_text": (meta["caption_ru"] + "\n" + preview).strip(),
             "meta": meta,
             "needs_review": bool(failures),
-            "validation": {"cells": failures} if failures else None,
+            "validation": validation or None,
         }
 
-    translated, vr = await _translate_validated(translator, seg.source_text, context)
+    local_context = _context_with_memory(context, seg.source_text, memory_matches)
+    translated, vr = await _translate_validated(translator, seg.source_text, local_context)
     return {
         "translated_text": translated,
         "needs_review": not vr.ok,
-        "validation": None if vr.ok else vr.as_dict(),
+        "validation": (
+            vr.as_dict()
+            if vr.entity_guard is not None or vr.translation_memory is not None or not vr.ok
+            else None
+        ),
     }
 
 
-async def translate_document(ctx: dict, doc_id_str: str) -> str:
+async def translate_document(
+    ctx: dict, doc_id_str: str, parse_revision: int | None = None
+) -> str:
     doc_id = uuid.UUID(doc_id_str)
     translator: Translator = ctx["translator"]
     t_task = time.monotonic()
-    await _set_status(ctx, doc_id, DocumentStatus.translating)
+    claimed = await _claim_document_stage(
+        ctx,
+        doc_id,
+        parse_revision,
+        ready=DocumentStatus.parsed,
+        running=DocumentStatus.translating,
+        error_prefix="перевод:",
+    )
+    if not claimed:
+        return f"skipped translate revision={parse_revision}"
 
     doc0 = await _get_doc(ctx, doc_id)
 
@@ -775,6 +1051,23 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
 
     todo = [s for s in segments if s.kind in TRANSLATABLE_KINDS and s.translated_text is None]
     done_count = len([s for s in segments if s.kind in TRANSLATABLE_KINDS]) - len(todo)
+    memory_matches: dict[str, TranslationMemoryMatch] = {}
+    if settings.translation_memory_mode != "off" and src_lang != tgt_lang:
+        memory_texts = list(
+            dict.fromkeys(text for seg in todo for text in _translation_unit_texts(seg) if text.strip())
+        )
+        memory_matches = await TranslationMemoryService(
+            ctx["sessionmaker"], ctx["embedder"]
+        ).lookup_batch(
+            memory_texts,
+            source_lang=src_lang,
+            target_lang=tgt_lang,
+            scope=TranslationMemoryScope(
+                owner_sub=doc0.owner_sub,
+                folder_id=doc0.folder_id,
+                project=doc0.project_object,
+            ),
+        )
     logger.info("translate %s: %d сегментов (готово ранее: %d)", doc_id, len(todo), done_count)
 
     sem = asyncio.Semaphore(settings.translate_concurrency)
@@ -783,7 +1076,9 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
     async def work(seg: Segment) -> tuple[uuid.UUID, dict[str, Any]] | None:
         async with sem:
             try:
-                return seg.id, await _translate_segment(translator, seg, contexts[seg.id])
+                return seg.id, await _translate_segment(
+                    translator, seg, contexts[seg.id], memory_matches
+                )
             except Exception as exc:
                 failures.append(f"сегмент {seg.idx}: {exc}")
                 logger.error("translate %s seg %d: %s", doc_id, seg.idx, exc)
@@ -824,15 +1119,40 @@ async def translate_document(ctx: dict, doc_id_str: str) -> str:
         log_translate_trace(
             doc_id_str, doc.filename, doc.kind, len(todo), time.monotonic() - t_task, settings.llm_model
         )
-        await _set_status(ctx, doc_id, DocumentStatus.translated)
-        await ctx["redis"].enqueue_job(
-            "export_document", doc_id_str, _job_id=f"export:{doc_id}:{uuid.uuid4().hex[:8]}"
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.translated,
+            parse_revision=parse_revision,
         )
+        next_job = await ctx["redis"].enqueue_job(
+            "export_document",
+            doc_id_str,
+            parse_revision,
+            _job_id=f"export:{doc_id}:{parse_revision}",
+        )
+        if next_job is None:
+            raise RuntimeError("очередь отклонила задачу экспорта")
         return f"translated: {len(todo)} segments"
 
+    except asyncio.CancelledError:
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.error,
+            "перевод: задача отменена или воркер остановлен",
+            parse_revision=parse_revision,
+        )
+        raise
     except Exception as exc:
         logger.exception("translate %s failed", doc_id)
-        await _set_status(ctx, doc_id, DocumentStatus.error, f"перевод: {exc}")
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.error,
+            f"перевод: {exc}",
+            parse_revision=parse_revision,
+        )
         raise
 
 
@@ -950,13 +1270,33 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
         if seg.kind == SegmentKind.paragraph:
             prev_text = seg.source_text
 
+    memory_matches: dict[str, TranslationMemoryMatch] = {}
+    if settings.translation_memory_mode != "off" and src_lang != target_lang:
+        memory_texts = list(
+            dict.fromkeys(text for seg in todo for text in _translation_unit_texts(seg) if text.strip())
+        )
+        memory_matches = await TranslationMemoryService(
+            ctx["sessionmaker"], ctx["embedder"]
+        ).lookup_batch(
+            memory_texts,
+            source_lang=src_lang,
+            target_lang=target_lang,
+            scope=TranslationMemoryScope(
+                owner_sub=doc.owner_sub,
+                folder_id=doc.folder_id,
+                project=doc.project_object,
+            ),
+        )
+
     sem = asyncio.Semaphore(settings.translate_concurrency)
     failures: list[str] = []
 
     async def work(seg: Segment) -> tuple[uuid.UUID, dict[str, Any]] | None:
         async with sem:
             try:
-                return seg.id, await _translate_segment(translator, seg, contexts[seg.id])
+                return seg.id, await _translate_segment(
+                    translator, seg, contexts[seg.id], memory_matches
+                )
             except Exception as exc:
                 failures.append(f"сегмент {seg.idx}: {exc}")
                 logger.error("translate %s->%s seg %d: %s", doc_id, target_lang, seg.idx, exc)
@@ -1003,6 +1343,16 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
             doc_id, target_lang, len(data), time.monotonic() - t_task,
         )
         return f"translated {doc_id}->{target_lang}: {len(data)} segments"
+    except asyncio.CancelledError:
+        await _set_translation_status(
+            ctx,
+            doc_id,
+            target_lang,
+            "error",
+            error="задача отменена или воркер остановлен",
+            data=data,
+        )
+        raise
     except Exception as exc:
         logger.exception("translate %s->%s failed", doc_id, target_lang)
         await _set_translation_status(
@@ -1364,7 +1714,9 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
             await session.commit()
 
         await ctx["redis"].enqueue_job(
-            "index_document", doc_id_str, _job_id=f"index:{doc_id}:{uuid.uuid4().hex[:8]}"
+            "index_document",
+            doc_id_str,
+            _job_id=f"index:{doc_id}:{doc.parse_revision}:vl",
         )
         return f"vl: {len(described)} описаний на {len(pages)} стр."
     except Exception as exc:  # noqa: BLE001 — VL необязателен, не валим документ
@@ -1551,11 +1903,22 @@ async def render_original_view(ctx: dict, doc_id_str: str) -> str:
         return f"failed: {exc}"
 
 
-async def export_document(ctx: dict, doc_id_str: str) -> str:
+async def export_document(
+    ctx: dict, doc_id_str: str, parse_revision: int | None = None
+) -> str:
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
     doc = await _get_doc(ctx, doc_id)
-    await _set_status(ctx, doc_id, DocumentStatus.exporting)
+    claimed = await _claim_document_stage(
+        ctx,
+        doc_id,
+        parse_revision,
+        ready=DocumentStatus.translated,
+        running=DocumentStatus.exporting,
+        error_prefix="экспорт:",
+    )
+    if not claimed:
+        return f"skipped export revision={parse_revision}"
 
     try:
         async with ctx["sessionmaker"]() as session:
@@ -1715,18 +2078,42 @@ async def export_document(ctx: dict, doc_id_str: str) -> str:
                         logger.warning("export %s: LibreOffice-рендер не удался (%s)", doc_id, exc)
 
         async with ctx["sessionmaker"]() as session:
-            await session.execute(update(Document).where(Document.id == doc_id).values(**values))
+            stmt = update(Document).where(Document.id == doc_id)
+            if parse_revision is not None:
+                stmt = stmt.where(Document.parse_revision == parse_revision)
+            updated = await session.execute(stmt.values(**values))
+            if updated.rowcount != 1:
+                raise RuntimeError(f"устаревшая ревизия экспорта: {parse_revision}")
             await session.commit()
 
         await ctx["redis"].enqueue_job(
-            "index_document", doc_id_str, _job_id=f"index:{doc_id}:{uuid.uuid4().hex[:8]}"
+            "index_document",
+            doc_id_str,
+            _job_id=f"index:{doc_id}:{parse_revision}",
         )
         await ctx["redis"].enqueue_job(
-            "index_pages_visual", doc_id_str, _job_id=f"vindex:{doc_id}:{uuid.uuid4().hex[:8]}"
+            "index_pages_visual",
+            doc_id_str,
+            _job_id=f"vindex:{doc_id}:{parse_revision}",
         )
         return f"exported: {', '.join(k for k in values if k.startswith('s3_'))}"
 
+    except asyncio.CancelledError:
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.error,
+            "экспорт: задача отменена или воркер остановлен",
+            parse_revision=parse_revision,
+        )
+        raise
     except Exception as exc:
         logger.exception("export %s failed", doc_id)
-        await _set_status(ctx, doc_id, DocumentStatus.error, f"экспорт: {exc}")
+        await _set_status(
+            ctx,
+            doc_id,
+            DocumentStatus.error,
+            f"экспорт: {exc}",
+            parse_revision=parse_revision,
+        )
         raise

@@ -11,7 +11,8 @@ Environment=CUDA_VISIBLE_DEVICES=2
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-# Отдельный venv с последним vLLM: 0.22.1 давал NaN в мультимодальном
+# Отдельный visual-venv (до квалификации >=0.24 — vLLM 0.22.1): compiled-путь
+# давал NaN в мультимодальном
 # pooling-пути этой модели (строковый /v1/embeddings работал)
 Environment=PATH=/root/services/vllm-visual/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU2 — NUMA node0

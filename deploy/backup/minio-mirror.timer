@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly DocRAGenslate MinIO mirror
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+Unit=minio-mirror.service
+
+[Install]
+WantedBy=timers.target

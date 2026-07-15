@@ -1,0 +1,83 @@
+groups:
+  - name: docragenslate-slo
+    rules:
+      - alert: RagApiUnavailable
+        expr: up{job="rag-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: API DocRAGenslate недоступен
+
+      - alert: RagApiAvailabilityBudgetBurn
+        expr: |
+          sum(rate(http_requests_total{job="rag-api",status=~"5.."}[1h]))
+          / clamp_min(sum(rate(http_requests_total{job="rag-api"}[1h])), 0.001) > 0.005
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: API расходует месячный бюджет ошибок 99.5%
+
+      - alert: RagQueueOldestJob
+        expr: rag_arq_queue_oldest_age_seconds > 600
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Старейшая задача ARQ ждёт более 10 минут
+
+      - alert: RagQueueBacklog
+        expr: rag_arq_queue_depth > 50
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Очередь ARQ устойчиво превышает 50 задач
+
+      - alert: RagDeadLetterQueueNotEmpty
+        expr: rag_arq_dlq_depth > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: В bounded DLQ появилась терминальная ошибка
+
+      - alert: RagSplitJobErrorRate
+        expr: |
+          sum(rate(rag_arq_job_errors_total[15m]))
+          / clamp_min(sum(rate(rag_arq_jobs_completed_total[15m])) + sum(rate(rag_arq_job_errors_total[15m])), 0.001) > 0.01
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Ошибки split-worker превышают 1%
+
+      - alert: RagUnconfirmedNumbers
+        expr: rag_translation_number_unconfirmed_ratio > 0.01
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: Более 1% защищённых чисел не подтверждены в переводе
+
+      - alert: RagModelEndpointDown
+        expr: up{job="vllm"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: Модельный endpoint {{ $labels.service }} недоступен
+
+      - alert: RagExporterDown
+        expr: up{job=~"dcgm|postgres-exporter|redis-exporter|minio|rag-pipeline"} == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Потеряна телеметрия {{ $labels.job }}
+
+      - alert: RagGpuTemperatureHigh
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: GPU {{ $labels.gpu }} горячее 85°C
+
+      - alert: RagGpuMemorySaturated
+        expr: DCGM_FI_DEV_FB_USED / clamp_min(DCGM_FI_DEV_FB_TOTAL, 1) > 0.97
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: GPU {{ $labels.gpu }} использует более 97% памяти

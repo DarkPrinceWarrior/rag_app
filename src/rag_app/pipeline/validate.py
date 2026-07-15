@@ -11,6 +11,8 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
+from rag_app.pipeline.technical_entities import STANDARD_PATTERN
+
 # Число с возможными разделителями тысяч и десятичной частью.
 _NUMBER = re.compile(r"\d+(?:[  ,]\d{3})*(?:[.,]\d+)?")
 
@@ -19,7 +21,9 @@ def extract_numbers(text: str) -> Counter[str]:
     """Мультимножество нормализованных чисел текста."""
     # Полноширинные цифры ０-９ (китайский вывод Hy-MT) → ASCII, иначе числовая
     # валидация для цели zh даёт ложные «потери» (ТЗ §4.3.2/§4.3.7).
-    text = text.translate({0xFF10 + i: str(i) for i in range(10)})
+    text = text.translate(
+        {**{0xFF10 + i: str(i) for i in range(10)}, ord("，"): ",", ord("．"): "."}
+    )
     out: Counter[str] = Counter()
     for m in _NUMBER.finditer(text):
         raw = m.group(0)
@@ -41,9 +45,18 @@ class ValidationResult:
     missing: list[str] = field(default_factory=list)  # есть в оригинале, нет в переводе
     extra: list[str] = field(default_factory=list)  # появились в переводе
     standards: list[str] = field(default_factory=list)  # потерянные обозначения стандартов (§4.3.5)
+    entity_guard: dict | None = None  # агрегаты off/shadow/enforce без текста документа
+    translation_memory: dict | None = None  # происхождение exact/model и scoped hit counts
 
     def as_dict(self) -> dict:
-        return {"ok": self.ok, "missing": self.missing, "extra": self.extra, "standards": self.standards}
+        return {
+            "ok": self.ok,
+            "missing": self.missing,
+            "extra": self.extra,
+            "standards": self.standards,
+            "entity_guard": self.entity_guard,
+            "translation_memory": self.translation_memory,
+        }
 
 
 def validate_numbers(source: str, translated: str) -> ValidationResult:
@@ -61,17 +74,10 @@ def validate_numbers(source: str, translated: str) -> ValidationResult:
 # номеру стандарта рядом с префиксом — это ловит «де-обозначивание»
 # («ISO 9001» → «стандарт качества»), не давая ложных срабатываний на обычных
 # числах (их проверяет validate_numbers).
-_STD_PREFIX = (
-    r"ГОСТ\s?Р|ГОСТ|ОСТ|СНиП|СТО|СП|ТУ|РД|ВСН|НПБ|ПБ|ФНП|СанПиН"
-    r"|ISO|ИСО|IEC|МЭК|API|АПИ|ASTM|ASME|ANSI|DIN|EN|BS|NACE|NORSOK|UL|NFPA"
-)
-_STANDARD = re.compile(rf"(?:{_STD_PREFIX})\s?[-—–]?\s?(\d[\d.\-—–/]*)", re.IGNORECASE)
-
-
 def _std_numbers(text: str) -> Counter[str]:
     """Номера стандартов (нормализованные), привязанные к префиксу-обозначению."""
     out: Counter[str] = Counter()
-    for m in _STANDARD.finditer(text):
+    for m in STANDARD_PATTERN.finditer(text):
         num = re.sub(r"[—–\s]", "-", m.group(1)).strip("-.")
         if num:
             out[num] += 1

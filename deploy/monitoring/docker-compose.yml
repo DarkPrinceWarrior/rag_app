@@ -16,7 +16,38 @@ services:
       - --web.listen-address=127.0.0.1:9090
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./secrets:/etc/prometheus/secrets:ro
       - prom_data:/prometheus
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DATA_SOURCE_NAME: ${RAG_METRICS_POSTGRES_DSN:?задайте read-only DSN для exporter}
+    command:
+      - --web.listen-address=127.0.0.1:9187
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.69.0
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      REDIS_ADDR: redis://127.0.0.1:6379
+    command:
+      - --web.listen-address=127.0.0.1:9121
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.3-4.8.2-distroless
+    restart: unless-stopped
+    network_mode: host
+    gpus: all
+    cap_add:
+      - SYS_ADMIN
+    command:
+      - -a
+      - 127.0.0.1:9400
 
   grafana:
     image: grafana/grafana:11.4.0

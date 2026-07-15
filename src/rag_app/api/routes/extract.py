@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import io
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rag_app.api.auth import require_user
 from rag_app.rag.extract import extract_table
@@ -50,32 +51,50 @@ async def extract_table_route(request: Request, body: ExtractIn) -> dict:
 
 class XlsxIn(BaseModel):
     title: str = "Таблица"
-    columns: list[str] = []
-    rows: list[list] = []
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[Any]] = Field(default_factory=list)
     sources: list[dict] | None = None
 
 
-@router.post("/xlsx")
-async def extract_xlsx(body: XlsxIn) -> StreamingResponse:
+def _xlsx_safe_cell(value: Any) -> Any:
+    """Force potentially executable spreadsheet values to remain literal text."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _build_xlsx(body: XlsxIn) -> io.BytesIO:
     wb = Workbook()
     ws = wb.active
     if ws is None:
         raise RuntimeError("openpyxl не создал активный лист")
     ws.title = "Спецификации"
     if body.columns:
-        ws.append(body.columns)
+        ws.append([_xlsx_safe_cell(value) for value in body.columns])
     for row in body.rows:
-        ws.append([str(x) for x in row])
+        ws.append([_xlsx_safe_cell(str(value)) for value in row])
     if body.sources:
         s2 = wb.create_sheet("Источники")
         s2.append(["#", "Файл", "Раздел", "Стр."])
         for src in body.sources:
-            s2.append([src.get("n"), src.get("filename"), src.get("heading_path"), src.get("page")])
+            s2.append(
+                [
+                    _xlsx_safe_cell(src.get("n")),
+                    _xlsx_safe_cell(src.get("filename")),
+                    _xlsx_safe_cell(src.get("heading_path")),
+                    _xlsx_safe_cell(src.get("page")),
+                ]
+            )
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
+    return buf
+
+
+@router.post("/xlsx")
+async def extract_xlsx(body: XlsxIn) -> StreamingResponse:
     return StreamingResponse(
-        buf,
+        _build_xlsx(body),
         media_type=_XLSX_MIME,
         headers={"Content-Disposition": 'attachment; filename="extract.xlsx"'},
     )

@@ -124,6 +124,21 @@ class HyMTDocTranslator:
             return text
         glossary = context.glossary if context else None
         prompt = build_fast_prompt(text, tgt, glossary, src)
+        if (
+            settings.translation_memory_mode == "enforce"
+            and context
+            and context.translation_memory_examples
+        ):
+            examples = "\n".join(
+                f"{source[:500]} -> {translation[:500]}"
+                for source, translation, _score in context.translation_memory_examples
+            )
+            prompt = (
+                "Use these approved same-project translations only as terminology/style examples:\n"
+                f"{examples}\n---\n{prompt}"
+            )
+        if "⟪DRG" in text:
+            prompt = "Keep every ⟪DRG_*⟫ placeholder exactly unchanged.\n" + prompt
         if feedback:
             # числовая валидация отклонила перевод → просим сохранить числа
             # (нативной инструкцией Hy-MT, без scaffolding'а воркхорса)

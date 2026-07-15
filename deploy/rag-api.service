@@ -1,0 +1,24 @@
+[Unit]
+Description=DocRAGenslate FastAPI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/rag_app
+Environment=PYTHONPATH=/root/projects/rag_app/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/root/projects/rag_app/.env
+EnvironmentFile=/root/projects/rag_app/deploy/rag-runtime.env
+ExecStart=/root/projects/rag_app/.venv/bin/uvicorn rag_app.api.main:app --host 127.0.0.1 --port 8100 --proxy-headers
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=60
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=rag-app.target

@@ -190,6 +190,86 @@ class SegmentVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TranslationMemory(Base):
+    """Проверенная память переводов; автоматический вывод модели сюда не попадает."""
+
+    __tablename__ = "translation_memory"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('candidate', 'approved', 'revoked')",
+            name="ck_translation_memory_status",
+        ),
+        CheckConstraint("source_lang <> target_lang", name="ck_translation_memory_language_pair"),
+        CheckConstraint(
+            "source_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_translation_memory_source_hash",
+        ),
+        CheckConstraint(
+            "length(source_normalized) > 0 AND length(approved_translation) > 0"
+            " AND length(owner_sub) > 0 AND length(editor_sub) > 0",
+            name="ck_translation_memory_required_text",
+        ),
+        CheckConstraint(
+            "status <> 'approved' OR (source_embedding IS NOT NULL"
+            " AND approved_by_sub IS NOT NULL AND approved_at IS NOT NULL"
+            " AND revoked_at IS NULL)",
+            name="ck_translation_memory_approved_state",
+        ),
+        CheckConstraint(
+            "status <> 'revoked' OR (revoked_by_sub IS NOT NULL"
+            " AND revoked_at IS NOT NULL AND length(revocation_reason) > 0)",
+            name="ck_translation_memory_revoked_state",
+        ),
+        Index(
+            "ix_translation_memory_exact",
+            "owner_sub",
+            "folder_id",
+            "source_lang",
+            "target_lang",
+            "source_hash",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_text: Mapped[str] = mapped_column(Text)
+    source_normalized: Mapped[str] = mapped_column(Text)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    approved_translation: Mapped[str] = mapped_column(Text)
+    source_embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM), default=None
+    )
+    source_lang: Mapped[str] = mapped_column(String(8))
+    target_lang: Mapped[str] = mapped_column(String(8))
+    domain: Mapped[str] = mapped_column(String(128), default="technical")
+    project: Mapped[str | None] = mapped_column(String(256), default=None)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="CASCADE"), default=None
+    )
+    owner_sub: Mapped[str] = mapped_column(String(64), index=True)
+    editor_sub: Mapped[str] = mapped_column(String(64))
+    editor_name: Mapped[str | None] = mapped_column(String(128), default=None)
+    status: Mapped[str] = mapped_column(String(16), default="candidate")
+    segment_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("segment_versions.id", ondelete="SET NULL"), unique=True, default=None
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"), default=None
+    )
+    segment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("segments.id", ondelete="SET NULL"), default=None
+    )
+    approved_by_sub: Mapped[str | None] = mapped_column(String(64), default=None)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revoked_by_sub: Mapped[str | None] = mapped_column(String(64), default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revocation_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class DocumentTranslation(Base):
     """Дополнительный перевод документа на язык, отличный от основного (ТЗ §4.3):
     русский документ → EN/ZH по запросу. Основной перевод (→ru) лежит в

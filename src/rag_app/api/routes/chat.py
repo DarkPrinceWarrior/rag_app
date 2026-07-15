@@ -300,7 +300,11 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
         # асинхронная экстракция кандидатов памяти (вне latency ответа, §4)
         if mem_on:
             try:
-                await app.state.arq.enqueue_job("extract_memory", str(session_id))
+                await app.state.arq.enqueue_job(
+                    "extract_memory",
+                    str(session_id),
+                    _job_id=f"memory:extract:{session_id}:{message_id}",
+                )
             except Exception as exc:
                 logger.warning("extract_memory enqueue failed: %s", exc)
         log_chat_trace(

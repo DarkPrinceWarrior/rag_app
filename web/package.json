@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && tsc -b",
+    "build": "vite build && tsc -b && node scripts/check-bundle-budget.mjs",
     "lint": "eslint .",
+    "test:e2e": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.61.1",
     "@tanstack/router-plugin": "^1.168.19",
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.17",

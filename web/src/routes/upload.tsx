@@ -138,7 +138,7 @@ function UploadPage() {
               <button
                 type="button"
                 onClick={() => fileInput.current?.click()}
-                className="rounded-2xl bg-[#222226]/5 px-4 py-2 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10"
+                className="min-h-11 rounded-2xl bg-[#222226]/5 px-4 py-2 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10"
               >
                 Выбрать файлы
               </button>
@@ -163,7 +163,7 @@ function UploadPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <label className="cursor-pointer rounded-2xl bg-[#222226]/5 px-4 py-2 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10">
+                    <label className="flex min-h-11 cursor-pointer items-center rounded-2xl bg-[#222226]/5 px-4 py-2 text-base font-semibold text-[#424247] transition hover:bg-[#222226]/10">
                       Заменить
                       <input
                         type="file"
@@ -180,7 +180,7 @@ function UploadPage() {
                       type="button"
                       onClick={() => removeFile(idx)}
                       aria-label="Удалить файл"
-                      className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#952d2d]/10 text-[#c43232] transition hover:bg-[#952d2d]/15"
+                      className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#952d2d]/10 text-[#c43232] transition hover:bg-[#952d2d]/15"
                     >
                       <Trash2 className="h-5 w-5" />
                     </button>
@@ -193,7 +193,7 @@ function UploadPage() {
             <button
               type="button"
               onClick={() => fileInput.current?.click()}
-              className="self-start rounded-2xl bg-[#222226]/5 px-4 py-2 text-sm font-semibold text-[#424247] transition hover:bg-[#222226]/10"
+              className="min-h-11 self-start rounded-2xl bg-[#222226]/5 px-4 py-2 text-sm font-semibold text-[#424247] transition hover:bg-[#222226]/10"
             >
               + Добавить ещё файлы
             </button>
@@ -204,7 +204,7 @@ function UploadPage() {
           {upload.isError && <p className="text-xs text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
         </div>
 
-        <div className="flex w-[385px] shrink-0 flex-col gap-6 pt-2">
+        <div className="flex w-full max-w-[385px] shrink-0 flex-col gap-6 pt-2">
           <div className="flex flex-col gap-4">
             <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Настройки</h2>
             <div>

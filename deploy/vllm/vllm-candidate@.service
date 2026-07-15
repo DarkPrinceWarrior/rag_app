@@ -1,0 +1,16 @@
+[Unit]
+Description=DocRAGenslate vLLM qualification candidate (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/docragenslate/vllm-candidate.env
+ExecStart=/root/projects/rag_app/deploy/vllm/run_candidate.sh %i
+Restart=no
+TimeoutStartSec=1200
+TimeoutStopSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

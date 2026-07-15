@@ -13,14 +13,22 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
 from rag_app.rag.retrieve import RetrievedChunk
+from rag_app.rag.selective_citations import (
+    ClaimPair,
+    ClaimScoreBackend,
+    ScoredClaim,
+    detect_claim_language,
+    filter_answer,
+    score_claims,
+)
 
 logger = logging.getLogger(__name__)
 
-GroundingMode = Literal["off", "shadow", "enforce"]
+GroundingMode = Literal["off", "shadow", "enforce", "selective"]
 ClaimVerdict = Literal["supported", "unsupported", "contradicted", "non_factual"]
 
 _CITATION = re.compile(r"\[(\d{1,3})\]")
-_UNIT_SPLIT = re.compile(r"(?<=[.!?。！？;])\s+|\n+")
+_UNIT_SPLIT = re.compile(r"(?<=[.!?;])\s+|(?<=[。！？；])\s*|\n+")
 _TERM = re.compile(r"[^\W_]{3,}", re.UNICODE)
 _NUMBER = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)*(?:\s?(?:%|°[CF]|[A-Za-zА-Яа-я]{1,8}))?")
 _URL = re.compile(r"https?://[^\s)\]}]+", re.IGNORECASE)
@@ -50,6 +58,7 @@ class ClaimCheck(_StrictModel):
         description="Поддержано, не поддержано, противоречит или не является фактом."
     )
     reason: str = Field(default="", max_length=2000)
+    score: float | None = Field(default=None, ge=0, le=1)
 
 
 class CitationVerification(_StrictModel):
@@ -97,6 +106,7 @@ class CitationGuardResult:
     repaired: bool = False
     failed_closed: bool = False
     error: str | None = None
+    removed_claims: int = 0
 
 
 def tokenizer_url(openai_base_url: str) -> str:
@@ -290,10 +300,22 @@ unsupported/contradicted всё равно скопируй фактически
 
 
 class CitationVerifier:
-    def __init__(self, client: AsyncOpenAI, *, model: str, max_tokens: int) -> None:
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        *,
+        model: str,
+        max_tokens: int,
+        selective_backend: ClaimScoreBackend | None = None,
+        selective_threshold: float = 0.7,
+    ) -> None:
+        if not 0.0 <= selective_threshold <= 1.0:
+            raise ValueError("selective citation threshold must be in [0, 1]")
         self._client = client
         self._model = model
         self._max_tokens = max_tokens
+        self._selective_backend = selective_backend
+        self._selective_threshold = selective_threshold
 
     async def verify(self, answer: str, chunks: Sequence[RetrievedChunk]) -> CitationVerification:
         response_format = {
@@ -327,6 +349,74 @@ class CitationVerifier:
             # OpenAI transport exceptions do not share one stable base across SDK releases.
             raise GroundingError("проверка цитат не завершилась") from exc
         return normalize_verification(report, answer, chunks)
+
+    async def _verify_selective(
+        self,
+        answer: str,
+        chunks: Sequence[RetrievedChunk],
+    ) -> tuple[CitationVerification, list[ScoredClaim]]:
+        if self._selective_backend is None:
+            raise GroundingError("селективный backend проверки цитат не настроен")
+        scored = await score_claims(
+            answer,
+            _source_texts(chunks),
+            self._selective_backend,
+            threshold=self._selective_threshold,
+        )
+        report = CitationVerification(
+            claims=[
+                ClaimCheck(
+                    claim=item.span.claim,
+                    citation_numbers=list(item.span.citation_numbers),
+                    verdict=(
+                        "non_factual"
+                        if item.span.non_factual
+                        else "supported"
+                        if item.supported
+                        else "unsupported"
+                    ),
+                    reason=item.reason,
+                    score=item.score,
+                )
+                for item in scored
+            ]
+        )
+        return normalize_verification(report, answer, chunks), scored
+
+    async def score_report_claims(
+        self,
+        report: CitationVerification,
+        chunks: Sequence[RetrievedChunk],
+    ) -> list[float]:
+        """Оценить LLM/human-labeled claims дешёвым backend для калибровки."""
+
+        if self._selective_backend is None:
+            raise GroundingError("селективный backend проверки цитат не настроен")
+        sources = _source_texts(chunks)
+        factual = report.factual_claims
+        scores = [0.0] * len(factual)
+        pairs: list[ClaimPair] = []
+        indexes: list[int] = []
+        for index, claim in enumerate(factual):
+            evidence = [
+                sources[number]
+                for number in claim.citation_numbers
+                if number in sources
+            ]
+            if not evidence or len(evidence) != len(claim.citation_numbers):
+                continue
+            pairs.append(
+                ClaimPair(
+                    claim=claim.claim,
+                    evidence="\n".join(evidence),
+                    language=detect_claim_language(claim.claim),
+                )
+            )
+            indexes.append(index)
+        values = await self._selective_backend.score(pairs)
+        for index, value in zip(indexes, values, strict=True):
+            scores[index] = value
+        return scores
 
     async def _repair(
         self,
@@ -369,6 +459,48 @@ class CitationVerifier:
         if mode == "off" or not chunks:
             return CitationGuardResult(answer=answer, verification=None)
         try:
+            if mode == "selective":
+                report, scored = await self._verify_selective(answer, chunks)
+                supported = [claim for claim in report.factual_claims if claim.verdict == "supported"]
+                if not supported:
+                    return CitationGuardResult(
+                        answer=_SAFE_REFUSAL,
+                        verification=CitationVerification(claims=[]),
+                        repaired=True,
+                        failed_closed=True,
+                        removed_claims=len(report.unsupported_claims),
+                    )
+                keep = [
+                    claim.verdict in {"supported", "non_factual"}
+                    for claim in report.claims
+                ]
+                filtered = filter_answer(answer, scored, keep)
+                retained = CitationVerification(
+                    claims=[
+                        claim
+                        for claim in report.claims
+                        if claim.verdict in {"supported", "non_factual"}
+                    ]
+                )
+                if not filtered:
+                    return CitationGuardResult(
+                        answer=_SAFE_REFUSAL,
+                        verification=CitationVerification(claims=[]),
+                        repaired=True,
+                        failed_closed=True,
+                        removed_claims=len(report.unsupported_claims),
+                    )
+                return CitationGuardResult(
+                    answer=filtered,
+                    verification=retained,
+                    repaired=filtered != answer,
+                    removed_claims=len(report.unsupported_claims),
+                )
+
+            if mode == "shadow" and self._selective_backend is not None:
+                report, _ = await self._verify_selective(answer, chunks)
+                return CitationGuardResult(answer=answer, verification=report)
+
             report = await self.verify(answer, chunks)
             if mode == "shadow" or not report.unsupported_claims:
                 return CitationGuardResult(answer=answer, verification=report)
@@ -386,9 +518,9 @@ class CitationVerifier:
                 verification=repaired_report,
                 repaired=True,
             )
-        except Exception as exc:  # noqa: BLE001 - enforce must fail closed on any verifier fault
+        except Exception as exc:  # noqa: BLE001 - transport/model errors vary
             logger.warning("citation verification failed: %s", exc)
-            if mode == "enforce":
+            if mode in {"enforce", "selective"}:
                 return CitationGuardResult(
                     answer=_SAFE_REFUSAL,
                     verification=None,

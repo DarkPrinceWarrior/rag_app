@@ -29,6 +29,21 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       DO_NOT_TRACK: "1"
+      RAG_DATABASE_URL: postgresql+asyncpg://postgres:ci-rls-only@127.0.0.1:55432/rag_rls_test
+      RAG_RLS_TEST_ADMIN_URL: postgresql://postgres:ci-rls-only@127.0.0.1:55432/rag_rls_test
+
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17-bookworm@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0
+        env:
+          POSTGRES_PASSWORD: ci-rls-only
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Checkout
@@ -43,6 +58,9 @@ jobs:
 
       - name: Sync Python 3.13 environment from uv.lock
         run: ./scripts/ci.sh python-sync
+
+      - name: Prepare isolated PostgreSQL RLS database
+        run: ./scripts/ci.sh rls-db
 
       - name: Backend tests
         run: ./scripts/ci.sh pytest

@@ -41,14 +41,20 @@ def location_key(location: dict[str, Any]) -> str:
 # ------------------------------------------------------------------ DOCX
 
 def _docx_set_paragraph_text(paragraph: Any, text: str) -> None:
-    """Перевод в первый run (его формат — доминирующий), остальные очищаем."""
+    """Перевод в первый run, включая очистку текста внутри гиперссылок."""
     if not paragraph.runs:
+        # paragraph.runs не включает run'ы внутри w:hyperlink. Очищаем их явно,
+        # иначе к переводу приписывается исходный текст ссылки.
+        for text_node in paragraph._p.xpath(".//w:t"):
+            text_node.text = ""
         if text:
             paragraph.add_run(text)
         return
     paragraph.runs[0].text = text
-    for run in paragraph.runs[1:]:
-        run.text = ""
+    first_text_nodes = set(paragraph.runs[0]._r.xpath(".//w:t"))
+    for text_node in paragraph._p.xpath(".//w:t"):
+        if text_node not in first_text_nodes:
+            text_node.text = ""
 
 
 def _docx_paragraph_images(paragraph: Any, images_dir: Path, drafts: list[SegmentDraft]) -> None:

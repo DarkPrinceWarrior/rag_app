@@ -62,7 +62,7 @@ export function Menu({
         title={title}
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-accent',
+          'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-accent max-md:h-11 max-md:w-11',
           open && 'bg-accent',
           triggerClassName,
         )}
@@ -103,7 +103,7 @@ export function MenuItem({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors disabled:opacity-50',
+        'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors disabled:opacity-50 max-md:min-h-11',
         destructive ? 'text-destructive hover:bg-destructive/10' : 'hover:bg-accent',
       )}
     >
