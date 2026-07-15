@@ -298,9 +298,7 @@ class _FakeRetriever:
             final = reranked
         if self.minor_reorder_chunks and self.calls % 2 == 0:
             reranked = (
-                (*rows[1:9], rows[0], rows[9])
-                if self.divergent_reorder
-                else (*rows[:-2], rows[-1], rows[-2])
+                (*rows[1:9], rows[0], rows[9]) if self.divergent_reorder else (*rows[:-2], rows[-1], rows[-2])
             )
             final = reranked
         if self.swap_boundary:
@@ -324,11 +322,7 @@ class _FakeRetriever:
             rows[0].score = 0.505 if self.calls % 2 else 0.495
             rows[1].score = 0.495 if self.calls % 2 else 0.505
             rows[2].score = 0.5
-            reranked = (
-                (rows[0], rows[2], rows[1])
-                if self.calls % 2
-                else (rows[1], rows[2], rows[0])
-            )
+            reranked = (rows[0], rows[2], rows[1]) if self.calls % 2 else (rows[1], rows[2], rows[0])
             final = reranked[:1]
         return RetrievalTrace(
             requested_sparse_backend=kwargs["sparse_backend"],
@@ -505,10 +499,10 @@ def _execute_artifact(
                 backend="pg_textsearch",
                 variant="candidate",
                 split="tuning",
-                    run_id="b" * 64,
-                    repeat_count=2,
-                    query_embedding_sha256="e" * 64,
-                )
+                run_id="b" * 64,
+                repeat_count=2,
+                query_embedding_sha256="e" * 64,
+            )
         ),
         record,
         sidecar,
@@ -641,6 +635,7 @@ def _reranker_revision() -> Any:
 def _collected_rerank_set(*, query: str = "private query") -> Any:
     return runner._CollectedRerankSet(
         case_id="ragq-test-bm25-0001",
+        split="tuning",
         query=query,
         config_sha256="e" * 64,
         backend="pg_textsearch",
@@ -654,6 +649,7 @@ def _collected_rerank_sets(*, query: str = "private query") -> tuple[Any, Any]:
     candidate = _collected_rerank_set(query=query)
     baseline = runner._CollectedRerankSet(
         case_id=candidate.case_id,
+        split=candidate.split,
         query=candidate.query,
         config_sha256=candidate.config_sha256,
         backend="postgres_fts",
@@ -685,7 +681,14 @@ def test_paired_reranker_canonical_prewarms_then_freezes() -> None:
     assert first == list(reversed(second))
     assert evidence.unique_pair_count == 2
     assert evidence.live_pair_score_count == 6
-    assert evidence.min_replay_rank_agreement == 1.0
+    assert evidence.min_split_half_rank_agreement == 1.0
+    assert evidence.min_same_set_single_replay_rank_agreement == 1.0
+    assert evidence.min_single_replay_common_rank_agreement == 1.0
+    assert evidence.min_single_replay_set_jaccard == 1.0
+    assert evidence.nonempty_candidate_set_count == 2
+    assert evidence.single_replay_set_comparison_count == 6
+    assert evidence.single_replay_set_mismatch_count == 0
+    assert len(evidence.stability_slices) == 2
     assert evidence.batch_shape_sample_count == 2
     assert evidence.min_batch_shape_rank_agreement == 1.0
     assert "private" not in evidence.model_dump_json()
@@ -724,6 +727,143 @@ def test_paired_reranker_rejects_unstable_split_half_ranking() -> None:
                 replay_count=3,
             )
         )
+
+
+def test_reranker_evidence_caps_rare_single_replay_set_mismatches() -> None:
+    delegate = _StableReranker()
+    reranker = runner._PairedReranker(delegate)
+    evidence = asyncio.run(
+        reranker.preload(
+            _collected_rerank_sets(),
+            questions=["private query"],
+            revision=_reranker_revision(),
+            replay_count=3,
+        )
+    )
+    payload = evidence.model_dump(mode="python")
+    expanded_slice = {
+        **payload["stability_slices"][0],
+        "nonempty_candidate_set_count": 100,
+        "single_replay_set_comparison_count": 300,
+        "single_replay_set_mismatch_count": 3,
+        "min_single_replay_set_jaccard": 0.8,
+    }
+    payload["stability_slices"] = (expanded_slice, payload["stability_slices"][1])
+    payload.update(
+        candidate_set_count=101,
+        nonempty_candidate_set_count=101,
+        min_single_replay_set_jaccard=0.8,
+        single_replay_set_comparison_count=303,
+        single_replay_set_mismatch_count=3,
+    )
+
+    accepted = runner.RerankerScoreEvidence.model_validate(payload, strict=True)
+    assert accepted.single_replay_set_mismatch_count == 3
+
+    with pytest.raises(ValueError, match="mismatch ratio"):
+        excessive_slice = {
+            **expanded_slice,
+            "single_replay_set_mismatch_count": 4,
+        }
+        runner.RerankerScoreEvidence.model_validate(
+            {
+                **payload,
+                "single_replay_set_mismatch_count": 4,
+                "stability_slices": (excessive_slice, payload["stability_slices"][1]),
+            },
+            strict=True,
+        )
+    with pytest.raises(ValueError, match="coverage"):
+        runner.RerankerScoreEvidence.model_validate(
+            {**payload, "single_replay_set_comparison_count": 304},
+            strict=True,
+        )
+    with pytest.raises(ValueError, match="overlap"):
+        low_overlap_slice = {
+            **expanded_slice,
+            "min_single_replay_set_jaccard": 0.79,
+        }
+        runner.RerankerScoreEvidence.model_validate(
+            {
+                **payload,
+                "min_single_replay_set_jaccard": 0.79,
+                "stability_slices": (low_overlap_slice, payload["stability_slices"][1]),
+            },
+            strict=True,
+        )
+
+    unstable_slice = {
+        **evidence.model_dump(mode="python")["stability_slices"][0],
+        "single_replay_set_mismatch_count": 1,
+        "min_single_replay_set_jaccard": 0.8,
+    }
+    dilution_slice = {
+        **evidence.model_dump(mode="python")["stability_slices"][1],
+        "nonempty_candidate_set_count": 100,
+        "single_replay_set_comparison_count": 300,
+    }
+    diluted_payload = {
+        **evidence.model_dump(mode="python"),
+        "candidate_set_count": 101,
+        "nonempty_candidate_set_count": 101,
+        "single_replay_set_comparison_count": 303,
+        "single_replay_set_mismatch_count": 1,
+        "min_single_replay_set_jaccard": 0.8,
+        "stability_slices": (unstable_slice, dilution_slice),
+    }
+    with pytest.raises(ValueError, match="stability-slice mismatch ratio"):
+        runner.RerankerScoreEvidence.model_validate(diluted_payload, strict=True)
+
+    low_rank_slice = {
+        **expanded_slice,
+        "min_split_half_rank_agreement": 0.89,
+    }
+    with pytest.raises(ValueError, match="rank agreement"):
+        runner.RerankerScoreEvidence.model_validate(
+            {
+                **payload,
+                "min_split_half_rank_agreement": 0.89,
+                "stability_slices": (low_rank_slice, payload["stability_slices"][1]),
+            },
+            strict=True,
+        )
+
+
+def test_reranker_evidence_requires_all_release_config_slices() -> None:
+    reranker = runner._PairedReranker(_StableReranker())
+    evidence = asyncio.run(
+        reranker.preload(
+            _collected_rerank_sets(),
+            questions=["private query"],
+            revision=_reranker_revision(),
+            replay_count=3,
+        )
+    )
+
+    with pytest.raises(ValueError, match="release config"):
+        evidence.require_release_config("e" * 64)
+
+    payload = evidence.model_dump(mode="python")
+    locked_slices = tuple({**item, "split": "locked"} for item in payload["stability_slices"])
+    payload.update(
+        candidate_set_count=4,
+        nonempty_candidate_set_count=4,
+        single_replay_set_comparison_count=12,
+        batch_shape_sample_count=payload["batch_shape_sample_count"] * 2,
+        batch_shape_live_pair_score_count=payload["batch_shape_live_pair_score_count"] * 2,
+        stability_slices=(*payload["stability_slices"], *locked_slices),
+    )
+    complete = runner.RerankerScoreEvidence.model_validate(payload, strict=True)
+
+    complete.require_release_config("e" * 64)
+
+
+def test_rank_overlap_agreement_rejects_reversed_common_items() -> None:
+    full = tuple(uuid.UUID(int=value) for value in range(1, 11))
+    changed = (*reversed(full[1:]), uuid.UUID(int=11))
+
+    assert len(set(full) & set(changed)) == 9
+    assert runner._rank_overlap_agreement(changed, full) == 0.0
 
 
 def test_paired_reranker_rejects_invalid_live_scores() -> None:
@@ -765,6 +905,7 @@ def test_paired_reranker_coalesces_identical_truncated_inputs() -> None:
     prefix = "x" * 4000
     candidate_set = runner._CollectedRerankSet(
         case_id="ragq-test-bm25-0001",
+        split="tuning",
         query="private query",
         config_sha256="e" * 64,
         backend="pg_textsearch",
@@ -777,6 +918,7 @@ def test_paired_reranker_coalesces_identical_truncated_inputs() -> None:
     )
     baseline_set = runner._CollectedRerankSet(
         case_id=candidate_set.case_id,
+        split=candidate_set.split,
         query=candidate_set.query,
         config_sha256=candidate_set.config_sha256,
         backend="postgres_fts",
@@ -1030,15 +1172,11 @@ def test_locked_decision_requires_target_gains() -> None:
         _execute_artifact(index=4, answerable=False)[0],
     ]
     baseline = [
-        item.model_copy(
-            update={"observation": item.observation.model_copy(update={"variant": "baseline"})}
-        )
+        item.model_copy(update={"observation": item.observation.model_copy(update={"variant": "baseline"})})
         for item in artifacts
     ]
     candidate = [
-        item.model_copy(
-            update={"observation": item.observation.model_copy(update={"variant": "candidate"})}
-        )
+        item.model_copy(update={"observation": item.observation.model_copy(update={"variant": "candidate"})})
         for item in artifacts
     ]
     clusters = {

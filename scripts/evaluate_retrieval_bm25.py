@@ -110,22 +110,24 @@ _GIT_SHA_PATTERN = r"^[0-9a-f]{40,64}$"
 _CASE_ID_PATTERN = r"^ragq-[a-z0-9][a-z0-9._-]{7,63}$"
 _CONTAINER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
 _EVIDENCE_KINDS = ("rls", "load", "update", "delete", "restart")
-_CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v3\0"
+_CASE_HMAC_DOMAIN = b"docragenslate/retrieval-bm25-case/v4\0"
 _BUILD_RECIPE = REPOSITORY_ROOT / "deploy/postgres-bm25/Dockerfile"
 _PREPARE_SQL = REPOSITORY_ROOT / "deploy/postgres-bm25/prepare_candidate.sql"
 _MAX_RERANK_REPEAT_DELTA = 0.01
 _SCORE_EPSILON = 1e-12
 _MIN_RERANK_RANK_AGREEMENT = 0.9
+_MIN_SINGLE_REPLAY_SET_JACCARD = 0.8
+_MAX_SINGLE_REPLAY_SET_MISMATCH_RATIO = 0.01
 _QUERY_EMBEDDING_PROTOCOL: Literal["single-live-vector-per-question-v1"] = (
     "single-live-vector-per-question-v1"
 )
 _LOAD_EMBEDDING_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
-_PINNED_RERANKER_PROTOCOL: Literal["canonical-mean-score-per-query-input-v1"] = (
-    "canonical-mean-score-per-query-input-v1"
+_PINNED_RERANKER_PROTOCOL: Literal["canonical-mean-score-per-query-input-v2"] = (
+    "canonical-mean-score-per-query-input-v2"
 )
 _LOAD_RERANKER_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
 _RERANK_PREWARM_REPLAYS = 9
-_RERANK_BATCH_SHAPE_SAMPLES_PER_BACKEND = 16
+_RERANK_BATCH_SHAPE_SAMPLES_PER_SLICE = 16
 
 VariantName = Literal["baseline", "candidate"]
 SplitName = Literal["tuning", "locked"]
@@ -246,7 +248,7 @@ class VariantObservation(_StrictModel):
 
 
 class CaseArtifact(_StrictModel):
-    schema_version: Literal["retrieval-bm25-case-v3"] = "retrieval-bm25-case-v3"
+    schema_version: Literal["retrieval-bm25-case-v4"] = "retrieval-bm25-case-v4"
     run_id: str = Field(pattern=_SHA256_PATTERN)
     split: SplitName
     case_id: str = Field(pattern=_CASE_ID_PATTERN)
@@ -254,9 +256,7 @@ class CaseArtifact(_StrictModel):
     question_sha256: str = Field(pattern=_SHA256_PATTERN)
     query_embedding_protocol: Literal["single-live-vector-per-question-v1"]
     query_embedding_sha256: str = Field(pattern=_SHA256_PATTERN)
-    reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v1"
-    ]
+    reranker_score_protocol: Literal["live-repeated-v1", "canonical-mean-score-per-query-input-v2"]
     scope_id: str
     language: Literal["ru", "en", "zh"]
     hop_type: Literal["single", "multi", "cross_document"]
@@ -279,7 +279,7 @@ class CaseArtifact(_StrictModel):
 
 
 class CaseArtifactHmac(_StrictModel):
-    schema_version: Literal["retrieval-bm25-case-hmac-v3"] = "retrieval-bm25-case-hmac-v3"
+    schema_version: Literal["retrieval-bm25-case-hmac-v4"] = "retrieval-bm25-case-hmac-v4"
     key_id: str = Field(pattern=_SHA256_PATTERN)
     artifact_sha256: str = Field(pattern=_SHA256_PATTERN)
     run_id: str = Field(pattern=_SHA256_PATTERN)
@@ -518,8 +518,24 @@ class QueryEmbeddingEvidence(_StrictModel):
         return self
 
 
+class RerankerStabilitySlice(_StrictModel):
+    split: SplitName
+    config_sha256: str = Field(pattern=_SHA256_PATTERN)
+    backend: SparseBackend
+    nonempty_candidate_set_count: int = Field(ge=1, le=100_000)
+    single_replay_set_comparison_count: int = Field(ge=3, le=2_100_000)
+    single_replay_set_mismatch_count: int = Field(ge=0, le=2_100_000)
+    min_split_half_rank_agreement: float = Field(ge=0.0, le=1.0)
+    min_same_set_single_replay_rank_agreement: float = Field(ge=0.0, le=1.0)
+    min_single_replay_common_rank_agreement: float = Field(ge=0.0, le=1.0)
+    min_single_replay_set_jaccard: float = Field(ge=0.0, le=1.0)
+    batch_shape_sample_count: int = Field(ge=1, le=_RERANK_BATCH_SHAPE_SAMPLES_PER_SLICE)
+    batch_shape_live_pair_score_count: int = Field(ge=1, le=100_000)
+    min_batch_shape_rank_agreement: float = Field(ge=0.0, le=1.0)
+
+
 class RerankerScoreEvidence(_StrictModel):
-    protocol: Literal["canonical-mean-score-per-query-input-v1"]
+    protocol: Literal["canonical-mean-score-per-query-input-v2"]
     attempt_id: str = Field(pattern=_SHA256_PATTERN)
     cache_scope: Literal["run"]
     reuse_scope: Literal["tuning+locked+variants+repeats"]
@@ -528,7 +544,14 @@ class RerankerScoreEvidence(_StrictModel):
     live_pair_score_count: int = Field(ge=1, le=2_100_000)
     live_batch_count: int = Field(ge=1, le=100_000)
     candidate_set_count: int = Field(ge=1, le=100_000)
-    min_replay_rank_agreement: float = Field(ge=0.0, le=1.0)
+    nonempty_candidate_set_count: int = Field(ge=1, le=100_000)
+    min_split_half_rank_agreement: float = Field(ge=0.0, le=1.0)
+    min_same_set_single_replay_rank_agreement: float = Field(ge=0.0, le=1.0)
+    min_single_replay_common_rank_agreement: float = Field(ge=0.0, le=1.0)
+    min_single_replay_set_jaccard: float = Field(ge=0.0, le=1.0)
+    single_replay_set_comparison_count: int = Field(ge=1, le=2_100_000)
+    single_replay_set_mismatch_count: int = Field(ge=0, le=2_100_000)
+    stability_slices: tuple[RerankerStabilitySlice, ...] = Field(min_length=2, max_length=1000)
     batch_shape_sample_count: int = Field(ge=2, le=1000)
     batch_shape_live_pair_score_count: int = Field(ge=2, le=100_000)
     min_batch_shape_rank_agreement: float = Field(ge=0.0, le=1.0)
@@ -545,11 +568,95 @@ class RerankerScoreEvidence(_StrictModel):
             raise ValueError("reranker live score count does not cover every replayed pair")
         if self.live_batch_count < self.replay_count:
             raise ValueError("reranker live-batch count is incomplete")
+        if self.nonempty_candidate_set_count > self.candidate_set_count:
+            raise ValueError("reranker nonempty candidate-set count is invalid")
+        if self.single_replay_set_comparison_count != self.nonempty_candidate_set_count * self.replay_count:
+            raise ValueError("reranker single-replay coverage does not match candidate sets")
+        if self.single_replay_set_mismatch_count > self.single_replay_set_comparison_count:
+            raise ValueError("reranker single-replay mismatch count is invalid")
+        identities = {(item.split, item.config_sha256, item.backend) for item in self.stability_slices}
+        if len(identities) != len(self.stability_slices):
+            raise ValueError("reranker stability slices contain duplicate identities")
+        if sum(item.nonempty_candidate_set_count for item in self.stability_slices) != (
+            self.nonempty_candidate_set_count
+        ):
+            raise ValueError("reranker stability slices do not cover candidate sets")
+        if sum(item.single_replay_set_comparison_count for item in self.stability_slices) != (
+            self.single_replay_set_comparison_count
+        ):
+            raise ValueError("reranker stability slices do not cover comparisons")
+        if sum(item.single_replay_set_mismatch_count for item in self.stability_slices) != (
+            self.single_replay_set_mismatch_count
+        ):
+            raise ValueError("reranker stability slices do not cover mismatches")
+        if sum(item.batch_shape_sample_count for item in self.stability_slices) != (
+            self.batch_shape_sample_count
+        ):
+            raise ValueError("reranker stability slices do not cover batch-shape samples")
+        if sum(item.batch_shape_live_pair_score_count for item in self.stability_slices) != (
+            self.batch_shape_live_pair_score_count
+        ):
+            raise ValueError("reranker stability slices do not cover batch-shape scores")
+        for item in self.stability_slices:
+            if (
+                item.single_replay_set_comparison_count
+                != item.nonempty_candidate_set_count * self.replay_count
+            ):
+                raise ValueError("reranker stability-slice coverage is inconsistent")
+            mismatch_ratio = item.single_replay_set_mismatch_count / item.single_replay_set_comparison_count
+            if mismatch_ratio > _MAX_SINGLE_REPLAY_SET_MISMATCH_RATIO + _SCORE_EPSILON:
+                raise ValueError("reranker stability-slice mismatch ratio exceeds its cap")
+            if item.min_single_replay_set_jaccard < _MIN_SINGLE_REPLAY_SET_JACCARD:
+                raise ValueError("reranker stability-slice final-set overlap is below its floor")
+            if (
+                min(
+                    item.min_split_half_rank_agreement,
+                    item.min_same_set_single_replay_rank_agreement,
+                    item.min_single_replay_common_rank_agreement,
+                    item.min_batch_shape_rank_agreement,
+                )
+                < _MIN_RERANK_RANK_AGREEMENT
+            ):
+                raise ValueError("reranker stability-slice rank agreement is below its floor")
+        expected_minima = {
+            "min_split_half_rank_agreement": min(
+                item.min_split_half_rank_agreement for item in self.stability_slices
+            ),
+            "min_same_set_single_replay_rank_agreement": min(
+                item.min_same_set_single_replay_rank_agreement for item in self.stability_slices
+            ),
+            "min_single_replay_common_rank_agreement": min(
+                item.min_single_replay_common_rank_agreement for item in self.stability_slices
+            ),
+            "min_single_replay_set_jaccard": min(
+                item.min_single_replay_set_jaccard for item in self.stability_slices
+            ),
+            "min_batch_shape_rank_agreement": min(
+                item.min_batch_shape_rank_agreement for item in self.stability_slices
+            ),
+        }
+        for field_name, expected in expected_minima.items():
+            if getattr(self, field_name) != expected:
+                raise ValueError(f"reranker global {field_name} does not match its slices")
         return self
+
+    def require_release_config(self, config_sha256: str) -> None:
+        expected = {
+            (split, backend)
+            for split in ("tuning", "locked")
+            for backend in ("postgres_fts", "pg_textsearch")
+        }
+        actual = {
+            (item.split, item.backend)
+            for item in self.stability_slices
+            if item.config_sha256 == config_sha256
+        }
+        if actual != expected:
+            raise ValueError("selected release config lacks complete reranker stability slices")
 
 
 class RunManifest(_StrictModel):
-    schema_version: Literal["retrieval-bm25-run-v3"] = "retrieval-bm25-run-v3"
+    schema_version: Literal["retrieval-bm25-run-v4"] = "retrieval-bm25-run-v4"
     run_id: str = Field(pattern=_SHA256_PATTERN)
     mode: RunMode
     repository_sha: str = Field(pattern=_GIT_SHA_PATTERN)
@@ -589,7 +696,7 @@ class AggregateMetrics(_StrictModel):
 
 
 class FinalReport(_StrictModel):
-    schema_version: Literal["retrieval-bm25-report-v3"] = "retrieval-bm25-report-v3"
+    schema_version: Literal["retrieval-bm25-report-v4"] = "retrieval-bm25-report-v4"
     run_id: str = Field(pattern=_SHA256_PATTERN)
     manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     policy_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -776,12 +883,27 @@ def _reranker_scored_candidate_sort_key(
 @dataclass(frozen=True, slots=True)
 class _CollectedRerankSet:
     case_id: str
+    split: SplitName
     query: str
     config_sha256: str
     backend: SparseBackend
     rerank_min_score: float
     final_top_k: int
     candidates: tuple[tuple[uuid.UUID, str], ...]
+
+
+@dataclass(slots=True)
+class _RerankerStabilityAccumulator:
+    nonempty_candidate_set_count: int = 0
+    single_replay_set_comparison_count: int = 0
+    single_replay_set_mismatch_count: int = 0
+    min_split_half_rank_agreement: float = 1.0
+    min_same_set_single_replay_rank_agreement: float = 1.0
+    min_single_replay_common_rank_agreement: float = 1.0
+    min_single_replay_set_jaccard: float = 1.0
+    batch_shape_sample_count: int = 0
+    batch_shape_live_pair_score_count: int = 0
+    min_batch_shape_rank_agreement: float = 1.0
 
 
 class _CollectionReranker(Reranker):
@@ -812,7 +934,10 @@ class _PairedReranker(Reranker):
                 "canonical_batch_order": "question-sha256+text-sha256-v1",
                 "aggregate": "arithmetic-mean-v1",
                 "split_half": "even-odd-v1",
-                "batch_shape_samples_per_backend": _RERANK_BATCH_SHAPE_SAMPLES_PER_BACKEND,
+                "min_split_half_rank_agreement": _MIN_RERANK_RANK_AGREEMENT,
+                "min_single_replay_set_jaccard": _MIN_SINGLE_REPLAY_SET_JACCARD,
+                "max_single_replay_set_mismatch_ratio": _MAX_SINGLE_REPLAY_SET_MISMATCH_RATIO,
+                "batch_shape_samples_per_stability_slice": (_RERANK_BATCH_SHAPE_SAMPLES_PER_SLICE),
             }
         )
 
@@ -837,6 +962,7 @@ class _PairedReranker(Reranker):
             (
                 {
                     "case_id": item.case_id,
+                    "split": item.split,
                     "config_sha256": item.config_sha256,
                     "backend": item.backend,
                     "rerank_min_score": item.rerank_min_score,
@@ -917,14 +1043,21 @@ class _PairedReranker(Reranker):
 
         even_indexes = tuple(range(0, replay_count, 2))
         odd_indexes = tuple(range(1, replay_count, 2))
-        min_agreement = 1.0
+        stability_accumulators: dict[
+            tuple[SplitName, str, SparseBackend],
+            _RerankerStabilityAccumulator,
+        ] = {}
         sampled_sets: list[_CollectedRerankSet] = []
-        for backend in ("postgres_fts", "pg_textsearch"):
-            eligible = [item for item in candidate_sets if item.backend == backend and item.candidates]
-            if not eligible:
-                raise RetrievalEvaluationError(
-                    f"reranker batch-shape sample is missing backend {backend}"
-                )
+        batch_shape_groups: dict[
+            tuple[SplitName, str, SparseBackend],
+            list[_CollectedRerankSet],
+        ] = defaultdict(list)
+        for item in candidate_sets:
+            if item.candidates:
+                batch_shape_groups[(item.split, item.config_sha256, item.backend)].append(item)
+        if not batch_shape_groups:
+            raise RetrievalEvaluationError("reranker batch-shape coverage is empty")
+        for _stability_key, eligible in sorted(batch_shape_groups.items()):
             sampled_sets.extend(
                 sorted(
                     eligible,
@@ -936,17 +1069,20 @@ class _PairedReranker(Reranker):
                             "candidate_ids": [str(row[0]) for row in item.candidates],
                         }
                     ),
-                )[:_RERANK_BATCH_SHAPE_SAMPLES_PER_BACKEND]
+                )[:_RERANK_BATCH_SHAPE_SAMPLES_PER_SLICE]
             )
-        sampled_keys = {
-            (item.case_id, item.config_sha256, item.backend) for item in sampled_sets
-        }
+        sampled_keys = {(item.case_id, item.split, item.config_sha256, item.backend) for item in sampled_sets}
         batch_shape_rows: list[dict[str, Any]] = []
         batch_shape_live_pair_score_count = 0
-        min_batch_shape_agreement = 1.0
         for item in candidate_sets:
             if not item.candidates:
                 continue
+            stability_key = (item.split, item.config_sha256, item.backend)
+            stability = stability_accumulators.setdefault(
+                stability_key,
+                _RerankerStabilityAccumulator(),
+            )
+            stability.nonempty_candidate_set_count += 1
 
             def split_order(
                 indexes: Sequence[int],
@@ -957,9 +1093,7 @@ class _PairedReranker(Reranker):
                         chunk_id,
                         round(
                             math.fsum(
-                                replay_scores[_reranker_input_key(candidate_set.query, text)][
-                                    index
-                                ]
+                                replay_scores[_reranker_input_key(candidate_set.query, text)][index]
                                 for index in indexes
                             )
                             / len(indexes),
@@ -983,23 +1117,67 @@ class _PairedReranker(Reranker):
             odd_order = split_order(odd_indexes)
             full_order = split_order(tuple(range(replay_count)))
             individual_orders = tuple(split_order((index,)) for index in range(replay_count))
-            compared_orders = (even_order, odd_order, *individual_orders)
-            if any(set(order) != set(full_order) for order in compared_orders):
+            split_half_orders = (even_order, odd_order)
+            if any(set(order) != set(full_order) for order in split_half_orders):
                 raise RetrievalEvaluationError(
-                    "reranker replay final set is unstable "
+                    "reranker split-half final set is unstable "
                     f"(attempt_id={attempt_id},case_id={item.case_id})"
                 )
-            agreement = min(
-                *(_rank_agreement(order, full_order) for order in compared_orders),
+            split_half_agreement = min(
+                *(_rank_agreement(order, full_order) for order in split_half_orders),
                 _rank_agreement(even_order, odd_order),
             )
-            min_agreement = min(min_agreement, agreement)
-            if agreement < _MIN_RERANK_RANK_AGREEMENT:
+            stability.min_split_half_rank_agreement = min(
+                stability.min_split_half_rank_agreement,
+                split_half_agreement,
+            )
+            if split_half_agreement < _MIN_RERANK_RANK_AGREEMENT:
                 raise RetrievalEvaluationError(
-                    "reranker replay rank agreement is below qualification threshold "
-                    f"(attempt_id={attempt_id},case_id={item.case_id},agreement={agreement:.6f})"
+                    "reranker split-half rank agreement is below qualification threshold "
+                    f"(attempt_id={attempt_id},case_id={item.case_id},"
+                    f"agreement={split_half_agreement:.6f})"
                 )
-            if (item.case_id, item.config_sha256, item.backend) in sampled_keys:
+            full_set = set(full_order)
+            for individual_order in individual_orders:
+                individual_set = set(individual_order)
+                stability.single_replay_set_comparison_count += 1
+                union = full_set | individual_set
+                jaccard = len(full_set & individual_set) / len(union) if union else 1.0
+                stability.min_single_replay_set_jaccard = min(
+                    stability.min_single_replay_set_jaccard,
+                    jaccard,
+                )
+                common_rank_agreement = _rank_overlap_agreement(individual_order, full_order)
+                stability.min_single_replay_common_rank_agreement = min(
+                    stability.min_single_replay_common_rank_agreement,
+                    common_rank_agreement,
+                )
+                if jaccard < _MIN_SINGLE_REPLAY_SET_JACCARD:
+                    raise RetrievalEvaluationError(
+                        "reranker single-replay final-set overlap is below qualification floor "
+                        f"(attempt_id={attempt_id},case_id={item.case_id},jaccard={jaccard:.6f})"
+                    )
+                if common_rank_agreement < _MIN_RERANK_RANK_AGREEMENT:
+                    raise RetrievalEvaluationError(
+                        "reranker single-replay common-item rank agreement is below threshold "
+                        f"(attempt_id={attempt_id},case_id={item.case_id},"
+                        f"agreement={common_rank_agreement:.6f})"
+                    )
+                if individual_set != full_set:
+                    stability.single_replay_set_mismatch_count += 1
+                    continue
+                individual_agreement = _rank_agreement(individual_order, full_order)
+                stability.min_same_set_single_replay_rank_agreement = min(
+                    stability.min_same_set_single_replay_rank_agreement,
+                    individual_agreement,
+                )
+                if individual_agreement < _MIN_RERANK_RANK_AGREEMENT:
+                    raise RetrievalEvaluationError(
+                        "reranker single-replay rank agreement is below qualification threshold "
+                        f"(attempt_id={attempt_id},case_id={item.case_id},"
+                        f"agreement={individual_agreement:.6f})"
+                    )
+            if (item.case_id, item.split, item.config_sha256, item.backend) in sampled_keys:
                 live_scores = await self._delegate.rerank(
                     item.query,
                     [text for _, text in item.candidates],
@@ -1012,14 +1190,15 @@ class _PairedReranker(Reranker):
                         f"(attempt_id={attempt_id},case_id={item.case_id})"
                     )
                 batch_shape_live_pair_score_count += len(live_scores)
+                stability.batch_shape_sample_count += 1
+                stability.batch_shape_live_pair_score_count += len(live_scores)
                 live_ranked = sorted(
                     zip(item.candidates, live_scores, strict=True),
                     key=lambda row: (-round(float(row[1]), _RERANK_SCORE_DIGITS), row[0][0].int),
                 )
                 live_order = (
                     ()
-                    if round(float(live_ranked[0][1]), _RERANK_SCORE_DIGITS)
-                    < item.rerank_min_score
+                    if round(float(live_ranked[0][1]), _RERANK_SCORE_DIGITS) < item.rerank_min_score
                     else tuple(row[0][0] for row in live_ranked[: item.final_top_k])
                 )
                 if set(live_order) != set(full_order):
@@ -1028,8 +1207,8 @@ class _PairedReranker(Reranker):
                         f"(attempt_id={attempt_id},case_id={item.case_id})"
                     )
                 batch_agreement = _rank_agreement(live_order, full_order)
-                min_batch_shape_agreement = min(
-                    min_batch_shape_agreement,
+                stability.min_batch_shape_rank_agreement = min(
+                    stability.min_batch_shape_rank_agreement,
                     batch_agreement,
                 )
                 if batch_agreement < _MIN_RERANK_RANK_AGREEMENT:
@@ -1041,14 +1220,70 @@ class _PairedReranker(Reranker):
                 batch_shape_rows.append(
                     {
                         "case_id": item.case_id,
+                        "split": item.split,
                         "config_sha256": item.config_sha256,
                         "backend": item.backend,
-                        "scores_sha256": _sha256_json(
-                            [float(score).hex() for score in live_scores]
-                        ),
+                        "scores_sha256": _sha256_json([float(score).hex() for score in live_scores]),
                         "order_sha256": _sha256_json([str(value) for value in live_order]),
                     }
                 )
+
+        if not stability_accumulators:
+            raise RetrievalEvaluationError("reranker single-replay coverage is empty")
+        stability_slices: list[RerankerStabilitySlice] = []
+        for (split_name, config_fingerprint, backend), accumulator in sorted(stability_accumulators.items()):
+            expected_comparisons = accumulator.nonempty_candidate_set_count * replay_count
+            if accumulator.single_replay_set_comparison_count != expected_comparisons:
+                raise RetrievalEvaluationError("reranker stability-slice coverage is incomplete")
+            if accumulator.batch_shape_sample_count < 1:
+                raise RetrievalEvaluationError("reranker stability-slice batch coverage is empty")
+            mismatch_ratio = (
+                accumulator.single_replay_set_mismatch_count / accumulator.single_replay_set_comparison_count
+            )
+            if mismatch_ratio > _MAX_SINGLE_REPLAY_SET_MISMATCH_RATIO + _SCORE_EPSILON:
+                raise RetrievalEvaluationError(
+                    "reranker single-replay final-set mismatch ratio exceeds qualification cap "
+                    f"(attempt_id={attempt_id},split={split_name},"
+                    f"config_sha256={config_fingerprint},backend={backend},"
+                    f"mismatches={accumulator.single_replay_set_mismatch_count},"
+                    f"comparisons={accumulator.single_replay_set_comparison_count},"
+                    f"ratio={mismatch_ratio:.6f})"
+                )
+            stability_slices.append(
+                RerankerStabilitySlice(
+                    split=split_name,
+                    config_sha256=config_fingerprint,
+                    backend=backend,
+                    nonempty_candidate_set_count=accumulator.nonempty_candidate_set_count,
+                    single_replay_set_comparison_count=(accumulator.single_replay_set_comparison_count),
+                    single_replay_set_mismatch_count=(accumulator.single_replay_set_mismatch_count),
+                    min_split_half_rank_agreement=(accumulator.min_split_half_rank_agreement),
+                    min_same_set_single_replay_rank_agreement=(
+                        accumulator.min_same_set_single_replay_rank_agreement
+                    ),
+                    min_single_replay_common_rank_agreement=(
+                        accumulator.min_single_replay_common_rank_agreement
+                    ),
+                    min_single_replay_set_jaccard=(accumulator.min_single_replay_set_jaccard),
+                    batch_shape_sample_count=accumulator.batch_shape_sample_count,
+                    batch_shape_live_pair_score_count=(accumulator.batch_shape_live_pair_score_count),
+                    min_batch_shape_rank_agreement=(accumulator.min_batch_shape_rank_agreement),
+                )
+            )
+        nonempty_candidate_set_count = sum(item.nonempty_candidate_set_count for item in stability_slices)
+        single_set_comparison_count = sum(
+            item.single_replay_set_comparison_count for item in stability_slices
+        )
+        single_set_mismatch_count = sum(item.single_replay_set_mismatch_count for item in stability_slices)
+        min_split_half_agreement = min(item.min_split_half_rank_agreement for item in stability_slices)
+        min_same_set_single_agreement = min(
+            item.min_same_set_single_replay_rank_agreement for item in stability_slices
+        )
+        min_single_common_rank_agreement = min(
+            item.min_single_replay_common_rank_agreement for item in stability_slices
+        )
+        min_single_set_jaccard = min(item.min_single_replay_set_jaccard for item in stability_slices)
+        min_batch_shape_agreement = min(item.min_batch_shape_rank_agreement for item in stability_slices)
 
         score_rows = sorted(
             (
@@ -1086,7 +1321,14 @@ class _PairedReranker(Reranker):
             live_pair_score_count=live_pair_score_count,
             live_batch_count=live_batch_count,
             candidate_set_count=len(candidate_sets),
-            min_replay_rank_agreement=min_agreement,
+            nonempty_candidate_set_count=nonempty_candidate_set_count,
+            min_split_half_rank_agreement=min_split_half_agreement,
+            min_same_set_single_replay_rank_agreement=min_same_set_single_agreement,
+            min_single_replay_common_rank_agreement=min_single_common_rank_agreement,
+            min_single_replay_set_jaccard=min_single_set_jaccard,
+            single_replay_set_comparison_count=single_set_comparison_count,
+            single_replay_set_mismatch_count=single_set_mismatch_count,
+            stability_slices=tuple(stability_slices),
             batch_shape_sample_count=len(batch_shape_rows),
             batch_shape_live_pair_score_count=batch_shape_live_pair_score_count,
             min_batch_shape_rank_agreement=min_batch_shape_agreement,
@@ -1615,7 +1857,7 @@ def load_resumed_case(
     query_embedding_sha256: str,
     binding: _CaseBinding,
     reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v1"
+        "live-repeated-v1", "canonical-mean-score-per-query-input-v2"
     ] = "live-repeated-v1",
     hmac_key: bytes | None = None,
 ) -> CaseArtifact | None:
@@ -2607,6 +2849,7 @@ async def _collect_reranker_input(
     sessionmaker: async_sessionmaker[AsyncSession],
     binding: _CaseBinding,
     scope: _VerifiedScope,
+    split: SplitName,
     config: RetrievalConfig,
     backend: SparseBackend,
 ) -> _CollectedRerankSet:
@@ -2634,9 +2877,7 @@ async def _collect_reranker_input(
     if trace.reranker_fallback:
         raise RetrievalEvaluationError("reranker prewarm used fallback")
     if any(
-        chunk.document_id not in scope.document_ids
-        for rows in _pool_rows(trace).values()
-        for chunk in rows
+        chunk.document_id not in scope.document_ids for rows in _pool_rows(trace).values() for chunk in rows
     ):
         raise RetrievalEvaluationError("reranker prewarm escaped the verified owner scope")
     hybrid_ids = {chunk.id for chunk in trace.hybrid_pre_rerank}
@@ -2644,15 +2885,13 @@ async def _collect_reranker_input(
         raise RetrievalEvaluationError("reranker prewarm candidate universe changed")
     return _CollectedRerankSet(
         case_id=binding.record.case_id,
+        split=split,
         query=binding.record.question,
         config_sha256=config.fingerprint,
         backend=backend,
         rerank_min_score=config.rerank_min_score,
         final_top_k=config.final_top_k,
-        candidates=tuple(
-            (chunk.id, chunk.text_ru or chunk.text_en)
-            for chunk in trace.hybrid_pre_rerank
-        ),
+        candidates=tuple((chunk.id, chunk.text_ru or chunk.text_en) for chunk in trace.hybrid_pre_rerank),
     )
 
 
@@ -2669,6 +2908,16 @@ def _rank_agreement(left: Sequence[uuid.UUID], right: Sequence[uuid.UUID]) -> fl
             if right_positions[first] < right_positions[second]:
                 concordant += 1
     return concordant / pair_count
+
+
+def _rank_overlap_agreement(
+    left: Sequence[uuid.UUID],
+    right: Sequence[uuid.UUID],
+) -> float:
+    common = set(left) & set(right)
+    left_common = tuple(item for item in left if item in common)
+    right_common = tuple(item for item in right if item in common)
+    return _rank_agreement(left_common, right_common)
 
 
 def _borda_rank_consensus(
@@ -2709,7 +2958,7 @@ async def _execute_case(
     repeat_count: int,
     query_embedding_sha256: str,
     reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v1"
+        "live-repeated-v1", "canonical-mean-score-per-query-input-v2"
     ] = "live-repeated-v1",
 ) -> CaseArtifact:
     pool_orders: dict[PoolName, list[tuple[uuid.UUID, ...]]] = defaultdict(list)
@@ -2808,9 +3057,7 @@ async def _execute_case(
     min_pairwise_rank_agreement = 1.0
     if not deterministic:
         if reranker_score_protocol == _PINNED_RERANKER_PROTOCOL:
-            raise RetrievalEvaluationError(
-                "pinned reranker retrieval changed ordering between repeats"
-            )
+            raise RetrievalEvaluationError("pinned reranker retrieval changed ordering between repeats")
         unstable = ",".join(pool for pool, orders in sorted(pool_orders.items()) if len(set(orders)) > 1)
         final_sets_stable = len({frozenset(order) for order in pool_orders["final"]}) == 1
         final_lengths = {len(order) for order in pool_orders["final"]}
@@ -2818,9 +3065,7 @@ async def _execute_case(
         can_apply_consensus = unstable == "final" and len(final_lengths) == 1 and final_count > 0
         canonical_final: tuple[uuid.UUID, ...] = ()
         if can_apply_consensus and final_sets_stable:
-            canonical_final, min_pairwise_rank_agreement = _borda_rank_consensus(
-                pool_orders["final"]
-            )
+            canonical_final, min_pairwise_rank_agreement = _borda_rank_consensus(pool_orders["final"])
             can_apply_consensus = min_pairwise_rank_agreement >= _MIN_RERANK_RANK_AGREEMENT
             consensus_method = "borda-rank-v1"
         elif can_apply_consensus:
@@ -2930,7 +3175,7 @@ async def _run_or_resume_case(
     repeat_count: int,
     query_embedding_sha256: str,
     reranker_score_protocol: Literal[
-        "live-repeated-v1", "canonical-mean-score-per-query-input-v1"
+        "live-repeated-v1", "canonical-mean-score-per-query-input-v2"
     ] = "live-repeated-v1",
     hmac_key: bytes | None = None,
 ) -> CaseArtifact:
@@ -4114,6 +4359,8 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             raise RetrievalEvaluationError(
                 "qualification requires at least 200 locked cases and at most 36 tuning cases"
             )
+        tuning_set = set(split.tuning_case_ids)
+        locked_set = set(split.locked_case_ids)
         control = RetrievalConfig(
             dense_top_k=settings.rag_dense_top_k,
             sparse_top_k=settings.rag_sparse_top_k,
@@ -4146,6 +4393,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                             sessionmaker=api_sessions,
                             binding=binding,
                             scope=scopes[binding.record.scope_id],
+                            split="tuning" if case_id in tuning_set else "locked",
                             config=config,
                             backend=backend,
                         )
@@ -4155,9 +4403,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             collected_rerank_sets,
             questions=[record.question for record in records],
             revision=reranker_revision,
-            attempt_output=(
-                work_dir / "reranker-attempt.json" if mode == "qualification" else None
-            ),
+            attempt_output=(work_dir / "reranker-attempt.json" if mode == "qualification" else None),
         )
         runtime_binding_sha256 = _sha256_json(
             {
@@ -4195,8 +4441,6 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
         retriever = Retriever(paired_embedder, paired_reranker)
         load_reranker = _LiveCountingReranker(Reranker())
         load_retriever = Retriever(embedder, load_reranker)
-        tuning_set = set(split.tuning_case_ids)
-        locked_set = set(split.locked_case_ids)
         tuning_cases: dict[str, list[CaseArtifact]] = {}
         for config in sweep:
             observations = []
@@ -4215,9 +4459,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                         split="tuning",
                         run_id=run_id,
                         repeat_count=repeat_count,
-                        query_embedding_sha256=paired_embedder.vector_sha256(
-                            binding.record.question
-                        ),
+                        query_embedding_sha256=paired_embedder.vector_sha256(binding.record.question),
                         reranker_score_protocol=_PINNED_RERANKER_PROTOCOL,
                         hmac_key=case_hmac_key,
                     )
@@ -4230,6 +4472,12 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             {fingerprint: metrics["final"] for fingerprint, metrics in tuning_results.items()}
         )
         selected = next(config for config in sweep if config.fingerprint == selected_fingerprint)
+        try:
+            reranker_scores.require_release_config(selected_fingerprint)
+        except ValueError as exc:
+            raise RetrievalEvaluationError(
+                "selected release config lacks complete reranker stability evidence"
+            ) from exc
         locked_cases: dict[VariantName, list[CaseArtifact]] = {
             "baseline": [],
             "candidate": [],
@@ -4256,9 +4504,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                         split="locked",
                         run_id=run_id,
                         repeat_count=repeat_count,
-                        query_embedding_sha256=paired_embedder.vector_sha256(
-                            binding.record.question
-                        ),
+                        query_embedding_sha256=paired_embedder.vector_sha256(binding.record.question),
                         reranker_score_protocol=_PINNED_RERANKER_PROTOCOL,
                         hmac_key=case_hmac_key,
                     )
@@ -4281,9 +4527,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                         split="tuning",
                         run_id=run_id,
                         repeat_count=repeat_count,
-                        query_embedding_sha256=paired_embedder.vector_sha256(
-                            binding.record.question
-                        ),
+                        query_embedding_sha256=paired_embedder.vector_sha256(binding.record.question),
                         reranker_score_protocol=_PINNED_RERANKER_PROTOCOL,
                         hmac_key=case_hmac_key,
                     )
@@ -4497,14 +4741,14 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
                 verify_private_artifact_attestation(
                     attestation,
                     artifact_bytes=report_bytes,
-                    expected_artifact_type="rag-retrieval-bm25-report-v3",
+                    expected_artifact_type="rag-retrieval-bm25-report-v4",
                     key=case_hmac_key,
                     repository_root=REPOSITORY_ROOT,
                 )
             else:
                 attestation = create_private_artifact_attestation(
                     artifact_bytes=report_bytes,
-                    artifact_type="rag-retrieval-bm25-report-v3",
+                    artifact_type="rag-retrieval-bm25-report-v4",
                     key=case_hmac_key,
                     repository_root=REPOSITORY_ROOT,
                     source_paths=(
