@@ -16,10 +16,10 @@ Environment=CUDA_VISIBLE_DEVICES=3
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/root/services/vllm-main-0.24.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU3 — NUMA node1
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3.5-35B-A3B-GPTQ-Int4 \
+    /root/services/vllm-main-0.24.0/.venv/bin/vllm serve /root/models/Qwen3.5-35B-A3B-GPTQ-Int4 \
     --served-model-name qwen3.5-35b-a3b \
     --quantization gptq_marlin \
     --dtype bfloat16 \

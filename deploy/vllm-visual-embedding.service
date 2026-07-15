@@ -11,13 +11,12 @@ Environment=CUDA_VISIBLE_DEVICES=2
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-# Отдельный visual-venv (до квалификации >=0.24 — vLLM 0.22.1): compiled-путь
-# давал NaN в мультимодальном
-# pooling-пути этой модели (строковый /v1/embeddings работал)
-Environment=PATH=/root/services/vllm-visual/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Квалифицированное единое immutable-окружение vLLM 0.24.0; eager+float16
+# обязательны для конечных мультимодальных pooling-векторов на Ampere.
+Environment=PATH=/root/services/vllm-main-0.24.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU2 — NUMA node0
 ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
-    /root/services/vllm-visual/.venv/bin/vllm serve /root/models/Qwen3-VL-Embedding-8B \
+    /root/services/vllm-main-0.24.0/.venv/bin/vllm serve /root/models/Qwen3-VL-Embedding-8B \
     --served-model-name qwen3-vl-embedding-8b \
     --runner pooling \
     --host 127.0.0.1 \

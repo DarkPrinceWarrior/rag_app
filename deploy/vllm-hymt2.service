@@ -15,10 +15,10 @@ Environment=CUDA_VISIBLE_DEVICES=1
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/root/services/vllm-main-0.24.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU1 — NUMA node0 ({1,2} ↔ node0)
 ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Hy-MT2-7B \
+    /root/services/vllm-main-0.24.0/.venv/bin/vllm serve /root/models/Hy-MT2-7B \
     --served-model-name hy-mt2-7b \
     --host 127.0.0.1 \
     --port 8005 \
