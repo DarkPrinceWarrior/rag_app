@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from rag_app.api.routes.chat import _citation_guard_requires_buffer
 from rag_app.config import settings
 from rag_app.eval.citation_calibration import (
     CalibrationCase,
@@ -39,6 +40,17 @@ def _chunk(index: int, text: str) -> RetrievedChunk:
         meta={},
         score=1.0,
     )
+
+
+@pytest.mark.parametrize("mode", ["enforce", "selective"])
+def test_api_buffers_modes_that_can_rewrite_the_answer(mode: str) -> None:
+    assert _citation_guard_requires_buffer(mode, has_chunks=True)
+    assert not _citation_guard_requires_buffer(mode, has_chunks=False)
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow"])
+def test_api_streams_modes_that_do_not_rewrite_the_answer(mode: str) -> None:
+    assert not _citation_guard_requires_buffer(mode, has_chunks=True)
 
 
 class _Backend:

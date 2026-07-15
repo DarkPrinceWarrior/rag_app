@@ -50,6 +50,11 @@ def _owner_ok(session: ChatSession, user: User) -> bool:
     return user.is_admin or session.owner_sub == user.sub
 
 
+def _citation_guard_requires_buffer(mode: str, *, has_chunks: bool) -> bool:
+    """Режимы, которые должны проверить черновик до отправки пользователю."""
+    return has_chunks and mode in {"enforce", "selective"}
+
+
 async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> None:
     """Reject foreign document/folder scopes before starting the SSE response."""
     if user.is_admin:
@@ -255,13 +260,16 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                     route=route_info.route,
                 )
                 chunks = prepared.chunks
-                enforce_citations = settings.rag_citation_verification_mode == "enforce" and bool(chunks)
+                guard_citations = _citation_guard_requires_buffer(
+                    settings.rag_citation_verification_mode,
+                    has_chunks=bool(chunks),
+                )
                 async for delta in app.state.chat_engine.stream_prepared(prepared):
                     parts.append(delta)
-                    if not enforce_citations:
+                    if not guard_citations:
                         yield _sse({"type": "delta", "text": delta})
                 draft = "".join(parts).strip()
-                if enforce_citations:
+                if guard_citations:
                     guarded = await app.state.chat_engine.verify_answer(draft, chunks)
                     answer = guarded.answer
                     yield _sse({"type": "delta", "text": answer})
