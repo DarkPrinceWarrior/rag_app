@@ -209,9 +209,9 @@ async def configure_hnsw_transaction(
         sql(_HNSW_LOCAL_SETTINGS_SQL),
         {
             "iterative_scan": iterative_scan,
-            "ef_search": ef_search,
-            "max_scan_tuples": max_scan_tuples,
-            "scan_mem_multiplier": scan_mem_multiplier,
+            "ef_search": str(ef_search),
+            "max_scan_tuples": str(max_scan_tuples),
+            "scan_mem_multiplier": str(scan_mem_multiplier),
         },
     )
 

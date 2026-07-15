@@ -285,9 +285,9 @@ def test_hnsw_backend_applies_transaction_local_settings_before_dense_query(
     assert "set_config('hnsw.iterative_scan', :iterative_scan, true)" in session.statements[0]
     assert session.parameters[0] == {
         "iterative_scan": "strict_order",
-        "ef_search": 100,
-        "max_scan_tuples": 20_000,
-        "scan_mem_multiplier": 2.0,
+        "ef_search": "100",
+        "max_scan_tuples": "20000",
+        "scan_mem_multiplier": "2.0",
     }
     assert "WITH en_scan AS MATERIALIZED" in session.statements[1]
     assert "websearch_to_tsquery" in session.statements[2]
