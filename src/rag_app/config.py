@@ -236,6 +236,10 @@ class Settings(BaseSettings):
     chat_output_tokens: int = 2048
     chat_image_tokens: int = 1300  # ~стоимость одного приложенного кропа (1400px)
     chat_chars_per_token: int = 3  # грубая оценка ru/en (символов на токен)
+    # Детерминированная сверка quantity/unit в финальном RAG-ответе с реально
+    # использованными чанками. До прохождения private Gold только off/shadow:
+    # shadow не меняет ответ и пишет исключительно агрегированные счётчики.
+    rag_quantity_guard_mode: Literal["off", "shadow"] = "off"
     rag_citation_verification_mode: Literal["off", "shadow", "enforce", "selective"] = "off"
     rag_citation_verifier_max_tokens: int = 1200
     # selective: локальный HHEM/Lettuce-compatible HTTP scorer; веса и лицензия

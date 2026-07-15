@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 
 const documentId = '00000000-0000-4000-8000-000000000001'
+const secondDocumentId = '00000000-0000-4000-8000-000000000002'
 
 const document = {
   id: documentId,
@@ -21,17 +22,25 @@ const document = {
   created_at: '2026-07-15T10:00:00Z',
 }
 
+const secondDocument = {
+  ...document,
+  id: secondDocumentId,
+  filename: 'Спецификация оборудования.pdf',
+}
+
 async function json(route: Route, body: unknown) {
   await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
 }
 
-async function mockApi(page: Page) {
+async function mockApi(page: Page, sessions: unknown[] = []) {
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/config') return json(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
-    if (path === '/api/documents') return json(route, [document])
-    if (path === '/api/folders' || path === '/api/chat/sessions') return json(route, [])
-    if (path === `/api/documents/${documentId}/translations`) return json(route, [])
+    if (path === '/api/documents') return json(route, [document, secondDocument])
+    if (path === '/api/folders') return json(route, [])
+    if (path === '/api/chat/sessions') return json(route, sessions)
+    if (/^\/api\/chat\/sessions\/[^/]+\/messages$/.test(path)) return json(route, [])
+    if (/^\/api\/documents\/[^/]+\/translations$/.test(path)) return json(route, [])
     return json(route, {})
   })
 }
@@ -80,7 +89,7 @@ test('390px core flows have no overflow, named controls, and usable touch target
   await expectTouchTarget(page.getByRole('link', { name: 'Документы' }))
   await expectTouchTarget(page.getByRole('link', { name: 'Профиль' }))
   await expectTouchTarget(page.getByRole('button', { name: 'Загрузить ещё' }))
-  await expectTouchTarget(page.getByRole('button', { name: 'Действия' }))
+  await expectTouchTarget(page.getByRole('button', { name: 'Действия' }).first())
 
   await page.goto('/upload')
   await expectAccessibleViewport(page)
@@ -104,4 +113,22 @@ test('390px core flows have no overflow, named controls, and usable touch target
 
   await page.getByPlaceholder('Введите запрос').fill('Проверка')
   await expectTouchTarget(page.getByTitle('Отправить'))
+})
+
+test('direct chat link restores a persisted multi-document scope', async ({ page }) => {
+  const sessionId = '00000000-0000-4000-8000-000000000010'
+  await mockApi(page, [
+    {
+      id: sessionId,
+      title: 'Сравнение требований',
+      document_id: null,
+      document_ids: [documentId, secondDocumentId],
+      folder_id: null,
+      created_at: '2026-07-15T10:00:00Z',
+      updated_at: '2026-07-15T10:00:00Z',
+    },
+  ])
+
+  await page.goto(`/chat?sid=${sessionId}`)
+  await expect(page.getByRole('button', { name: 'Область чата: 2 документа' })).toBeVisible()
 })

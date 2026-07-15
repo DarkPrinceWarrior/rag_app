@@ -24,6 +24,7 @@ def test_runtime_flags_are_declarative_and_non_secret() -> None:
     }
     assert lines == {
         "RAG_RAG_CONTEXT_BUDGET_MODE=enforce",
+        "RAG_RAG_QUANTITY_GUARD_MODE=shadow",
         "RAG_VISUAL_ENABLED=true",
         "RAG_PARSER_QUALITY_SHADOW_ENABLED=true",
         "RAG_PARSER_PAGE_ROUTER_MODE=shadow",

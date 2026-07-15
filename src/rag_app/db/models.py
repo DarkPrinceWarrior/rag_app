@@ -500,6 +500,12 @@ class ChatSession(Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), default=None
     )
+    # Область из нескольких документов должна переживать перезагрузку браузера.
+    # FK на элементы массива PostgreSQL не поддерживает; доступ к каждому id
+    # проверяется до записи сессии в API.
+    document_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=None
+    )
     # RBAC + субстрат памяти (Этап 0): обязательный OIDC sub владельца сессии
     # и папка библиотеки (project scope треда для слоя памяти, §15.0).
     owner_sub: Mapped[str] = mapped_column(String(64), index=True)

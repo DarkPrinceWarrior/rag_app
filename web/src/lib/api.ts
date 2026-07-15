@@ -165,6 +165,7 @@ export interface ChatSession {
   id: string
   title: string
   document_id: string | null
+  document_ids: string[] | null
   folder_id: string | null
   created_at: string
   updated_at: string

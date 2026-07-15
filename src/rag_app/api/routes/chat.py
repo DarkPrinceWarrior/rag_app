@@ -7,10 +7,12 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Sequence
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select, update
 from sqlalchemy import text as sql
 
@@ -23,6 +25,8 @@ from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
 from rag_app.rag.digest import render_docx, render_md, session_digest
 from rag_app.rag.memory.rls import apply_scope_guc
+from rag_app.rag.quantity_guard import evaluate_quantity_support
+from rag_app.rag.retrieve import RetrievedChunk
 from rag_app.rag.tools import AgentTools
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -34,11 +38,32 @@ router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[require_user
 class ChatIn(BaseModel):
     message: str
     session_id: uuid.UUID | None = None
+    scope_kind: Literal["all", "folder", "docs"] | None = None
     document_id: uuid.UUID | None = None
     folder_id: uuid.UUID | None = None
-    # произвольный набор документов (мульти-выбор в чате); область запроса —
-    # шлётся каждым ходом, в сессии не персистится (активный чат держит фронт)
-    document_ids: list[uuid.UUID] | None = None
+    document_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> ChatIn:
+        ids = self.document_ids or []
+        if len(ids) != len(set(ids)):
+            raise ValueError("document_ids must be unique")
+        selected = sum(
+            (
+                self.document_id is not None,
+                self.folder_id is not None,
+                bool(ids),
+            )
+        )
+        if selected > 1:
+            raise ValueError("chat scope fields are mutually exclusive")
+        if self.scope_kind == "all" and selected:
+            raise ValueError("all-library scope cannot contain document or folder filters")
+        if self.scope_kind == "folder" and self.folder_id is None:
+            raise ValueError("folder scope requires folder_id")
+        if self.scope_kind == "docs" and not (self.document_id or ids):
+            raise ValueError("docs scope requires at least one document")
+        return self
 
 
 def _sse(payload: dict) -> str:
@@ -53,6 +78,55 @@ def _owner_ok(session: ChatSession, user: User) -> bool:
 def _citation_guard_requires_buffer(mode: str, *, has_chunks: bool) -> bool:
     """Режимы, которые должны проверить черновик до отправки пользователю."""
     return has_chunks and mode in {"enforce", "selective"}
+
+
+def _scope_values(
+    body: ChatIn,
+) -> tuple[uuid.UUID | None, uuid.UUID | None, list[uuid.UUID] | None]:
+    """Каноническое представление области для сохранения в ChatSession."""
+    if body.scope_kind == "all":
+        return None, None, None
+    if body.folder_id is not None:
+        return None, body.folder_id, None
+    if body.document_id is not None:
+        return body.document_id, None, None
+    if body.document_ids:
+        return None, None, list(body.document_ids)
+    return None, None, None
+
+
+def _has_requested_scope(body: ChatIn) -> bool:
+    return body.scope_kind is not None or any(
+        (body.document_id is not None, body.folder_id is not None, bool(body.document_ids))
+    )
+
+
+def _apply_requested_scope(session: ChatSession, body: ChatIn) -> None:
+    if not _has_requested_scope(body):
+        return
+    document_id, folder_id, document_ids = _scope_values(body)
+    session.document_id = document_id
+    session.folder_id = folder_id
+    session.document_ids = document_ids
+
+
+def _audit_quantity_shadow(answer: str, chunks: Sequence[RetrievedChunk]) -> None:
+    """Записать только агрегаты; ошибка shadow-аудита не влияет на ответ."""
+    try:
+        quantity_guard = evaluate_quantity_support(answer, chunks)
+        logger.info(
+            "RAG quantity guard shadow: mentioned=%d supported=%d unsupported=%d "
+            "unsupported_pairs=%d unsupported_values=%d invalid_units=%d rate=%.6f",
+            quantity_guard["mentioned_count"],
+            quantity_guard["supported_count"],
+            quantity_guard["unsupported_count"],
+            quantity_guard["unsupported_pair_count"],
+            quantity_guard["unsupported_value_count"],
+            quantity_guard["invalid_unit_count"],
+            quantity_guard["unsupported_rate"],
+        )
+    except Exception as exc:  # noqa: BLE001 - shadow must never alter the answer path
+        logger.warning("RAG quantity guard shadow failed: %s", type(exc).__name__)
 
 
 async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> None:
@@ -110,21 +184,24 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                 if not _owner_ok(chat_session, user):
                     yield _sse({"type": "error", "detail": "сессия не найдена"})
                     return
+                _apply_requested_scope(chat_session, body)
             else:
+                document_id, folder_id, document_ids = _scope_values(body)
                 chat_session = ChatSession(
                     id=uuid.uuid4(),  # default колонки срабатывает только на flush
                     title=make_session_title(body.message),
-                    document_id=body.document_id,
+                    document_id=document_id,
+                    document_ids=document_ids,
                     owner_sub=user.sub,
-                    folder_id=body.folder_id,
+                    folder_id=folder_id,
                 )
                 db.add(chat_session)
                 await db.flush()  # сессия должна попасть в INSERT раньше сообщения (FK)
             db.add(ChatMessage(session_id=chat_session.id, role="user", content=body.message))
             session_id = chat_session.id
-            doc_filter = chat_session.document_id or body.document_id
-            project_id = chat_session.folder_id or body.folder_id
-            doc_ids = body.document_ids or None  # набор документов (мульти-выбор)
+            doc_filter = chat_session.document_id
+            project_id = chat_session.folder_id
+            doc_ids = chat_session.document_ids or None
             # scope памяти треда: user=owner, project=папка, document=документ, thread=сессия
             mem_scope = app.state.memory.scope_for(
                 user.sub, project_id=project_id, document_id=doc_filter, thread_id=session_id
@@ -288,6 +365,8 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                 yield _sse({"type": "error", "detail": f"генерация не удалась: {exc}"})
                 return
 
+        if settings.rag_quantity_guard_mode == "shadow" and chunks:
+            _audit_quantity_shadow(answer, chunks)
         citations = extract_citations(answer, chunks) if chunks else []
         async with sessionmaker() as db:
             msg = ChatMessage(
@@ -346,6 +425,9 @@ async def list_sessions(request: Request) -> list[dict]:
             "id": str(s.id),
             "title": s.title,
             "document_id": str(s.document_id) if s.document_id else None,
+            "document_ids": [str(document_id) for document_id in s.document_ids]
+            if s.document_ids
+            else None,
             "folder_id": str(s.folder_id) if s.folder_id else None,
             "created_at": s.created_at.isoformat(),
             "updated_at": s.updated_at.isoformat(),

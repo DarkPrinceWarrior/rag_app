@@ -39,6 +39,13 @@ type Scope =
   | { kind: 'folder'; folderId: string }
   | { kind: 'docs'; docIds: string[] }
 
+function scopeFromSession(session: ChatSession): Scope {
+  if (session.document_ids?.length) return { kind: 'docs', docIds: session.document_ids }
+  if (session.document_id) return { kind: 'docs', docIds: [session.document_id] }
+  if (session.folder_id) return { kind: 'folder', folderId: session.folder_id }
+  return { kind: 'all' }
+}
+
 function scopeToBody(scope: Scope): {
   document_id?: string | null
   folder_id?: string
@@ -102,15 +109,17 @@ function Chat() {
       .catch(() => setMessages([]))
   }, [sidParam])
 
+  // При прямом открытии /chat?sid= восстанавливаем не только сообщения, но и
+  // точную область источников, включая произвольный набор документов.
+  useEffect(() => {
+    if (!sidParam || !sessionsQ.data) return
+    const session = sessionsQ.data.find((item) => item.id === sidParam)
+    if (session) setScope(scopeFromSession(session))
+  }, [sidParam, sessionsQ.data])
+
   function openSession(s: ChatSession) {
     if (busy) return
-    setScope(
-      s.document_id
-        ? { kind: 'docs', docIds: [s.document_id] }
-        : s.folder_id
-          ? { kind: 'folder', folderId: s.folder_id }
-          : { kind: 'all' },
-    )
+    setScope(scopeFromSession(s))
     loadedSid.current = null // заставить эффект перечитать сообщения
     navigate({ search: (prev) => ({ ...prev, sid: s.id }) })
   }
@@ -169,7 +178,12 @@ function Chat() {
     ])
     try {
       await streamChat(
-        { message: text, session_id: sessionId.current, ...scopeToBody(scope) },
+        {
+          message: text,
+          session_id: sessionId.current,
+          scope_kind: scope.kind,
+          ...scopeToBody(scope),
+        },
         (ev) => {
           if (ev.type === 'session') {
             sessionId.current = ev.session_id
