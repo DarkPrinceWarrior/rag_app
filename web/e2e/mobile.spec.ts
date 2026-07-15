@@ -68,6 +68,7 @@ async function mockApi(page: Page, sessions: unknown[] = []) {
     if (path === `/api/documents/${documentId}/segments`) return json(route, [segment])
     if (path === `/api/documents/${officeDocumentId}`) return json(route, officeDocument)
     if (path === `/api/documents/${officeDocumentId}/segments`) return json(route, [segment])
+    if (path === `/api/segments/${segmentId}/versions`) return json(route, [])
     if (path === '/api/folders') return json(route, [])
     if (path === '/api/chat/sessions') return json(route, sessions)
     if (/^\/api\/chat\/sessions\/[^/]+\/messages$/.test(path)) return json(route, [])
@@ -173,6 +174,14 @@ test('390px document viewer keeps both source and translation usable', async ({ 
   await expectAccessibleViewport(page)
   await expectTouchTarget(page.getByRole('button', { name: 'Пересобрать экспорт' }))
   await expectTouchTarget(page.getByRole('button', { name: 'Скачать перевод' }))
+
+  await page.getByText(segment.translated_text, { exact: true }).hover()
+  await expectTouchTarget(page.getByTitle('Редактировать перевод'))
+  const historyButton = page.getByTitle('История правок перевода')
+  await expectTouchTarget(historyButton)
+  await historyButton.click()
+  await expectTouchTarget(page.getByRole('button', { name: 'Закрыть историю правок' }))
+  await expectAccessibleViewport(page)
 })
 
 test('390px Office viewer stacks full-width source and translation panes', async ({ page }) => {

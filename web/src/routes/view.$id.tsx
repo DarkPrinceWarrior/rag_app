@@ -1279,7 +1279,7 @@ function TranslatedBlock({
             e.stopPropagation()
             onStartEdit()
           }}
-          className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-[#4b4ce6] text-white shadow transition hover:opacity-90"
+          className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-[#4b4ce6] text-white shadow transition hover:opacity-90 max-md:h-11 max-md:w-11"
         >
           <Pencil className="h-4 w-4" />
         </button>
@@ -1293,7 +1293,7 @@ function TranslatedBlock({
             e.stopPropagation()
             void openHistory()
           }}
-          className="absolute -bottom-2.5 right-11 z-10 flex items-center gap-0.5 rounded border bg-card px-1 py-0.5 text-[10px] leading-none text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground"
+          className="absolute -bottom-2.5 right-11 z-10 flex items-center gap-0.5 rounded border bg-card px-1 py-0.5 text-[10px] leading-none text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground max-md:-bottom-5 max-md:right-14 max-md:min-h-11 max-md:min-w-11 max-md:px-2"
         >
           <Maximize2 className="h-2.5 w-2.5" />
           история
@@ -1303,7 +1303,12 @@ function TranslatedBlock({
         <div onClick={(e) => e.stopPropagation()} className="absolute bottom-5 right-0 z-30 max-h-72 w-80 overflow-auto rounded-md border bg-card p-2 text-xs shadow-lg">
           <div className="mb-1 flex items-center justify-between">
             <span className="font-medium">История правок ({history.length})</span>
-            <button onClick={() => setHistory(null)} className="text-muted-foreground hover:text-foreground">
+            <button
+              type="button"
+              aria-label="Закрыть историю правок"
+              onClick={() => setHistory(null)}
+              className="flex items-center justify-center text-muted-foreground hover:text-foreground max-md:h-11 max-md:w-11"
+            >
               ✕
             </button>
           </div>
