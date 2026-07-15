@@ -25,7 +25,7 @@ from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
 from rag_app.rag.digest import render_docx, render_md, session_digest
 from rag_app.rag.memory.rls import apply_scope_guc
-from rag_app.rag.quantity_guard import evaluate_quantity_support
+from rag_app.rag.quantity_guard import evaluate_quantity_support, record_quantity_guard_metrics
 from rag_app.rag.retrieve import RetrievedChunk
 from rag_app.rag.tools import AgentTools
 
@@ -114,6 +114,7 @@ def _audit_quantity_shadow(answer: str, chunks: Sequence[RetrievedChunk]) -> Non
     """Записать только агрегаты; ошибка shadow-аудита не влияет на ответ."""
     try:
         quantity_guard = evaluate_quantity_support(answer, chunks)
+        record_quantity_guard_metrics(quantity_guard)
         logger.info(
             "RAG quantity guard shadow: mentioned=%d supported=%d unsupported=%d "
             "unsupported_pairs=%d unsupported_values=%d invalid_units=%d rate=%.6f",

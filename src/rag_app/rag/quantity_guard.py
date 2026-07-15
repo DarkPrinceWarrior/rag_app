@@ -5,8 +5,20 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal, TypedDict
 
+from prometheus_client import Counter
+
 from rag_app.eval.rag_metrics import extract_quantity_mentions
 from rag_app.rag.retrieve import RetrievedChunk
+
+RAG_QUANTITY_MENTIONS = Counter(
+    "rag_chat_quantity_mentions_total",
+    "Numeric quantity mentions observed in grounded RAG answers",
+)
+RAG_QUANTITY_UNSUPPORTED = Counter(
+    "rag_chat_quantity_unsupported_total",
+    "Unsupported quantity observations in grounded RAG answers",
+    ("reason",),
+)
 
 
 class QuantityGuardResult(TypedDict):
@@ -96,9 +108,19 @@ def private_quantity_guard_artifact(
     }
 
 
+def record_quantity_guard_metrics(result: QuantityGuardResult) -> None:
+    """Publish aggregate-only online SLO counters without answer payloads."""
+
+    RAG_QUANTITY_MENTIONS.inc(result["mentioned_count"])
+    RAG_QUANTITY_UNSUPPORTED.labels("pair").inc(result["unsupported_pair_count"])
+    RAG_QUANTITY_UNSUPPORTED.labels("value").inc(result["unsupported_value_count"])
+    RAG_QUANTITY_UNSUPPORTED.labels("invalid_unit").inc(result["invalid_unit_count"])
+
+
 __all__ = [
     "PrivateQuantityGuardArtifact",
     "QuantityGuardResult",
     "evaluate_quantity_support",
     "private_quantity_guard_artifact",
+    "record_quantity_guard_metrics",
 ]
