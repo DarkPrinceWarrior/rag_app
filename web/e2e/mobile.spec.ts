@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page, type Route } from '@playwright/t
 
 const documentId = '00000000-0000-4000-8000-000000000001'
 const secondDocumentId = '00000000-0000-4000-8000-000000000002'
+const officeDocumentId = '00000000-0000-4000-8000-000000000003'
 const segmentId = '00000000-0000-4000-8000-000000000101'
 
 const document = {
@@ -29,6 +30,17 @@ const secondDocument = {
   filename: 'Спецификация оборудования.pdf',
 }
 
+const officeDocument = {
+  ...document,
+  id: officeDocumentId,
+  filename: 'Техническая спецификация API 6D.docx',
+  kind: 'docx',
+  exports: ['docx'],
+  has_view_orig: true,
+  has_view_ru: true,
+  parser_backend: 'mineru',
+}
+
 const segment = {
   id: segmentId,
   idx: 0,
@@ -51,9 +63,11 @@ async function mockApi(page: Page, sessions: unknown[] = []) {
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/config') return json(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
-    if (path === '/api/documents') return json(route, [document, secondDocument])
+    if (path === '/api/documents') return json(route, [document, secondDocument, officeDocument])
     if (path === `/api/documents/${documentId}`) return json(route, document)
     if (path === `/api/documents/${documentId}/segments`) return json(route, [segment])
+    if (path === `/api/documents/${officeDocumentId}`) return json(route, officeDocument)
+    if (path === `/api/documents/${officeDocumentId}/segments`) return json(route, [segment])
     if (path === '/api/folders') return json(route, [])
     if (path === '/api/chat/sessions') return json(route, sessions)
     if (/^\/api\/chat\/sessions\/[^/]+\/messages$/.test(path)) return json(route, [])
@@ -159,4 +173,22 @@ test('390px document viewer keeps both source and translation usable', async ({ 
   await expectAccessibleViewport(page)
   await expectTouchTarget(page.getByRole('button', { name: 'Пересобрать экспорт' }))
   await expectTouchTarget(page.getByRole('button', { name: 'Скачать перевод' }))
+})
+
+test('390px Office viewer stacks full-width source and translation panes', async ({ page }) => {
+  await mockApi(page)
+  await page.goto(`/view/${officeDocumentId}`)
+
+  const sourcePane = page.getByLabel('Оригинал документа')
+  const translationPane = page.getByLabel('Перевод документа')
+  await expect(sourcePane).toBeVisible()
+  await expect(translationPane).toBeVisible()
+  const sourceBox = await sourcePane.boundingBox()
+  const translationBox = await translationPane.boundingBox()
+  expect(sourceBox?.width ?? 0).toBeGreaterThanOrEqual(389)
+  expect(translationBox?.width ?? 0).toBeGreaterThanOrEqual(389)
+  expect(translationBox?.y ?? 0).toBeGreaterThanOrEqual((sourceBox?.y ?? 0) + (sourceBox?.height ?? 0))
+  await expectTouchTarget(page.getByRole('button', { name: 'как в Microsoft' }))
+  await expectTouchTarget(page.getByRole('button', { name: 'текст', exact: true }))
+  await expectAccessibleViewport(page)
 })

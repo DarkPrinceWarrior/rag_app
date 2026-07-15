@@ -290,14 +290,14 @@ function Viewer() {
               setRightText(false)
             }}
             title="Переведённый документ как PDF: заголовки, абзацы и таблицы с переносом (собран из перевода). Своя пагинация — для постраничного сравнения с оригиналом удобнее «текст»."
-            className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+            className={'px-2.5 py-1 max-md:min-h-11 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             документ (PDF)
           </button>
           <button
             onClick={() => setRightText(true)}
             title="Интерактивный перевод постранично, синхронно с оригиналом: заголовки, абзацы, таблицы, сноски без переполнения. Рекомендуется."
-            className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+            className={'px-2.5 py-1 max-md:min-h-11 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             текст
           </button>
@@ -312,14 +312,14 @@ function Viewer() {
               setRightText(false)
             }}
             title="Переведённый документ с сохранённой вёрсткой Word (LibreOffice-рендер). Точная раскладка оригинала."
-            className={'px-2.5 py-1 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+              className={'px-2.5 py-1 max-md:min-h-11 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             как в Microsoft
           </button>
           <button
             onClick={() => setRightText(true)}
             title="Интерактивный перевод постранично, синхронно с оригиналом: абзацы, таблицы, картинки."
-            className={'px-2.5 py-1 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
+              className={'px-2.5 py-1 max-md:min-h-11 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
             текст
           </button>
@@ -560,7 +560,7 @@ function Viewer() {
     return (
       <div>
         {header}
-        <div className="flex h-[calc(100vh-97px)] flex-col">
+        <div className="flex h-[calc(100vh-97px)] flex-col max-md:h-auto">
           {textMode && (
             <div className="flex items-center gap-2 border-b bg-card px-4 py-1.5 text-sm">
               <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
@@ -574,10 +574,16 @@ function Viewer() {
               </Button>
             </div>
           )}
-          <div className="flex flex-1 overflow-hidden">
-            <div className="w-1/2 border-r">
+          <div className="flex flex-1 overflow-hidden max-md:flex-col max-md:overflow-visible">
+            <div
+              aria-label="Оригинал документа"
+              className={cn(
+                'w-1/2 border-r max-md:w-full max-md:border-b max-md:border-r-0',
+                !textMode && 'max-md:min-h-[70vh]',
+              )}
+            >
               {textMode ? (
-                <div ref={sourceColRef} className="h-full overflow-y-auto">
+                <div ref={sourceColRef} className="h-full overflow-y-auto max-md:h-auto max-md:overflow-visible">
                   <PaneHeader label="Оригинал" lang={docQ.data?.source_lang} />
                   <article className="mx-auto max-w-3xl px-6 py-4">
                     {pageSegs.length === 0 ? (
@@ -600,7 +606,13 @@ function Viewer() {
                 />
               )}
             </div>
-            <div className="flex w-1/2 flex-col">
+            <div
+              aria-label="Перевод документа"
+              className={cn(
+                'flex w-1/2 flex-col max-md:w-full',
+                !textMode && 'max-md:min-h-[70vh]',
+              )}
+            >
               {/* Тумблер «текст | как в Microsoft» — в шапке. «Как в Microsoft» = view_ru
                   со СВОЕЙ пагинацией (ruPage, не синхронна с оригиналом — объём после
                   перевода другой); связь — кросс-навигацией по клику. */}
@@ -621,7 +633,7 @@ function Viewer() {
                   <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
                 )
               ) : (
-                <div ref={translatedColRef} className="h-full overflow-y-auto">
+                <div ref={translatedColRef} className="h-full overflow-y-auto max-md:h-auto max-md:overflow-visible">
                   <PaneHeader label="Перевод" lang="ru" />
                   <article className="mx-auto max-w-3xl px-6 py-4">
                     {pageSegs.length === 0 ? (
@@ -698,8 +710,8 @@ function Viewer() {
     return (
       <div>
         {header}
-        <div className="flex h-[calc(100vh-97px)]">
-          <div className="w-1/2 border-r">
+        <div className="flex h-[calc(100vh-97px)] max-md:h-auto max-md:flex-col">
+          <div aria-label="Оригинал документа" className="w-1/2 border-r max-md:min-h-[70vh] max-md:w-full max-md:border-b max-md:border-r-0">
             <PdfPane
               docId={id}
               urlKind="view_orig"
@@ -710,7 +722,7 @@ function Viewer() {
               onPageChange={setPage}
             />
           </div>
-          <div className="w-1/2">
+          <div aria-label="Перевод документа" className="w-1/2 max-md:min-h-[70vh] max-md:w-full">
             {hasViewRu ? (
               <PdfPane
                 docId={id}
@@ -748,8 +760,8 @@ function Viewer() {
     <div>
       {header}
       <DocAssistant docId={id} filename={docQ.data?.filename} />
-      <div className="mx-auto grid max-w-[1600px] grid-cols-2 gap-8 px-6 py-4">
-        <section className="border-r pr-8">
+      <div className="mx-auto grid max-w-[1600px] grid-cols-2 gap-8 px-6 py-4 max-md:grid-cols-1 max-md:gap-6 max-md:px-4">
+        <section className="border-r pr-8 max-md:border-b max-md:border-r-0 max-md:pb-6 max-md:pr-0">
           <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Оригинал</div>
           <DocFlow segs={segs} field="source" editable={false} citedId={cited} />
         </section>
