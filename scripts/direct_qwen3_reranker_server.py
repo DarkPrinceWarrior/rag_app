@@ -13,7 +13,7 @@ import os
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -27,6 +27,10 @@ MODEL_PATH = os.environ.get("DIRECT_RERANK_MODEL_PATH", "/root/models/Qwen3-Rera
 SERVED_MODEL_NAME = os.environ.get("DIRECT_RERANK_SERVED_MODEL_NAME", "qwen3-reranker-4b")
 MAX_LENGTH = int(os.environ.get("DIRECT_RERANK_MAX_LENGTH", "8192"))
 MICRO_BATCH_SIZE = int(os.environ.get("DIRECT_RERANK_BATCH_SIZE", "4"))
+MODEL_DTYPE = cast(
+    Literal["bfloat16", "float32"],
+    os.environ.get("DIRECT_RERANK_DTYPE", "bfloat16").casefold(),
+)
 _QWEN3_RERANK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
 
@@ -75,6 +79,7 @@ class HealthResponse(_StrictModel):
     deterministic_algorithms: bool
     max_length: int
     micro_batch_size: int
+    dtype: Literal["bfloat16", "float32"]
 
 
 class ModelCard(_StrictModel):
@@ -94,6 +99,8 @@ class Qwen3RerankerRuntime:
             raise RuntimeError("Qwen3 reranker requires CUDA")
         if MAX_LENGTH < 1 or MICRO_BATCH_SIZE < 1:
             raise RuntimeError("reranker length and batch size must be positive")
+        if MODEL_DTYPE not in {"bfloat16", "float32"}:
+            raise RuntimeError("reranker dtype must be bfloat16 or float32")
 
         torch.use_deterministic_algorithms(True)
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -124,7 +131,7 @@ class Qwen3RerankerRuntime:
         self._model = AutoModelForCausalLM.from_pretrained(
             model_path,
             local_files_only=True,
-            dtype=torch.bfloat16,
+            dtype=getattr(torch, MODEL_DTYPE),
             attn_implementation="sdpa",
         ).cuda()
         self._model.eval()
@@ -212,6 +219,7 @@ def healthz() -> HealthResponse:
         deterministic_algorithms=torch.are_deterministic_algorithms_enabled(),
         max_length=MAX_LENGTH,
         micro_batch_size=MICRO_BATCH_SIZE,
+        dtype=MODEL_DTYPE,
     )
 
 

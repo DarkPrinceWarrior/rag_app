@@ -729,6 +729,18 @@ def test_paired_reranker_allows_raw_score_drift_when_ranking_is_stable() -> None
     assert evidence.min_same_set_single_replay_rank_agreement == 1.0
 
 
+def test_reranker_replay_count_uses_policy_and_fails_closed_below_three() -> None:
+    policy = runner.RetrievalGatePolicy.model_validate_json(
+        (Path(__file__).parents[1] / "deploy/rag-eval/retrieval-policy-v2.json").read_bytes(),
+        strict=True,
+    )
+
+    assert runner._reranker_replay_count(policy) == policy.min_determinism_replays == 3
+
+    with pytest.raises(runner.RetrievalEvaluationError, match="between 3 and 21"):
+        runner._reranker_replay_count(policy.model_copy(update={"min_determinism_replays": 2}))
+
+
 def test_paired_reranker_frozen_miss_fails_without_live_call() -> None:
     delegate = _StableReranker()
     reranker = runner._PairedReranker(delegate)

@@ -127,7 +127,8 @@ _PINNED_RERANKER_PROTOCOL: Literal["canonical-sequential-rank-consensus-v3"] = (
     "canonical-sequential-rank-consensus-v3"
 )
 _LOAD_RERANKER_PROTOCOL: Literal["live-per-request-v1"] = "live-per-request-v1"
-_RERANK_PREWARM_REPLAYS = 21
+_MIN_RERANK_PREWARM_REPLAYS = 3
+_MAX_RERANK_PREWARM_REPLAYS = 21
 _RERANK_BATCH_SHAPE_SAMPLES_PER_SLICE = 16
 
 VariantName = Literal["baseline", "candidate"]
@@ -138,6 +139,20 @@ RunMode = Literal["dev", "qualification"]
 
 class RetrievalEvaluationError(RuntimeError):
     """The paired evaluation cannot produce trustworthy evidence."""
+
+
+def _reranker_replay_count(policy: RetrievalGatePolicy) -> int:
+    replay_count = policy.min_determinism_replays
+    if not (
+        _MIN_RERANK_PREWARM_REPLAYS
+        <= replay_count
+        <= _MAX_RERANK_PREWARM_REPLAYS
+    ):
+        raise RetrievalEvaluationError(
+            "reranker determinism policy must require between "
+            f"{_MIN_RERANK_PREWARM_REPLAYS} and {_MAX_RERANK_PREWARM_REPLAYS} replays"
+        )
+    return replay_count
 
 
 class _StrictModel(BaseModel):
@@ -973,7 +988,7 @@ class _PairedReranker(Reranker):
         revision: ModelEndpointRevision,
         runtime_profile_sha256: str = "0000000000000000000000000000000000000000000000000000000000000000",
         precision: Precision = "float32",
-        replay_count: int = _RERANK_PREWARM_REPLAYS,
+        replay_count: int = _MIN_RERANK_PREWARM_REPLAYS,
         attempt_output: Path | None = None,
     ) -> RerankerScoreEvidence:
         if self._allowed_questions is not None or self._scores or self._evidence is not None:
@@ -4473,6 +4488,7 @@ async def run(args: argparse.Namespace) -> FinalReport | None:
             revision=reranker_revision,
             runtime_profile_sha256=runtime_profile_sha256,
             precision=reranker_precision,
+            replay_count=_reranker_replay_count(policy),
             attempt_output=(work_dir / "reranker-attempt.json" if mode == "qualification" else None),
         )
         runtime_binding_sha256 = _sha256_json(

@@ -58,6 +58,14 @@ def test_models_and_health_expose_deterministic_runtime(
     assert health.status == "ok"
     assert health.model_loaded is True
     assert health.deterministic_algorithms is True
+    assert health.dtype == "bfloat16"
+
+
+def test_health_exposes_requested_float32_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECT_RERANK_DTYPE", "float32")
+    server = _load_server(monkeypatch)
+
+    assert server.healthz().dtype == "float32"
 
 
 def test_rerank_rejects_unknown_model(monkeypatch: pytest.MonkeyPatch) -> None:
