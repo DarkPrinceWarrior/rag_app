@@ -506,6 +506,11 @@ class ChatSession(Base):
     document_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=None
     )
+    # Несколько папок можно комбинировать с отдельными документами. Папки
+    # разворачиваются в актуальный набор документов на каждом ходе чата.
+    folder_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=None
+    )
     # RBAC + субстрат памяти (Этап 0): обязательный OIDC sub владельца сессии
     # и папка библиотеки (project scope треда для слоя памяти, §15.0).
     owner_sub: Mapped[str] = mapped_column(String(64), index=True)

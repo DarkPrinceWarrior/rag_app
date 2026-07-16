@@ -49,6 +49,8 @@ interface ChatMockOptions {
   answer?: string
   sessions?: unknown[]
   messages?: Record<string, unknown[]>
+  documents?: unknown[]
+  folders?: unknown[]
 }
 
 async function fulfillJson(route: Route, body: unknown, status = 200) {
@@ -101,7 +103,8 @@ async function mockApi(
     if (path === '/api/config') {
       return fulfillJson(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
     }
-    if (path === '/api/folders') return fulfillJson(route, [])
+    if (path === '/api/memory' || path === '/api/memory/candidates') return fulfillJson(route, [])
+    if (path === '/api/folders') return fulfillJson(route, chat.folders ?? [])
     const historyMatch = /^\/api\/chat\/sessions\/([^/]+)\/messages$/.exec(path)
     if (historyMatch) return fulfillJson(route, chat.messages?.[historyMatch[1]] ?? [])
     if (path === '/api/chat/sessions') return fulfillJson(route, chat.sessions ?? [])
@@ -152,7 +155,7 @@ async function mockApi(
       }
       return fulfillJson(route, documentFor(state))
     }
-    if (path === '/api/documents') return fulfillJson(route, [documentFor(state)])
+    if (path === '/api/documents') return fulfillJson(route, chat.documents ?? [documentFor(state)])
 
     if (path === '/api/chat' && method === 'POST') {
       return route.fulfill({
@@ -179,6 +182,38 @@ test('retry updates the library card after a successful enqueue', async ({ page 
   await expect(page.getByText('Обработка…')).toBeVisible()
 })
 
+test('library search is limited to documents and profile uses a conventional control', async ({ page }) => {
+  await mockApi(page)
+
+  await page.goto('/')
+  await expect(page.getByPlaceholder('Найти среди документов')).toBeVisible()
+  const profile = page.getByRole('link', { name: 'Профиль' })
+  await expect(profile).toBeVisible()
+  await expect(profile.locator('svg')).toHaveCount(1)
+
+  for (const path of ['/upload', '/chat', '/account']) {
+    await page.goto(path)
+    await expect(page.getByPlaceholder('Найти среди документов')).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Профиль' })).toBeVisible()
+  }
+})
+
+test('document cards stay compact on wide screens', async ({ page }) => {
+  await mockApi(page)
+
+  for (const width of [1024, 1920, 2560]) {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.goto('/')
+    const card = page.getByTestId('document-card').first()
+    await expect(card).toBeVisible()
+    const box = await card.boundingBox()
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(237)
+    expect(box?.width ?? Infinity).toBeLessThanOrEqual(281)
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+  }
+})
+
 test('upload shows processing before the document reaches the completed state', async ({ page }) => {
   await mockApi(page)
   await page.goto('/upload')
@@ -203,6 +238,80 @@ test('chat renders SSE deltas, citations, and the cited source', async ({ page }
   await expect(page.getByText('Источник [1]')).toBeVisible()
   await expect(page.getByText('Расчётное давление — 16 МПа.', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Открыть во вьювере' })).toBeVisible()
+})
+
+test('chat composer and footer fit in the initial desktop viewport', async ({ page }) => {
+  await mockApi(page)
+  for (const height of [600, 720, 900]) {
+    await page.setViewportSize({ width: 1440, height })
+    await page.goto('/chat')
+
+    const composer = page.getByPlaceholder('Введите запрос')
+    const footer = page.locator('footer')
+    await expect(composer).toBeVisible()
+    await expect(footer).toBeVisible()
+    const geometry = await page.evaluate(() => {
+      const input = document.querySelector('textarea[placeholder="Введите запрос"]')?.getBoundingClientRect()
+      const pageFooter = document.querySelector('footer')?.getBoundingClientRect()
+      const aside = document.querySelector('aside')?.getBoundingClientRect()
+      const chatColumn = document.querySelector('aside')?.nextElementSibling?.getBoundingClientRect()
+      return {
+        viewportHeight: window.innerHeight,
+        documentHeight: document.documentElement.scrollHeight,
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        inputBottom: input?.bottom ?? Infinity,
+        footerTop: pageFooter?.top ?? -Infinity,
+        footerBottom: pageFooter?.bottom ?? Infinity,
+        asideTop: aside?.top ?? Infinity,
+        asideBottom: aside?.bottom ?? -Infinity,
+        chatTop: chatColumn?.top ?? -Infinity,
+        chatBottom: chatColumn?.bottom ?? Infinity,
+      }
+    })
+    expect(geometry.documentHeight).toBeLessThanOrEqual(geometry.viewportHeight + 1)
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1)
+    expect(geometry.inputBottom).toBeLessThanOrEqual(geometry.footerTop)
+    expect(geometry.footerBottom).toBeLessThanOrEqual(geometry.viewportHeight + 1)
+    expect(Math.abs(geometry.asideTop - geometry.chatTop)).toBeLessThanOrEqual(1)
+    expect(Math.abs(geometry.asideBottom - geometry.chatBottom)).toBeLessThanOrEqual(1)
+  }
+})
+
+test('chat expands folders and combines several folders into one document scope', async ({ page }) => {
+  const folderA = { id: 'folder-a', name: 'Проект А', documents: 1 }
+  const folderB = { id: 'folder-b', name: 'Проект Б', documents: 1 }
+  const documentA = {
+    ...doneDocument,
+    id: '00000000-0000-4000-8000-000000000011',
+    filename: 'Документ А.pdf',
+    folder_id: folderA.id,
+  }
+  const documentB = {
+    ...doneDocument,
+    id: '00000000-0000-4000-8000-000000000012',
+    filename: 'Документ Б.pdf',
+    folder_id: folderB.id,
+  }
+  await mockApi(page, 'done', { documents: [documentA, documentB], folders: [folderA, folderB] })
+  await page.goto('/chat')
+
+  await expect(page.getByText('Папки', { exact: true })).toBeVisible()
+  await expect(page.getByText('Документы без папки', { exact: true })).toBeVisible()
+  await page.getByRole('checkbox', { name: 'Выбрать папку Проект А' }).click()
+  await page.getByRole('button', { name: 'Раскрыть папку Проект А' }).click()
+  await expect(page.getByRole('checkbox', { name: 'Документ А.pdf' })).toBeChecked()
+  await page.getByRole('checkbox', { name: 'Выбрать папку Проект Б' }).click()
+
+  const requestPromise = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === '/api/chat' && request.method() === 'POST',
+  )
+  await page.getByPlaceholder('Введите запрос').fill('Сравни требования')
+  await page.getByTitle('Отправить').click()
+  const request = await requestPromise
+  const body = request.postDataJSON() as { folder_ids?: string[]; document_ids?: string[] }
+  expect(body.folder_ids).toEqual([folderA.id, folderB.id])
+  expect(body.document_ids).toBeUndefined()
 })
 
 test('chat renders a persisted or streamed quantity warning outside malformed Markdown', async ({ page }) => {

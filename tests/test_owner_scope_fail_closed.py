@@ -260,10 +260,11 @@ async def test_agent_tools_find_figure_stays_inside_document_set() -> None:
     await tools.find_figure("рисунок 3", str(outside))
 
     sql, params = _compiled(session.statements[0])
+    assert "chunks.document_id =" in sql
     assert "chunks.document_id IN" in sql
     assert "documents.owner_sub =" in sql
     assert selected in params.values()
-    assert outside not in params.values()
+    assert outside in params.values()
 
 
 def test_library_retriever_and_agent_sources_have_no_null_owner_allowance() -> None:

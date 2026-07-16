@@ -81,7 +81,11 @@ _VISUAL_PAGES_SQL = """
 SELECT p.document_id, p.page_idx, 1 - (p.emb <=> CAST(:qe AS vector)) AS vscore
 FROM page_embeddings p JOIN documents d ON d.id = p.document_id
 WHERE (CAST(:doc_id AS uuid) IS NULL OR p.document_id = :doc_id)
-  AND (CAST(:doc_ids AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:doc_ids AS uuid[])))
+  AND (
+    (CAST(:doc_ids AS uuid[]) IS NULL AND CAST(:folder_ids AS uuid[]) IS NULL)
+    OR p.document_id = ANY(CAST(:doc_ids AS uuid[]))
+    OR d.folder_id = ANY(CAST(:folder_ids AS uuid[]))
+  )
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
   AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner)
   AND d.status = 'done'
@@ -110,11 +114,17 @@ _BASE_FIELDS = """
     c.page_start, c.page_end, c.text_en, c.text_ru, c.meta
 """
 
-# Фильтр области: одиночный документ ИЛИ набор документов (мульти-док выбор
-# в чате) ИЛИ папка. Каждый клауз — no-op, если параметр NULL (как :doc_id).
+# Массивы document_ids/folder_ids образуют единую selection-область:
+# документ входит в неё, если явно выбран ИЛИ лежит в выбранной папке.
+# NULL/NULL означает отсутствие selection-фильтра, но явный пустой folder_ids=[]
+# остаётся пустой областью, а не превращается в поиск по всей библиотеке.
 _SCOPE = """
   AND (CAST(:doc_id AS uuid) IS NULL OR c.document_id = :doc_id)
-  AND (CAST(:doc_ids AS uuid[]) IS NULL OR c.document_id = ANY(CAST(:doc_ids AS uuid[])))
+  AND (
+    (CAST(:doc_ids AS uuid[]) IS NULL AND CAST(:folder_ids AS uuid[]) IS NULL)
+    OR c.document_id = ANY(CAST(:doc_ids AS uuid[]))
+    OR d.folder_id = ANY(CAST(:folder_ids AS uuid[]))
+  )
   AND (CAST(:folder_id AS uuid) IS NULL OR d.folder_id = :folder_id)
   AND (CAST(:owner AS text) IS NULL OR d.owner_sub = :owner)
   AND d.status = 'done'
@@ -194,17 +204,11 @@ async def configure_hnsw_transaction(
 ) -> None:
     """Apply candidate HNSW knobs only until the current transaction ends."""
 
-    iterative_scan = (
-        settings.rag_hnsw_iterative_scan if iterative_scan is None else iterative_scan
-    )
+    iterative_scan = settings.rag_hnsw_iterative_scan if iterative_scan is None else iterative_scan
     ef_search = settings.rag_hnsw_ef_search if ef_search is None else ef_search
-    max_scan_tuples = (
-        settings.rag_hnsw_max_scan_tuples if max_scan_tuples is None else max_scan_tuples
-    )
+    max_scan_tuples = settings.rag_hnsw_max_scan_tuples if max_scan_tuples is None else max_scan_tuples
     scan_mem_multiplier = (
-        settings.rag_hnsw_scan_mem_multiplier
-        if scan_mem_multiplier is None
-        else scan_mem_multiplier
+        settings.rag_hnsw_scan_mem_multiplier if scan_mem_multiplier is None else scan_mem_multiplier
     )
     if iterative_scan not in {"off", "strict_order", "relaxed_order"}:
         raise ValueError("unsupported HNSW iterative scan mode")
@@ -221,6 +225,7 @@ async def configure_hnsw_transaction(
             "scan_mem_multiplier": str(scan_mem_multiplier),
         },
     )
+
 
 _SPARSE_SQL = f"""
 SELECT {_BASE_FIELDS},
@@ -431,9 +436,7 @@ def _row_to_chunk(row: Any) -> RetrievedChunk:
     )
 
 
-def _deduplicate_chunks(
-    chunks: list[RetrievedChunk], *, protected_prefix: int = 0
-) -> list[RetrievedChunk]:
+def _deduplicate_chunks(chunks: list[RetrievedChunk], *, protected_prefix: int = 0) -> list[RetrievedChunk]:
     """Keep ordering while removing UUID and wholly overlapping segment payloads."""
 
     have_ids: set[uuid.UUID] = set()
@@ -442,9 +445,7 @@ def _deduplicate_chunks(
     for index, chunk in enumerate(chunks):
         if chunk.id in have_ids:
             continue
-        segment_ids = {
-            str(value) for value in (chunk.meta or {}).get("segment_ids", []) if value
-        }
+        segment_ids = {str(value) for value in (chunk.meta or {}).get("segment_ids", []) if value}
         document_segments = seen_segments.setdefault(chunk.document_id, set())
         if index >= protected_prefix and segment_ids and segment_ids <= document_segments:
             continue
@@ -510,6 +511,7 @@ class Retriever:
         owner_sub: str | None = None,
         allow_rerank_fallback: bool = True,
         sparse_backend: SparseBackend | None = None,
+        folder_ids: list[uuid.UUID] | None = None,
     ) -> list[RetrievedChunk]:
         trace = await self.retrieve_with_trace(
             session,
@@ -518,6 +520,7 @@ class Retriever:
             folder_id=folder_id,
             top_k=top_k,
             document_ids=document_ids,
+            folder_ids=folder_ids,
             owner_sub=owner_sub,
             allow_rerank_fallback=allow_rerank_fallback,
             sparse_backend=sparse_backend,
@@ -535,6 +538,7 @@ class Retriever:
         owner_sub: str | None = None,
         allow_rerank_fallback: bool = True,
         sparse_backend: SparseBackend | None = None,
+        folder_ids: list[uuid.UUID] | None = None,
         *,
         dense_top_k: int | None = None,
         sparse_top_k: int | None = None,
@@ -559,9 +563,7 @@ class Retriever:
         rrf_k = settings.rag_rrf_k if rrf_k is None else rrf_k
         rerank_top_k = settings.rag_rerank_top_k if rerank_top_k is None else rerank_top_k
         rerank_min_score = settings.rag_rerank_min_score if rerank_min_score is None else rerank_min_score
-        hierarchical_mode = (
-            settings.rag_hierarchical_mode if hierarchical_mode is None else hierarchical_mode
-        )
+        hierarchical_mode = settings.rag_hierarchical_mode if hierarchical_mode is None else hierarchical_mode
         for name, value in (
             ("top_k", top_k),
             ("dense_top_k", dense_top_k),
@@ -575,13 +577,12 @@ class Retriever:
             raise ValueError("rerank_min_score must be finite and between 0 and 1")
         if hierarchical_mode not in {"off", "shadow", "active"}:
             raise ValueError("unsupported hierarchical mode")
-        if (
-            hierarchical_mode != "off"
-            and settings.rag_hierarchical_max_candidates < rerank_top_k
-        ):
+        if hierarchical_mode != "off" and settings.rag_hierarchical_max_candidates < rerank_top_k:
             raise ValueError("hierarchical max candidates must cover the baseline rerank pool")
 
-        # пустой список = нет фильтра (трактуем как None)
+        # Сохраняем прежнюю семантику document_ids=[] как «нет фильтра».
+        # Для folder_ids явный [] важен: это пустая выбранная область,
+        # которая должна fail-closed дать ноль результатов.
         document_ids = document_ids or None
         # RBAC (ТЗ §4.7.1): owner_sub=None — admin/dev (без фильтра по владельцу);
         # иначе только свои документы + dev-документы (owner NULL). Закрывает утечку
@@ -589,6 +590,7 @@ class Retriever:
         params = {
             "doc_id": document_id,
             "doc_ids": document_ids,
+            "folder_ids": folder_ids,
             "folder_id": folder_id,
             "owner": owner_sub,
         }
@@ -640,10 +642,7 @@ class Retriever:
         latencies["hierarchy_sql"] = 0.0
         if candidates and hierarchical_mode != "off":
             stage_start = time.perf_counter()
-            anchor_ids = [
-                candidate.id
-                for candidate in candidates[: settings.rag_hierarchical_anchor_top_k]
-            ]
+            anchor_ids = [candidate.id for candidate in candidates[: settings.rag_hierarchical_anchor_top_k]]
             expansion_k = settings.rag_hierarchical_max_candidates - len(candidates)
             try:
                 async with session.begin_nested():
@@ -669,9 +668,7 @@ class Retriever:
                         break
             except Exception as exc:
                 if not allow_hierarchical_fallback:
-                    raise RuntimeError(
-                        "hierarchical expansion failed while fallback was disabled"
-                    ) from None
+                    raise RuntimeError("hierarchical expansion failed while fallback was disabled") from None
                 logger.warning("hierarchical expansion недоступен (%s) — оставляю baseline", exc)
                 hierarchical_fallback = True
                 hierarchical_candidates = list(candidates)
@@ -690,8 +687,7 @@ class Retriever:
         if hierarchical_mode == "shadow" and hierarchical_added:
             stage_start = time.perf_counter()
             shadow_pool = [
-                replace(candidate, meta=dict(candidate.meta or {}))
-                for candidate in hierarchical_candidates
+                replace(candidate, meta=dict(candidate.meta or {})) for candidate in hierarchical_candidates
             ]
             shadow_pool, shadow_fallback, shadow_relevant = await _rerank_candidates(
                 self.reranker,
@@ -700,9 +696,7 @@ class Retriever:
                 scores,
                 min_score=rerank_min_score,
                 allow_fallback=allow_hierarchical_fallback,
-                failure_message=(
-                    "hierarchical reranker failed while fallback was disabled"
-                ),
+                failure_message=("hierarchical reranker failed while fallback was disabled"),
             )
             hierarchical_fallback = hierarchical_fallback or shadow_fallback
             shadow_reranked = tuple(shadow_pool)
@@ -736,12 +730,16 @@ class Retriever:
                 hierarchical_reranked=(
                     shadow_reranked
                     if shadow_reranked is not None
-                    else reranked if hierarchical_mode == "active" else ()
+                    else reranked
+                    if hierarchical_mode == "active"
+                    else ()
                 ),
                 hierarchical_final=(
                     shadow_final
                     if shadow_final is not None
-                    else final if hierarchical_mode == "active" else ()
+                    else final
+                    if hierarchical_mode == "active"
+                    else ()
                 ),
                 hierarchical_added=hierarchical_added,
                 hierarchical_fallback=hierarchical_fallback,
@@ -787,7 +785,14 @@ class Retriever:
         stage_start = time.perf_counter()
         if settings.visual_enabled and self.visual_embedder is not None:
             result = await self._visual_augment(
-                session, query, result, document_id, folder_id, document_ids, owner_sub
+                session,
+                query,
+                result,
+                document_id,
+                folder_id,
+                document_ids,
+                folder_ids,
+                owner_sub,
             )
         latencies["visual"] = (time.perf_counter() - stage_start) * 1000
         return build_trace(
@@ -804,6 +809,7 @@ class Retriever:
         document_id: uuid.UUID | None,
         folder_id: uuid.UUID | None,
         document_ids: list[uuid.UUID] | None = None,
+        folder_ids: list[uuid.UUID] | None = None,
         owner_sub: str | None = None,
     ) -> list[RetrievedChunk]:
         """Визуальный recall (Qwen3-VL-Embedding) + реранк (Qwen3-VL-Reranker) →
@@ -819,6 +825,7 @@ class Retriever:
                         "qe": str(q_emb),
                         "doc_id": document_id,
                         "doc_ids": document_ids or None,
+                        "folder_ids": folder_ids,
                         "folder_id": folder_id,
                         "owner": owner_sub,
                         "k": settings.rag_visual_pages_k,

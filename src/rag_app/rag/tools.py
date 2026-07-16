@@ -11,7 +11,7 @@ import re
 import uuid
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import false, or_, select
 
 from rag_app.config import settings
 from rag_app.db.models import ChatMessage, ChatSession, Chunk, Document, DocumentStatus
@@ -51,12 +51,16 @@ class AgentTools:
         session_id: uuid.UUID,
         owner_sub: str | None = None,
         document_ids: list[uuid.UUID] | None = None,
+        folder_ids: list[uuid.UUID] | None = None,
     ) -> None:
         self.sessionmaker = sessionmaker
         self.retriever = retriever
         self.document_id = document_id
         self.document_ids = document_ids or None
         self.folder_id = folder_id
+        # None = selection-фильтр по папкам не задан; [] = явно пустая
+        # область, которая должна оставаться fail-closed.
+        self.folder_ids = None if folder_ids is None else list(folder_ids)
         self.session_id = session_id
         self.owner_sub = owner_sub
         self.evidence: dict[str, RetrievedChunk] = {}
@@ -64,6 +68,28 @@ class AgentTools:
     def _register(self, chunks: list[RetrievedChunk]) -> None:
         for c in chunks:
             self.evidence.setdefault(_ref(c.id), c)
+
+    def _apply_document_scope(self, stmt: Any, document_column: Any) -> Any:
+        """Apply the chat scope to a manual-tool query without scope escape.
+
+        Array selectors are a union: explicitly selected documents OR documents
+        currently located in selected folders.  An explicitly empty folder list
+        remains an empty scope instead of degrading to the whole library.
+        """
+        if self.document_id is not None:
+            stmt = stmt.where(document_column == self.document_id)
+        elif self.folder_id is not None:
+            stmt = stmt.where(Document.folder_id == self.folder_id)
+        elif self.document_ids or self.folder_ids is not None:
+            selectors = []
+            if self.document_ids:
+                selectors.append(document_column.in_(self.document_ids))
+            if self.folder_ids:
+                selectors.append(Document.folder_id.in_(self.folder_ids))
+            stmt = stmt.where(or_(*selectors) if selectors else false())
+        if self.owner_sub is not None:
+            stmt = stmt.where(Document.owner_sub == self.owner_sub)
+        return stmt
 
     def _fmt(self, c: RetrievedChunk, body_len: int) -> str:
         head = f"[{_ref(c.id)}] {c.filename}"
@@ -81,8 +107,13 @@ class AgentTools:
             return "search_chunks: пустой запрос."
         async with self.sessionmaker() as db:
             chunks = await self.retriever.retrieve(
-                db, query, document_id=self.document_id, folder_id=self.folder_id,
-                document_ids=self.document_ids, top_k=settings.agent_search_top_k,
+                db,
+                query,
+                document_id=self.document_id,
+                folder_id=self.folder_id,
+                document_ids=self.document_ids,
+                top_k=settings.agent_search_top_k,
+                folder_ids=self.folder_ids,
                 owner_sub=self.owner_sub,  # RBAC §4.7.1: поиск агента — только свои документы
             )
         if not chunks:
@@ -114,17 +145,12 @@ class AgentTools:
         # слева не цифра/точка/дефис (чтобы «3» не цеплял «13»), справа — не цифра.
         top_pat = rf"^\s*{re.escape(num)}[.\s]"
         broad_pat = rf"(^|[^0-9.\-]){re.escape(num)}([^0-9]|$)"
-        doc = self.document_id
+        doc: uuid.UUID | None = None
         if document_id:
             try:
-                requested_doc = uuid.UUID(document_id)
-                if self.document_ids:
-                    if requested_doc in self.document_ids:
-                        doc = requested_doc
-                elif self.document_id is None or requested_doc == self.document_id:
-                    doc = requested_doc
+                doc = uuid.UUID(document_id)
             except ValueError:
-                pass
+                return f"get_chapter('{num}'): раздел {num} не найден (поиск по заголовкам)."
 
         def _scoped(pat: str):
             stmt = (
@@ -134,12 +160,7 @@ class AgentTools:
             )
             if doc is not None:
                 stmt = stmt.where(Chunk.document_id == doc)
-            elif self.document_ids:
-                stmt = stmt.where(Chunk.document_id.in_(self.document_ids))
-            elif self.folder_id is not None:
-                stmt = stmt.where(Document.folder_id == self.folder_id)
-            if self.owner_sub is not None:  # RBAC §4.7.1: раздел только своих документов
-                stmt = stmt.where(Document.owner_sub == self.owner_sub)
+            stmt = self._apply_document_scope(stmt, Chunk.document_id)
             return stmt.order_by(Chunk.idx).limit(settings.agent_max_context_chunks)
 
         async with self.sessionmaker() as db:
@@ -150,9 +171,16 @@ class AgentTools:
             return f"get_chapter('{num}'): раздел {num} не найден (поиск по заголовкам)."
         chunks = [
             RetrievedChunk(
-                id=ch.id, document_id=ch.document_id, filename=fn, heading_path=ch.heading_path,
-                kind=ch.kind, page_start=ch.page_start, page_end=ch.page_end,
-                text_en=ch.text_en, text_ru=ch.text_ru, meta=ch.meta,
+                id=ch.id,
+                document_id=ch.document_id,
+                filename=fn,
+                heading_path=ch.heading_path,
+                kind=ch.kind,
+                page_start=ch.page_start,
+                page_end=ch.page_end,
+                text_en=ch.text_en,
+                text_ru=ch.text_ru,
+                meta=ch.meta,
             )
             for ch, fn in rows
         ]
@@ -166,7 +194,7 @@ class AgentTools:
             try:
                 doc = uuid.UUID(document_id)
             except ValueError:
-                pass
+                return "get_tables: таблиц в документе не найдено."
         if doc is None:
             return "get_tables: нужен document_id (или открой конкретный документ в чате)."
         async with self.sessionmaker() as db:
@@ -175,16 +203,22 @@ class AgentTools:
                 .join(Document, Document.id == Chunk.document_id)
                 .where(Chunk.document_id == doc, Chunk.kind == "table")
             )
-            if self.owner_sub is not None:  # RBAC §4.7.1: таблицы только своих документов
-                stmt = stmt.where(Document.owner_sub == self.owner_sub)
+            stmt = self._apply_document_scope(stmt, Chunk.document_id)
             rows = (await db.execute(stmt.order_by(Chunk.idx))).all()
         if not rows:
             return "get_tables: таблиц в документе не найдено."
         chunks = [
             RetrievedChunk(
-                id=ch.id, document_id=ch.document_id, filename=fn, heading_path=ch.heading_path,
-                kind=ch.kind, page_start=ch.page_start, page_end=ch.page_end,
-                text_en=ch.text_en, text_ru=ch.text_ru, meta=ch.meta,
+                id=ch.id,
+                document_id=ch.document_id,
+                filename=fn,
+                heading_path=ch.heading_path,
+                kind=ch.kind,
+                page_start=ch.page_start,
+                page_end=ch.page_end,
+                text_en=ch.text_en,
+                text_ru=ch.text_ru,
+                meta=ch.meta,
             )
             for ch, fn in rows
         ]
@@ -212,17 +246,12 @@ class AgentTools:
         num_re = re.escape(num)
         pat = rf"(^|[^0-9.\-]){num_re}([^0-9]|$)"
 
-        doc = self.document_id
+        doc: uuid.UUID | None = None
         if document_id:
             try:
-                requested_doc = uuid.UUID(document_id)
-                if self.document_ids:
-                    if requested_doc in self.document_ids:
-                        doc = requested_doc
-                elif self.document_id is None or requested_doc == self.document_id:
-                    doc = requested_doc
+                doc = uuid.UUID(document_id)
             except ValueError:
-                pass
+                return f"find_figure('{num}'): рисунок/таблица с номером {num} не найдены."
 
         async with self.sessionmaker() as db:
             stmt = (
@@ -235,22 +264,28 @@ class AgentTools:
             )
             if doc is not None:
                 stmt = stmt.where(Chunk.document_id == doc)
-            elif self.document_ids:
-                stmt = stmt.where(Chunk.document_id.in_(self.document_ids))
-            elif self.folder_id is not None:
-                stmt = stmt.where(Document.folder_id == self.folder_id)
-            if self.owner_sub is not None:
-                stmt = stmt.where(Document.owner_sub == self.owner_sub)
+            stmt = self._apply_document_scope(stmt, Chunk.document_id)
             rows = (await db.execute(stmt.order_by(Chunk.idx).limit(8))).all()
 
         if not rows:
-            scope = "в этом документе" if doc is not None else "в доступных документах"
+            scope = (
+                "в этом документе"
+                if doc is not None or self.document_id is not None
+                else "в доступных документах"
+            )
             return f"find_figure('{num}'): рисунок/таблица с номером {num} не найдены {scope}."
         chunks = [
             RetrievedChunk(
-                id=ch.id, document_id=ch.document_id, filename=fn, heading_path=ch.heading_path,
-                kind=ch.kind, page_start=ch.page_start, page_end=ch.page_end,
-                text_en=ch.text_en, text_ru=ch.text_ru, meta=ch.meta,
+                id=ch.id,
+                document_id=ch.document_id,
+                filename=fn,
+                heading_path=ch.heading_path,
+                kind=ch.kind,
+                page_start=ch.page_start,
+                page_end=ch.page_end,
+                text_en=ch.text_en,
+                text_ru=ch.text_ru,
+                meta=ch.meta,
             )
             for ch, fn in rows
         ]
@@ -268,24 +303,11 @@ class AgentTools:
             stmt = select(Document).where(Document.status == DocumentStatus.done)
             # Область чата (набор документов / папка) — каталог должен ей
             # соответствовать, иначе при folder-scope агент перечислит всю библиотеку.
-            if self.document_ids:
-                stmt = stmt.where(Document.id.in_(self.document_ids))
-            elif self.document_id is not None:
-                stmt = stmt.where(Document.id == self.document_id)
-            elif self.folder_id is not None:
-                stmt = stmt.where(Document.folder_id == self.folder_id)
-            if self.owner_sub is not None:
-                stmt = stmt.where(Document.owner_sub == self.owner_sub)
-            rows = (
-                (await db.execute(stmt.order_by(Document.created_at.desc()).limit(200)))
-                .scalars()
-                .all()
-            )
+            stmt = self._apply_document_scope(stmt, Document.id)
+            rows = (await db.execute(stmt.order_by(Document.created_at.desc()).limit(200))).scalars().all()
         if not rows:
             return "list_documents: в библиотеке нет готовых документов."
-        lines = [
-            f"- {d.filename}" + (f" ({d.page_count} стр.)" if d.page_count else "") for d in rows
-        ]
+        lines = [f"- {d.filename}" + (f" ({d.page_count} стр.)" if d.page_count else "") for d in rows]
         catalog = f"Каталог библиотеки — загруженные документы ({len(rows)}):\n" + "\n".join(lines)
         # Синтетический evidence-чанк: каталог должен попасть в финальный ответ.
         # Без него evidence-пул пуст → fallback-ретрив подменяет каталог
@@ -293,9 +315,16 @@ class AgentTools:
         self._register(
             [
                 RetrievedChunk(
-                    id=uuid.uuid4(), document_id=uuid.uuid4(), filename="Каталог библиотеки",
-                    heading_path="", kind="catalog", page_start=None, page_end=None,
-                    text_en="", text_ru=catalog, meta={},
+                    id=uuid.uuid4(),
+                    document_id=uuid.uuid4(),
+                    filename="Каталог библиотеки",
+                    heading_path="",
+                    kind="catalog",
+                    page_start=None,
+                    page_end=None,
+                    text_en="",
+                    text_ru=catalog,
+                    meta={},
                 )
             ]
         )
@@ -310,15 +339,7 @@ class AgentTools:
             )
             if self.owner_sub is not None:
                 stmt = stmt.where(ChatSession.owner_sub == self.owner_sub)
-            rows = (
-                (
-                    await db.execute(
-                        stmt.order_by(ChatMessage.created_at)
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            rows = (await db.execute(stmt.order_by(ChatMessage.created_at))).scalars().all()
         prior = rows[:-1][-10:]  # без только что записанного вопроса
         if not prior:
             return "get_chat_history: предыдущих реплик в этой сессии нет."

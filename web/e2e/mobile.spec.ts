@@ -59,19 +59,28 @@ async function json(route: Route, body: unknown) {
   await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
 }
 
-async function mockApi(page: Page, sessions: unknown[] = []) {
+async function mockApi(
+  page: Page,
+  sessions: unknown[] = [],
+  options: {
+    documents?: unknown[]
+    folders?: unknown[]
+    messages?: Record<string, unknown[]>
+  } = {},
+) {
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/config') return json(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
-    if (path === '/api/documents') return json(route, [document, secondDocument, officeDocument])
+    if (path === '/api/documents') return json(route, options.documents ?? [document, secondDocument, officeDocument])
     if (path === `/api/documents/${documentId}`) return json(route, document)
     if (path === `/api/documents/${documentId}/segments`) return json(route, [segment])
     if (path === `/api/documents/${officeDocumentId}`) return json(route, officeDocument)
     if (path === `/api/documents/${officeDocumentId}/segments`) return json(route, [segment])
     if (path === `/api/segments/${segmentId}/versions`) return json(route, [])
-    if (path === '/api/folders') return json(route, [])
+    if (path === '/api/folders') return json(route, options.folders ?? [])
     if (path === '/api/chat/sessions') return json(route, sessions)
-    if (/^\/api\/chat\/sessions\/[^/]+\/messages$/.test(path)) return json(route, [])
+    const historyMatch = /^\/api\/chat\/sessions\/([^/]+)\/messages$/.exec(path)
+    if (historyMatch) return json(route, options.messages?.[historyMatch[1]] ?? [])
     if (/^\/api\/documents\/[^/]+\/translations$/.test(path)) return json(route, [])
     return json(route, {})
   })
@@ -134,6 +143,7 @@ test('390px core flows have no overflow, named controls, and usable touch target
   await scopeButton.click()
   await expect(page.getByRole('heading', { name: 'Область поиска' })).toBeVisible()
   await page.getByRole('dialog').getByText(document.filename, { exact: true }).click()
+  await page.getByRole('button', { name: 'Готово' }).click()
   await expect(page.getByRole('button', { name: `Область чата: ${document.filename}` })).toBeVisible()
 
   const sessionsButton = page.getByRole('button', { name: 'История чатов: 0' })
@@ -163,6 +173,104 @@ test('direct chat link restores a persisted multi-document scope', async ({ page
 
   await page.goto(`/chat?sid=${sessionId}`)
   await expect(page.getByRole('button', { name: 'Область чата: 2 документа' })).toBeVisible()
+})
+
+test('mobile scope keeps folder choices as a draft until Done and discards them on close', async ({ page }) => {
+  const folderA = { id: 'folder-a', name: 'Проект А', documents: 1 }
+  const folderB = { id: 'folder-b', name: 'Проект Б', documents: 1 }
+  const documentA = { ...document, id: '00000000-0000-4000-8000-000000000011', folder_id: folderA.id }
+  const documentB = { ...secondDocument, id: '00000000-0000-4000-8000-000000000012', folder_id: folderB.id }
+  await mockApi(page, [], { documents: [documentA, documentB], folders: [folderA, folderB] })
+  await page.goto('/chat')
+
+  const committedScope = page.getByRole('button', { name: 'Область чата: Вся библиотека' })
+  await committedScope.click()
+
+  const folderACheckbox = page.getByRole('checkbox', { name: 'Выбрать папку Проект А' })
+  const folderBCheckbox = page.getByRole('checkbox', { name: 'Выбрать папку Проект Б' })
+  const expandFolderA = page.getByRole('button', { name: 'Раскрыть папку Проект А' })
+  await expectTouchTarget(folderACheckbox)
+  await expectTouchTarget(expandFolderA)
+  await expect(folderACheckbox).toHaveAttribute('aria-checked', 'false')
+
+  await folderACheckbox.click()
+  await folderBCheckbox.click()
+  await expect(folderACheckbox).toHaveAttribute('aria-checked', 'true')
+  await expect(folderBCheckbox).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await expect(committedScope).toBeVisible()
+
+  await page.getByRole('button', { name: 'Закрыть панель' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(committedScope).toBeVisible()
+
+  await committedScope.click()
+  await expect(page.getByRole('checkbox', { name: 'Выбрать папку Проект А' })).toHaveAttribute('aria-checked', 'false')
+  await page.getByRole('checkbox', { name: 'Выбрать папку Проект А' }).click()
+  await page.getByRole('checkbox', { name: 'Выбрать папку Проект Б' }).click()
+  const done = page.getByRole('button', { name: 'Готово' })
+  await expectTouchTarget(done)
+  await done.click()
+
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Область чата: 2 папки' })).toBeVisible()
+
+  const requestPromise = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === '/api/chat' && request.method() === 'POST',
+  )
+  await page.getByPlaceholder('Введите запрос').fill('Сравни проекты')
+  await page.getByTitle('Отправить').click()
+  const request = await requestPromise
+  const body = request.postDataJSON() as {
+    scope_kind?: string
+    folder_ids?: string[]
+    document_ids?: string[]
+  }
+  expect(body.scope_kind).toBe('selection')
+  expect(body.folder_ids).toEqual([folderA.id, folderB.id])
+  expect(body.document_ids).toBeUndefined()
+})
+
+test('mobile scope Done without changes preserves the active session', async ({ page }) => {
+  const sessionId = '00000000-0000-4000-8000-000000000020'
+  const savedAnswer = 'Сохранённый ответ активной сессии.'
+  await mockApi(
+    page,
+    [
+      {
+        id: sessionId,
+        title: 'Активная сессия',
+        document_id: null,
+        document_ids: null,
+        folder_id: null,
+        folder_ids: null,
+        created_at: '2026-07-16T10:00:00Z',
+        updated_at: '2026-07-16T10:00:00Z',
+      },
+    ],
+    {
+      messages: {
+        [sessionId]: [
+          {
+            id: 'message-1',
+            role: 'assistant',
+            content: savedAnswer,
+            citations: [],
+            created_at: '2026-07-16T10:00:00Z',
+          },
+        ],
+      },
+    },
+  )
+
+  await page.goto(`/chat?sid=${sessionId}`)
+  await expect(page.getByText(savedAnswer)).toBeVisible()
+  await page.getByRole('button', { name: 'Область чата: Вся библиотека' }).click()
+  await page.getByRole('button', { name: 'Готово' }).click()
+
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByText(savedAnswer)).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`\\?sid=${sessionId}$`))
 })
 
 test('390px document viewer keeps both source and translation usable', async ({ page }) => {

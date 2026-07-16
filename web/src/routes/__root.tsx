@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { createRootRoute, Link, Outlet, useRouterState } from '@tanstack/react-router'
-import { Check, ChevronDown, Search, SlidersHorizontal, X } from 'lucide-react'
+import { Check, ChevronDown, CircleUserRound, Search, SlidersHorizontal, X } from 'lucide-react'
 import { currentUser } from '@/lib/auth'
 import { LibrarySearchContext, useLibrarySearch, type LibrarySearchContextValue } from '@/lib/librarySearch'
 import type { DocFilters } from '@/lib/api'
@@ -201,13 +201,11 @@ function ProfileButton() {
       title={`Профиль: ${user.username}`}
       aria-label="Профиль"
       className={cn(
-        'relative block h-10 w-10 shrink-0 overflow-hidden rounded-full transition max-md:h-11 max-md:w-11',
+        'flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#222226]/10 bg-[#f7f7f7] text-[#424247] transition hover:border-[#222226]/20 hover:bg-[#eeeeef] hover:text-[#222226] max-md:h-11 max-md:w-11',
         active && 'ring-2 ring-[#6269f3] ring-offset-2',
       )}
     >
-      <span className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_55%_33%,#fff4a8_0_11%,#ffd537_12%_29%,#f6a61d_30%_48%,#b06a35_49%_66%,#e9e2d5_67%_100%)]" />
-      <span className="absolute inset-[3px] rounded-full bg-[radial-gradient(circle_at_47%_34%,rgba(255,255,255,0.65),rgba(255,255,255,0)_32%),linear-gradient(145deg,rgba(255,224,69,0.95),rgba(203,112,25,0.95)_55%,rgba(91,70,63,0.9))]" />
-      <span className="absolute inset-x-[8px] bottom-[5px] h-[10px] rounded-full bg-black/10 blur-[2px]" />
+      <CircleUserRound className="h-5 w-5" aria-hidden="true" />
     </Link>
   )
 }
@@ -231,6 +229,7 @@ function TabLink({ to, label }: { to: string; label: string }) {
 }
 
 function RootLayout() {
+  const path = useRouterState({ select: (s) => s.location.pathname })
   const [query, setQuery] = useState('')
   const [submitted, setSubmitted] = useState('')
   const [filters, setFilters] = useState<DocFilters>({})
@@ -250,11 +249,16 @@ function RootLayout() {
 
   return (
     <LibrarySearchContext.Provider value={searchContext}>
-      <div className="flex min-h-screen flex-col bg-white">
+      <div
+        className={cn(
+          'flex min-h-dvh flex-col bg-white',
+          path === '/chat' && 'fixed inset-0 h-dvh overflow-hidden',
+        )}
+      >
         <header className="sticky top-0 z-20 border-b border-[#222226]/[0.12] bg-white">
           <div className="flex min-h-[57px] items-center justify-between gap-2 px-3 py-3 md:gap-4 md:px-8">
             <div className="h-10 w-10 shrink-0" aria-hidden="true" />
-            <HeaderSearch />
+            {path === '/' ? <HeaderSearch /> : <div className="min-w-0 flex-1" aria-hidden="true" />}
             <ProfileButton />
           </div>
           <nav className="flex h-[72px] items-end overflow-x-auto border-t border-[#222226]/[0.04] px-4 pt-8 md:px-[168px]">
@@ -265,10 +269,10 @@ function RootLayout() {
             </div>
           </nav>
         </header>
-        <main className="flex-1">
+        <main className="flex min-h-0 flex-1 flex-col">
           <Outlet />
         </main>
-        <footer className="border-t border-[#222226]/[0.10] bg-[#fafafa] px-4 py-3 text-center text-sm text-[#222226]/70 md:px-8">
+        <footer className="shrink-0 border-t border-[#222226]/[0.10] bg-[#fafafa] px-4 py-3 text-center text-sm text-[#222226]/70 md:px-8">
           В сервисе используется{' '}
           <a
             href="https://github.com/opendatalab/MinerU"

@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from rag_app.api.auth import require_user
 from rag_app.rag.extract import extract_table
@@ -28,7 +28,21 @@ class ExtractIn(BaseModel):
     query: str
     document_id: uuid.UUID | None = None
     folder_id: uuid.UUID | None = None
-    document_ids: list[uuid.UUID] | None = None
+    document_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+    folder_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> ExtractIn:
+        document_ids = self.document_ids or []
+        folder_ids = self.folder_ids or []
+        if len(document_ids) != len(set(document_ids)):
+            raise ValueError("document_ids must be unique")
+        if len(folder_ids) != len(set(folder_ids)):
+            raise ValueError("folder_ids must be unique")
+        legacy_selected = sum((self.document_id is not None, self.folder_id is not None))
+        if legacy_selected > 1 or (legacy_selected and (document_ids or folder_ids)):
+            raise ValueError("extract scope fields are mutually exclusive")
+        return self
 
 
 @router.post("/table")
@@ -45,6 +59,7 @@ async def extract_table_route(request: Request, body: ExtractIn) -> dict:
             document_id=body.document_id,
             folder_id=body.folder_id,
             document_ids=body.document_ids or None,
+            folder_ids=body.folder_ids,
             owner_sub=None if user.is_admin else user.sub,
         )
 

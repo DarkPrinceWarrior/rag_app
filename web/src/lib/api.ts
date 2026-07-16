@@ -167,6 +167,7 @@ export interface ChatSession {
   document_id: string | null
   document_ids: string[] | null
   folder_id: string | null
+  folder_ids?: string[] | null
   created_at: string
   updated_at: string
 }
@@ -307,7 +308,12 @@ export const api = {
 
   extractTable: (
     query: string,
-    scope: { document_id?: string | null; folder_id?: string; document_ids?: string[] } = {},
+    scope: {
+      document_id?: string | null
+      folder_id?: string
+      document_ids?: string[]
+      folder_ids?: string[]
+    } = {},
   ) => jsend<ExtractTable>('/api/extract/table', 'POST', { query, ...scope }),
 
   async uploadDocument(file: File, parserBackend?: string): Promise<Document> {

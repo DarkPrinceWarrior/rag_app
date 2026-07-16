@@ -45,31 +45,34 @@ router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[require_user
 class ChatIn(BaseModel):
     message: str
     session_id: uuid.UUID | None = None
-    scope_kind: Literal["all", "folder", "docs"] | None = None
+    scope_kind: Literal["all", "folder", "docs", "selection"] | None = None
     document_id: uuid.UUID | None = None
     folder_id: uuid.UUID | None = None
     document_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
+    folder_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
 
     @model_validator(mode="after")
     def validate_scope(self) -> ChatIn:
-        ids = self.document_ids or []
-        if len(ids) != len(set(ids)):
+        document_ids = self.document_ids or []
+        folder_ids = self.folder_ids or []
+        if len(document_ids) != len(set(document_ids)):
             raise ValueError("document_ids must be unique")
-        selected = sum(
-            (
-                self.document_id is not None,
-                self.folder_id is not None,
-                bool(ids),
-            )
-        )
-        if selected > 1:
+        if len(folder_ids) != len(set(folder_ids)):
+            raise ValueError("folder_ids must be unique")
+        legacy_selected = sum((self.document_id is not None, self.folder_id is not None))
+        array_selected = bool(document_ids or folder_ids)
+        if legacy_selected > 1 or (legacy_selected and array_selected):
             raise ValueError("chat scope fields are mutually exclusive")
-        if self.scope_kind == "all" and selected:
+        if self.scope_kind == "all" and (legacy_selected or array_selected):
             raise ValueError("all-library scope cannot contain document or folder filters")
         if self.scope_kind == "folder" and self.folder_id is None:
             raise ValueError("folder scope requires folder_id")
-        if self.scope_kind == "docs" and not (self.document_id or ids):
+        if self.scope_kind == "docs" and not (self.document_id or document_ids):
             raise ValueError("docs scope requires at least one document")
+        if self.scope_kind == "docs" and folder_ids:
+            raise ValueError("docs scope cannot contain folder_ids")
+        if self.scope_kind == "selection" and not array_selected:
+            raise ValueError("selection scope requires at least one document or folder")
         return self
 
 
@@ -89,32 +92,48 @@ def _citation_guard_requires_buffer(mode: str, *, has_chunks: bool) -> bool:
 
 def _scope_values(
     body: ChatIn,
-) -> tuple[uuid.UUID | None, uuid.UUID | None, list[uuid.UUID] | None]:
+) -> tuple[
+    uuid.UUID | None,
+    uuid.UUID | None,
+    list[uuid.UUID] | None,
+    list[uuid.UUID] | None,
+]:
     """Каноническое представление области для сохранения в ChatSession."""
     if body.scope_kind == "all":
-        return None, None, None
+        return None, None, None, None
     if body.folder_id is not None:
-        return None, body.folder_id, None
+        return None, body.folder_id, None, None
     if body.document_id is not None:
-        return body.document_id, None, None
-    if body.document_ids:
-        return None, None, list(body.document_ids)
-    return None, None, None
+        return body.document_id, None, None, None
+    if body.document_ids or body.folder_ids:
+        return (
+            None,
+            None,
+            list(body.document_ids) if body.document_ids else None,
+            list(body.folder_ids) if body.folder_ids else None,
+        )
+    return None, None, None, None
 
 
 def _has_requested_scope(body: ChatIn) -> bool:
     return body.scope_kind is not None or any(
-        (body.document_id is not None, body.folder_id is not None, bool(body.document_ids))
+        (
+            body.document_id is not None,
+            body.folder_id is not None,
+            bool(body.document_ids),
+            bool(body.folder_ids),
+        )
     )
 
 
 def _apply_requested_scope(session: ChatSession, body: ChatIn) -> None:
     if not _has_requested_scope(body):
         return
-    document_id, folder_id, document_ids = _scope_values(body)
+    document_id, folder_id, document_ids, folder_ids = _scope_values(body)
     session.document_id = document_id
     session.folder_id = folder_id
     session.document_ids = document_ids
+    session.folder_ids = folder_ids
 
 
 def _evaluate_quantity_guard(
@@ -168,6 +187,7 @@ async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> No
     if user.is_admin:
         return
     document_ids = set(body.document_ids or ())
+    folder_ids = set(body.folder_ids or ())
     if body.document_id is not None:
         document_ids.add(body.document_id)
     async with request.app.state.sessionmaker() as db:
@@ -184,8 +204,16 @@ async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> No
             if visible != document_ids:
                 raise HTTPException(404, "документ не найден")
         if body.folder_id is not None:
-            folder = await db.get(Folder, body.folder_id)
-            if folder is None or folder.owner_sub != user.sub:
+            folder_ids.add(body.folder_id)
+        if folder_ids:
+            visible_folders = set(
+                (
+                    await db.execute(
+                        select(Folder.id).where(Folder.id.in_(folder_ids), Folder.owner_sub == user.sub)
+                    )
+                ).scalars()
+            )
+            if visible_folders != folder_ids:
                 raise HTTPException(404, "папка не найдена")
 
 
@@ -220,12 +248,13 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                     return
                 _apply_requested_scope(chat_session, body)
             else:
-                document_id, folder_id, document_ids = _scope_values(body)
+                document_id, folder_id, document_ids, folder_ids = _scope_values(body)
                 chat_session = ChatSession(
                     id=uuid.uuid4(),  # default колонки срабатывает только на flush
                     title=make_session_title(body.message),
                     document_id=document_id,
                     document_ids=document_ids,
+                    folder_ids=folder_ids,
                     owner_sub=user.sub,
                     folder_id=folder_id,
                 )
@@ -236,6 +265,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             doc_filter = chat_session.document_id
             project_id = chat_session.folder_id
             doc_ids = chat_session.document_ids or None
+            folder_ids = chat_session.folder_ids
             # scope памяти треда: user=owner, project=папка, document=документ, thread=сессия
             mem_scope = app.state.memory.scope_for(
                 user.sub, project_id=project_id, document_id=doc_filter, thread_id=session_id
@@ -325,6 +355,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                     document_id=doc_filter,
                     folder_id=project_id,
                     document_ids=doc_ids,
+                    folder_ids=folder_ids,
                     session_id=session_id,
                     # как _owner_filter в documents.py: admin видит все документы
                     owner_sub=None if user.is_admin else user.sub,
@@ -336,8 +367,12 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             else:
                 async with sessionmaker() as db:
                     chunks = await app.state.retriever.retrieve(
-                        db, body.message, document_id=doc_filter,
-                        folder_id=project_id, document_ids=doc_ids,
+                        db,
+                        body.message,
+                        document_id=doc_filter,
+                        folder_id=project_id,
+                        document_ids=doc_ids,
+                        folder_ids=folder_ids,
                         # RBAC §4.7.1: single-hop поиск — только свои документы
                         owner_sub=None if user.is_admin else user.sub,
                     )
@@ -414,9 +449,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             yield _sse({"type": "delta", "text": warning})
         citations = extract_citations(model_answer, chunks) if chunks else []
         async with sessionmaker() as db:
-            msg = ChatMessage(
-                session_id=session_id, role="assistant", content=answer, citations=citations
-            )
+            msg = ChatMessage(session_id=session_id, role="assistant", content=answer, citations=citations)
             db.add(msg)
             await db.flush()
             await db.execute(
@@ -470,9 +503,8 @@ async def list_sessions(request: Request) -> list[dict]:
             "id": str(s.id),
             "title": s.title,
             "document_id": str(s.document_id) if s.document_id else None,
-            "document_ids": [str(document_id) for document_id in s.document_ids]
-            if s.document_ids
-            else None,
+            "document_ids": [str(document_id) for document_id in s.document_ids] if s.document_ids else None,
+            "folder_ids": [str(folder_id) for folder_id in s.folder_ids] if s.folder_ids else None,
             "folder_id": str(s.folder_id) if s.folder_id else None,
             "created_at": s.created_at.isoformat(),
             "updated_at": s.updated_at.isoformat(),
@@ -540,9 +572,7 @@ async def session_messages(request: Request, session_id: uuid.UUID) -> list[dict
 
 
 @router.get("/sessions/{session_id}/export")
-async def export_session(
-    request: Request, session_id: uuid.UUID, format: str = "md"
-) -> StreamingResponse:
+async def export_session(request: Request, session_id: uuid.UUID, format: str = "md") -> StreamingResponse:
     """Выжимка/история сессии (§ 5): LLM-сводка + транскрипт + источники → md/docx."""
     user: User = request.state.user
     async with request.app.state.sessionmaker() as db:

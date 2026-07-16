@@ -5,12 +5,16 @@ import {
   AlertTriangle,
   ArrowUp,
   Check,
+  ChevronDown,
+  ChevronRight,
   Download,
   Eye,
+  FileText,
   Files,
   Folder as FolderIcon,
   Loader2,
   MessagesSquare,
+  Minus,
   Table as TableIcon,
   Timer,
   Trash2,
@@ -34,29 +38,47 @@ export const Route = createFileRoute('/chat')({
   component: Chat,
 })
 
-// Область чата: вся библиотека / папка / произвольный набор документов (мультивыбор).
+// Область чата: вся библиотека или комбинация папок и отдельных документов.
 type Scope =
   | { kind: 'all' }
-  | { kind: 'folder'; folderId: string }
-  | { kind: 'docs'; docIds: string[] }
+  | { kind: 'selection'; folderIds: string[]; docIds: string[] }
+
+const MAX_CHAT_SCOPE_DOCUMENTS = 50
+const MAX_CHAT_SCOPE_FOLDERS = 50
+
+function copyScope(scope: Scope): Scope {
+  return scope.kind === 'selection'
+    ? { kind: 'selection', folderIds: [...scope.folderIds], docIds: [...scope.docIds] }
+    : { kind: 'all' }
+}
+
+function sameScope(left: Scope, right: Scope): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'all' && right.kind === 'all') return true
+  if (left.kind !== 'selection' || right.kind !== 'selection') return false
+  if (left.docIds.length !== right.docIds.length || left.folderIds.length !== right.folderIds.length) return false
+  const rightDocuments = new Set(right.docIds)
+  const rightFolders = new Set(right.folderIds)
+  return left.docIds.every((id) => rightDocuments.has(id)) && left.folderIds.every((id) => rightFolders.has(id))
+}
 
 function scopeFromSession(session: ChatSession): Scope {
-  if (session.document_ids?.length) return { kind: 'docs', docIds: session.document_ids }
-  if (session.document_id) return { kind: 'docs', docIds: [session.document_id] }
-  if (session.folder_id) return { kind: 'folder', folderId: session.folder_id }
+  const docIds = [...(session.document_ids ?? []), ...(session.document_id ? [session.document_id] : [])]
+  const folderIds = [...(session.folder_ids ?? []), ...(session.folder_id ? [session.folder_id] : [])]
+  if (docIds.length || folderIds.length) return { kind: 'selection', docIds, folderIds }
   return { kind: 'all' }
 }
 
 function scopeToBody(scope: Scope): {
-  document_id?: string | null
-  folder_id?: string
   document_ids?: string[]
+  folder_ids?: string[]
 } {
-  if (scope.kind === 'folder') return { folder_id: scope.folderId }
-  if (scope.kind === 'docs')
-    return scope.docIds.length === 1
-      ? { document_id: scope.docIds[0] }
-      : { document_ids: scope.docIds }
+  if (scope.kind === 'selection') {
+    return {
+      ...(scope.docIds.length ? { document_ids: scope.docIds } : {}),
+      ...(scope.folderIds.length ? { folder_ids: scope.folderIds } : {}),
+    }
+  }
   return {}
 }
 
@@ -87,9 +109,12 @@ function Chat() {
   const { doc, sid: sidParam } = Route.useSearch()
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
-  const [scope, setScope] = useState<Scope>(doc ? { kind: 'docs', docIds: [doc] } : { kind: 'all' })
+  const [scope, setScope] = useState<Scope>(
+    doc ? { kind: 'selection', folderIds: [], docIds: [doc] } : { kind: 'all' },
+  )
   const [sideTab, setSideTab] = useState<'docs' | 'sessions'>('docs')
   const [mobilePanel, setMobilePanel] = useState<'docs' | 'sessions' | null>(null)
+  const [mobileScopeDraft, setMobileScopeDraft] = useState<Scope | null>(null)
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -150,8 +175,24 @@ function Chat() {
 
   // Смена области → новый чат (сессия создаётся с новой областью; контекст другой).
   function onScopeChange(next: Scope) {
+    if (sameScope(scope, next)) return
     setScope(next)
     if (messages.length > 0 || sessionId.current) newChat()
+  }
+
+  function openMobileScopePanel() {
+    setMobileScopeDraft(copyScope(scope))
+    setMobilePanel('docs')
+  }
+
+  function closeMobilePanel() {
+    setMobilePanel(null)
+    setMobileScopeDraft(null)
+  }
+
+  function applyMobileScope() {
+    if (mobileScopeDraft) onScopeChange(mobileScopeDraft)
+    closeMobilePanel()
   }
 
   async function exportChat(fmt: 'md' | 'docx') {
@@ -270,19 +311,24 @@ function Chat() {
   }
 
   const started = messages.length > 0
-  const scopeLabel =
-    scope.kind === 'all'
-      ? 'Вся библиотека'
-      : scope.kind === 'folder'
-        ? (foldersQ.data ?? []).find((folder) => folder.id === scope.folderId)?.name ?? 'Папка'
-        : scope.docIds.length === 1
-          ? (docsQ.data ?? []).find((document) => document.id === scope.docIds[0])?.filename ?? '1 документ'
-          : `${scope.docIds.length} документа`
+  const scopeLabel = (() => {
+    if (scope.kind === 'all') return 'Вся библиотека'
+    if (scope.folderIds.length === 1 && scope.docIds.length === 0) {
+      return (foldersQ.data ?? []).find((folder) => folder.id === scope.folderIds[0])?.name ?? '1 папка'
+    }
+    if (scope.docIds.length === 1 && scope.folderIds.length === 0) {
+      return (docsQ.data ?? []).find((document) => document.id === scope.docIds[0])?.filename ?? '1 документ'
+    }
+    const parts: string[] = []
+    if (scope.folderIds.length) parts.push(`${scope.folderIds.length} папки`)
+    if (scope.docIds.length) parts.push(`${scope.docIds.length} документа`)
+    return parts.join(' · ')
+  })()
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-97px)] max-w-[1136px] gap-6 px-4 py-8">
+    <div className="mx-auto flex min-h-0 w-full max-w-[1136px] flex-1 gap-6 px-4 py-4 lg:py-6">
       {/* Сайдбар: переключатель «Документы» (область чата) / «Мои чаты» (история) */}
-      <aside className="hidden h-full w-[320px] shrink-0 flex-col gap-5 rounded-[24px] bg-[#222226]/[0.02] p-6 md:flex">
+      <aside className="hidden min-h-0 w-[320px] shrink-0 flex-col gap-5 rounded-[24px] bg-[#222226]/[0.02] p-6 md:flex">
         <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
@@ -335,11 +381,11 @@ function Chat() {
       </aside>
 
       {/* Колонка чата */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2 md:hidden">
           <button
             type="button"
-            onClick={() => setMobilePanel('docs')}
+            onClick={openMobileScopePanel}
             className="flex min-h-11 min-w-0 items-center gap-2 rounded-xl border border-[#e5e5e5] bg-white px-3 text-left shadow-sm transition active:scale-[0.99]"
             aria-label={`Область чата: ${scopeLabel}`}
           >
@@ -348,7 +394,10 @@ function Chat() {
           </button>
           <button
             type="button"
-            onClick={() => setMobilePanel('sessions')}
+            onClick={() => {
+              setMobileScopeDraft(null)
+              setMobilePanel('sessions')
+            }}
             className="flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-[#e5e5e5] bg-white px-3 text-[#424247] shadow-sm transition active:scale-[0.98]"
             aria-label={`История чатов: ${(sessionsQ.data ?? []).length}`}
           >
@@ -404,11 +453,11 @@ function Chat() {
 
       <Modal
         open={mobilePanel !== null}
-        onClose={() => setMobilePanel(null)}
+        onClose={closeMobilePanel}
         labelledBy="mobile-chat-panel-title"
-        className="mt-auto -mb-4 max-h-[82vh] max-w-none overflow-hidden rounded-b-none rounded-t-[28px] border-x-0 border-b-0 md:hidden"
+        className="mt-auto -mb-4 flex max-h-[82vh] max-w-none flex-col overflow-hidden rounded-b-none rounded-t-[28px] border-x-0 border-b-0 md:hidden"
       >
-        <header className="flex items-center gap-3 border-b border-[#e5e5e5] px-5 py-4">
+        <header className="flex shrink-0 items-center gap-3 border-b border-[#e5e5e5] px-5 py-4">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#222226]/35">Чат с документами</p>
             <h2 id="mobile-chat-panel-title" className="mt-0.5 text-lg font-semibold text-[#222226]">
@@ -417,62 +466,63 @@ function Chat() {
           </div>
           <button
             type="button"
-            onClick={() => setMobilePanel(null)}
+            onClick={closeMobilePanel}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-[#222226]/5 text-[#424247]"
             aria-label="Закрыть панель"
           >
             <X className="h-4 w-4" />
           </button>
         </header>
-        <div className="max-h-[calc(82vh-77px)] overflow-y-auto px-5 py-5">
-          {mobilePanel === 'docs' ? (
-            <>
+        {mobilePanel === 'docs' ? (
+          <>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
               <DocPicker
-                scope={scope}
-                onChange={(next) => {
-                  onScopeChange(next)
-                  setMobilePanel(null)
-                }}
+                scope={mobileScopeDraft ?? scope}
+                onChange={setMobileScopeDraft}
                 docs={docsQ.data ?? []}
                 folders={foldersQ.data ?? []}
               />
-              {scope.kind !== 'all' && (
+            </div>
+            <div className="shrink-0 border-t border-[#e5e5e5] bg-white px-5 py-4">
+              {(mobileScopeDraft ?? scope).kind !== 'all' && (
                 <Button
                   variant="outline"
-                  className="mt-5 min-h-11 w-full"
-                  onClick={() => {
-                    onScopeChange({ kind: 'all' })
-                    setMobilePanel(null)
-                  }}
+                  className="min-h-11 w-full"
+                  onClick={() => setMobileScopeDraft({ kind: 'all' })}
                 >
                   Искать по всей библиотеке
                 </Button>
               )}
-            </>
-          ) : (
+              <Button className="mt-2 min-h-11 w-full" onClick={applyMobileScope} disabled={busy}>
+                Готово
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
             <SessionList
               sessions={sessionsQ.data ?? []}
               activeSid={sid}
               onOpen={(session) => {
                 openSession(session)
-                setMobilePanel(null)
+                closeMobilePanel()
               }}
               onDelete={deleteSession}
               onNewChat={() => {
                 newChat()
-                setMobilePanel(null)
+                closeMobilePanel()
               }}
               busy={busy}
             />
-          )}
-        </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
 }
 
-/** Область чата (сайдбар, вкладка «Документы»): папки (быстрый выбор всей папки)
- *  + плоский чек-лист документов (мультивыбор), в духе Figma 54:2342. */
+/** Область чата: дерево папок с раскрытием документов. Папки сохраняются как
+ * динамическая область, а отдельные документы можно добавить к ней. */
 function DocPicker({
   scope,
   onChange,
@@ -484,67 +534,206 @@ function DocPicker({
   docs: Document[]
   folders: Folder[]
 }) {
-  const checked = (id: string) => scope.kind === 'docs' && scope.docIds.includes(id)
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    () => new Set(scope.kind === 'selection' ? scope.folderIds : []),
+  )
+  const [selectionError, setSelectionError] = useState<string | null>(null)
+  const folderIds = new Set(folders.map((folder) => folder.id))
+  const looseDocs = docs.filter((document) => !document.folder_id || !folderIds.has(document.folder_id))
+  const selectedDocIds = new Set(scope.kind === 'selection' ? scope.docIds : [])
+  const selectedFolderIds = new Set(scope.kind === 'selection' ? scope.folderIds : [])
+  const checked = (document: Document) =>
+    selectedDocIds.has(document.id) || Boolean(document.folder_id && selectedFolderIds.has(document.folder_id))
+
+  function commitSelected(nextDocuments: Set<string>, nextFolders: Set<string>) {
+    const orderedDocuments = docs.filter((document) => nextDocuments.has(document.id)).map((document) => document.id)
+    const unknownDocuments = [...nextDocuments].filter((id) => !orderedDocuments.includes(id))
+    const orderedFolders = folders.filter((folder) => nextFolders.has(folder.id)).map((folder) => folder.id)
+    const unknownFolders = [...nextFolders].filter((id) => !orderedFolders.includes(id))
+    const documentIds = [...orderedDocuments, ...unknownDocuments]
+    const folderIds = [...orderedFolders, ...unknownFolders]
+    if (documentIds.length > MAX_CHAT_SCOPE_DOCUMENTS) {
+      setSelectionError(`Можно выбрать не более ${MAX_CHAT_SCOPE_DOCUMENTS} документов за один чат.`)
+      return
+    }
+    if (folderIds.length > MAX_CHAT_SCOPE_FOLDERS) {
+      setSelectionError(`Можно выбрать не более ${MAX_CHAT_SCOPE_FOLDERS} папок за один чат.`)
+      return
+    }
+    setSelectionError(null)
+    onChange(
+      documentIds.length || folderIds.length
+        ? { kind: 'selection', docIds: documentIds, folderIds }
+        : { kind: 'all' },
+    )
+  }
+
   function toggleDoc(id: string) {
-    const cur = scope.kind === 'docs' ? scope.docIds : []
-    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]
-    onChange(next.length ? { kind: 'docs', docIds: next } : { kind: 'all' })
+    const nextDocuments = new Set(selectedDocIds)
+    if (nextDocuments.has(id)) nextDocuments.delete(id)
+    else nextDocuments.add(id)
+    commitSelected(nextDocuments, selectedFolderIds)
+  }
+
+  function toggleFolder(folder: Folder, folderDocs: Document[]) {
+    const nextDocuments = new Set(selectedDocIds)
+    const nextFolders = new Set(selectedFolderIds)
+    if (nextFolders.has(folder.id)) nextFolders.delete(folder.id)
+    else {
+      nextFolders.add(folder.id)
+      for (const document of folderDocs) nextDocuments.delete(document.id)
+    }
+    commitSelected(nextDocuments, nextFolders)
+  }
+
+  function toggleExpanded(folderId: string) {
+    setExpandedFolders((current) => {
+      const next = new Set(current)
+      if (next.has(folderId)) next.delete(folderId)
+      else next.add(folderId)
+      return next
+    })
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {folders.length > 0 && (
-        <div className="flex flex-col gap-0.5">
-          <div className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-[#c1c1c1]">Папки</div>
+        <section className="flex flex-col gap-1" aria-labelledby="chat-folders-label">
+          <div id="chat-folders-label" className="px-1 pb-1 text-[11px] font-medium uppercase tracking-[0.09em] text-[#a8a8ad]">
+            Папки
+          </div>
           {folders.map((f) => {
-            const active = scope.kind === 'folder' && scope.folderId === f.id
+            const folderDocs = docs.filter((document) => document.folder_id === f.id)
+            const active = selectedFolderIds.has(f.id)
+            const partial = !active && folderDocs.some((document) => selectedDocIds.has(document.id))
+            const expanded = expandedFolders.has(f.id)
             return (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => onChange(active ? { kind: 'all' } : { kind: 'folder', folderId: f.id })}
-                className={cn(
-                  'flex min-h-11 items-center gap-2 rounded-lg px-1 py-1.5 text-left text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] transition md:min-h-0',
-                  active ? 'text-[#222226]' : 'text-[#222226]/70 hover:bg-[#222226]/[0.04]',
+              <div key={f.id} className="flex flex-col">
+                <div
+                  className={cn(
+                    'flex min-h-11 items-center rounded-xl transition md:min-h-9',
+                    active || partial ? 'bg-[#4b4ce6]/[0.07]' : 'hover:bg-[#222226]/[0.04]',
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleFolder(f, folderDocs)}
+                    role="checkbox"
+                    aria-checked={partial ? 'mixed' : active}
+                    aria-label={`Выбрать папку ${f.name}`}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg md:h-9 md:w-9"
+                  >
+                    <span
+                      className={cn(
+                        'flex h-5 w-5 items-center justify-center rounded-md border transition',
+                        active || partial
+                          ? 'border-[#4b4ce6] bg-[#4b4ce6]'
+                          : 'border-[#d8d8dc] bg-white',
+                      )}
+                    >
+                      {active ? <Check className="h-3 w-3 text-white" /> : partial ? <Minus className="h-3 w-3 text-white" /> : null}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(f.id)}
+                    aria-label={`${expanded ? 'Свернуть' : 'Раскрыть'} папку ${f.name}`}
+                    aria-expanded={expanded}
+                    className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg py-2 pr-2 text-left md:min-h-9"
+                  >
+                    {expanded ? <ChevronDown className="h-4 w-4 shrink-0 text-[#222226]/45" /> : <ChevronRight className="h-4 w-4 shrink-0 text-[#222226]/45" />}
+                    <FolderIcon className={cn('h-4 w-4 shrink-0', active || partial ? 'text-[#4b4ce6]' : 'text-[#222226]/35')} />
+                    <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#222226]">{f.name}</span>
+                    <span className="shrink-0 text-[11px] text-[#a8a8ad]">{folderDocs.length}</span>
+                  </button>
+                </div>
+                {expanded && (
+                  <div className="ml-11 flex flex-col border-l border-[#222226]/10 pl-3 md:ml-9">
+                    {folderDocs.length === 0 ? (
+                      <p className="px-1 py-2 text-[12px] text-[#a8a8ad]">Нет готовых документов</p>
+                    ) : (
+                      folderDocs.map((document) => (
+                        <DocumentScopeChoice
+                          key={document.id}
+                          document={document}
+                          checked={checked(document)}
+                          disabled={active}
+                          nested
+                          onToggle={() => toggleDoc(document.id)}
+                        />
+                      ))
+                    )}
+                  </div>
                 )}
-              >
-                <FolderIcon className={cn('h-4 w-4 shrink-0', active ? 'text-[#4b4ce6]' : 'text-[#222226]/35')} />
-                <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                <span className="shrink-0 text-[11px] text-[#c1c1c1]">{f.documents}</span>
-              </button>
+              </div>
             )
           })}
-        </div>
+        </section>
       )}
 
-      <div className="flex flex-col gap-3">
-        {docs.length === 0 && <p className="px-1 text-[13px] text-[#c1c1c1]">Нет готовых документов</p>}
-        {docs.map((d) => (
-          <label key={d.id} className="flex min-h-11 cursor-pointer items-center gap-2.5 md:min-h-0">
-            <span
-              className={cn(
-                'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition',
-                checked(d.id) ? 'border-[#4b4ce6] bg-[#4b4ce6]' : 'border-[#e5e5e5] bg-white',
-              )}
-            >
-              {checked(d.id) && <Check className="h-3 w-3 text-white" />}
-            </span>
-            <input
-              type="checkbox"
-              checked={checked(d.id)}
-              onChange={() => toggleDoc(d.id)}
-              className="sr-only"
+      <section className="flex flex-col gap-1" aria-labelledby="chat-documents-label">
+        <div id="chat-documents-label" className="px-1 pb-1 text-[11px] font-medium uppercase tracking-[0.09em] text-[#a8a8ad]">
+          {folders.length > 0 ? 'Документы без папки' : 'Документы'}
+        </div>
+        {looseDocs.length === 0 ? (
+          <p className="px-1 py-1 text-[12px] text-[#a8a8ad]">
+            {docs.length === 0 ? 'Нет готовых документов' : 'Все документы распределены по папкам'}
+          </p>
+        ) : (
+          looseDocs.map((document) => (
+            <DocumentScopeChoice
+              key={document.id}
+              document={document}
+              checked={checked(document)}
+              onToggle={() => toggleDoc(document.id)}
             />
-            <span
-              className="min-w-0 flex-1 truncate text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] text-[#222226]"
-              title={d.filename}
-            >
-              {d.filename}
-            </span>
-          </label>
-        ))}
-      </div>
+          ))
+        )}
+      </section>
+      {selectionError && (
+        <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-[12px] leading-[1.4] text-amber-800">
+          {selectionError}
+        </p>
+      )}
     </div>
+  )
+}
+
+function DocumentScopeChoice({
+  document,
+  checked,
+  disabled = false,
+  nested = false,
+  onToggle,
+}: {
+  document: Document
+  checked: boolean
+  disabled?: boolean
+  nested?: boolean
+  onToggle: () => void
+}) {
+  return (
+    <label
+      className={cn(
+        'flex min-h-11 items-center gap-2.5 rounded-lg px-1 md:min-h-9',
+        disabled ? 'cursor-default opacity-60' : 'cursor-pointer',
+        nested && 'pr-1',
+      )}
+    >
+      <span
+        className={cn(
+          'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition',
+          checked ? 'border-[#4b4ce6] bg-[#4b4ce6]' : 'border-[#d8d8dc] bg-white',
+        )}
+      >
+        {checked && <Check className="h-3 w-3 text-white" />}
+      </span>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={onToggle} className="sr-only" />
+      <FileText className="h-3.5 w-3.5 shrink-0 text-[#222226]/30" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium leading-[1.4] text-[#222226]" title={document.filename}>
+        {document.filename}
+      </span>
+    </label>
   )
 }
 

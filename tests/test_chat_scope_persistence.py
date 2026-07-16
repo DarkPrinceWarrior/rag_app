@@ -16,18 +16,38 @@ def _id(value: int) -> uuid.UUID:
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
-        (ChatIn(message="q", scope_kind="all"), (None, None, None)),
-        (ChatIn(message="q", scope_kind="folder", folder_id=_id(10)), (None, _id(10), None)),
-        (ChatIn(message="q", scope_kind="docs", document_id=_id(20)), (_id(20), None, None)),
+        (ChatIn(message="q", scope_kind="all"), (None, None, None, None)),
+        (
+            ChatIn(message="q", scope_kind="folder", folder_id=_id(10)),
+            (None, _id(10), None, None),
+        ),
+        (
+            ChatIn(message="q", scope_kind="docs", document_id=_id(20)),
+            (_id(20), None, None, None),
+        ),
         (
             ChatIn(message="q", scope_kind="docs", document_ids=[_id(20), _id(21)]),
-            (None, None, [_id(20), _id(21)]),
+            (None, None, [_id(20), _id(21)], None),
+        ),
+        (
+            ChatIn(
+                message="q",
+                scope_kind="selection",
+                document_ids=[_id(20)],
+                folder_ids=[_id(10), _id(11)],
+            ),
+            (None, None, [_id(20)], [_id(10), _id(11)]),
         ),
     ],
 )
 def test_scope_values_are_canonical_and_persistable(
     body: ChatIn,
-    expected: tuple[uuid.UUID | None, uuid.UUID | None, list[uuid.UUID] | None],
+    expected: tuple[
+        uuid.UUID | None,
+        uuid.UUID | None,
+        list[uuid.UUID] | None,
+        list[uuid.UUID] | None,
+    ],
 ) -> None:
     assert _scope_values(body) == expected
 
@@ -38,6 +58,7 @@ def test_explicit_all_scope_clears_a_persisted_multi_document_scope() -> None:
         title="scope",
         owner_sub="synthetic-owner",
         document_ids=[_id(20), _id(21)],
+        folder_ids=[_id(10), _id(11)],
     )
 
     _apply_requested_scope(session, ChatIn(message="q", scope_kind="all"))
@@ -45,6 +66,7 @@ def test_explicit_all_scope_clears_a_persisted_multi_document_scope() -> None:
     assert session.document_id is None
     assert session.folder_id is None
     assert session.document_ids is None
+    assert session.folder_ids is None
 
 
 def test_legacy_request_without_scope_keeps_the_persisted_scope() -> None:
@@ -60,6 +82,25 @@ def test_legacy_request_without_scope_keeps_the_persisted_scope() -> None:
     assert session.document_ids == [_id(20), _id(21)]
 
 
+def test_combined_folder_and_document_selection_is_persisted() -> None:
+    session = ChatSession(id=_id(1), title="scope", owner_sub="synthetic-owner")
+
+    _apply_requested_scope(
+        session,
+        ChatIn(
+            message="q",
+            scope_kind="selection",
+            document_ids=[_id(20)],
+            folder_ids=[_id(10), _id(11)],
+        ),
+    )
+
+    assert session.document_id is None
+    assert session.folder_id is None
+    assert session.document_ids == [_id(20)]
+    assert session.folder_ids == [_id(10), _id(11)]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -68,6 +109,9 @@ def test_legacy_request_without_scope_keeps_the_persisted_scope() -> None:
         {"scope_kind": "docs"},
         {"document_id": _id(1), "folder_id": _id(2)},
         {"scope_kind": "docs", "document_ids": [_id(1), _id(1)]},
+        {"scope_kind": "selection"},
+        {"scope_kind": "selection", "folder_ids": [_id(1), _id(1)]},
+        {"scope_kind": "selection", "folder_id": _id(1), "document_ids": [_id(2)]},
     ],
 )
 def test_invalid_or_ambiguous_scope_is_rejected(payload: dict[str, object]) -> None:

@@ -598,7 +598,7 @@ function FolderModal({
 
 function DocList({ docs, folders }: { docs: Document[]; folders: Folder[] }) {
   return (
-    <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(237px,280px))] sm:justify-center">
       {docs.map((d) => (
         <DocCard key={d.id} d={d} folders={folders} />
       ))}
@@ -658,7 +658,7 @@ function DocCard({ d, folders }: { d: Document; folders: Folder[] }) {
   const canOpen = Boolean(d.status === 'done' || d.has_view || d.has_view_orig || d.has_view_ru)
   return (
     <>
-      <article className="group flex min-h-[333px] w-full min-w-0 flex-col rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 shadow-sm transition hover:border-[#ef9a11]/60 hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
+      <article data-testid="document-card" className="group flex min-h-[333px] w-full min-w-0 flex-col rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 shadow-sm transition hover:border-[#ef9a11]/60 hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]">
         <DocumentPreview d={d} tone={tone} canOpen={canOpen} />
 
         <div className="flex min-w-0 flex-1 flex-col px-3 pt-3">
@@ -894,11 +894,11 @@ function DocumentPreview({
   const preview = (
     <div
       className={cn(
-        'relative flex h-[234px] w-full items-center justify-center overflow-hidden rounded-md bg-[#222226]/[0.02] transition-colors',
+        'relative flex h-[218px] w-full items-center justify-center overflow-hidden rounded-md bg-[#222226]/[0.02] transition-colors',
         tone.surface,
       )}
     >
-      <div className="relative h-[219px] w-[213px] rounded-[6px] border border-[#e3e5ea] bg-white shadow-[0_10px_24px_rgba(30,42,62,0.08)]">
+      <div className="relative h-[202px] w-[calc(100%-20px)]">
         {previewUrl ? (
           <AuthenticatedPreviewImage
             src={previewUrl}
@@ -906,7 +906,7 @@ function DocumentPreview({
             onUnavailable={handlePreviewUnavailable}
           />
         ) : (
-          <DocumentPreviewPlaceholder />
+          <PreviewPaper />
         )}
       </div>
       {!canOpen && (
@@ -957,9 +957,23 @@ function AuthenticatedPreviewImage({
   }, [src, onUnavailable])
 
   if (!url) {
-    return <DocumentPreviewPlaceholder pulse />
+    return <PreviewPaper pulse />
   }
-  return <img src={url} alt={alt} className="absolute inset-0 h-full w-full object-contain" />
+  return (
+    <img
+      src={url}
+      alt={alt}
+      className="absolute inset-0 h-full w-full rounded-[5px] object-contain [filter:drop-shadow(0_8px_14px_rgba(30,42,62,0.12))]"
+    />
+  )
+}
+
+function PreviewPaper({ pulse = false }: { pulse?: boolean }) {
+  return (
+    <div className="absolute left-1/2 top-1/2 h-[202px] w-[148px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[5px] border border-[#e3e5ea]/80 bg-white/80 shadow-[0_8px_16px_rgba(30,42,62,0.08)]">
+      <DocumentPreviewPlaceholder pulse={pulse} />
+    </div>
+  )
 }
 
 function DocumentPreviewPlaceholder({ pulse = false }: { pulse?: boolean }) {
