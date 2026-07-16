@@ -1015,3 +1015,10 @@ production подтвердил переход `true → false → true`, под
 видимым. `aria-expanded`, `aria-controls`, Enter/Space и мобильная область
 нажатия не менее 44 px сохранены. ESLint, TypeScript, production build и bundle
 budget — PASS; полный Playwright — **13/13**.
+
+Выпущено коммитом `b460ae8`: SPA доставлен на A100,
+`rag-api.service=active`, `NRestarts=0`, `/healthz=ok`. Production Playwright
+MCP подтвердил начальные `aria-expanded=false`, индикатор `▸` и отсутствие
+смонтированного содержимого; клик по тексту строки раскрывает восемь шагов,
+меняет индикатор на `▾`, а повторный клик снова полностью скрывает контент. На
+390 px строка имеет высоту 48 px, горизонтальное переполнение равно нулю.
