@@ -111,6 +111,21 @@ def clean_truncated_repeats(
     return text
 
 
+def _output_diagnostics(
+    finish_reason: object,
+    *,
+    raw_characters: int,
+    cleaned_characters: int,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if finish_reason != "stop":
+        reasons.append("unfinished_generation")
+    removed = raw_characters - cleaned_characters
+    if raw_characters and removed / raw_characters >= 0.5:
+        reasons.append("repeat_cleanup_collapse")
+    return {"usable": not reasons, "rejection_reasons": reasons}
+
+
 def _render_pdf(pdf: Path, dpi: int) -> tuple[bytes, tuple[int, int], tuple[float, float], float]:
     import pypdfium2 as pdfium  # type: ignore[import-not-found]
 
@@ -179,12 +194,18 @@ def _request_ocr(
         raise ValueError("OvisOCR2 вернул пустой Markdown")
     raw_text = text.strip()
     cleaned_text = clean_truncated_repeats(raw_text)
+    finish_reason = choice.get("finish_reason")
     metadata = {
-        "finish_reason": choice.get("finish_reason"),
+        "finish_reason": finish_reason,
         "usage": body.get("usage"),
         "raw_characters": len(raw_text),
         "cleaned_characters": len(cleaned_text),
         "repeat_cleanup_removed_characters": len(raw_text) - len(cleaned_text),
+        **_output_diagnostics(
+            finish_reason,
+            raw_characters=len(raw_text),
+            cleaned_characters=len(cleaned_text),
+        ),
     }
     return cleaned_text, raw_text, metadata, latency_s
 
@@ -308,6 +329,47 @@ def _prediction_complete(path: Path, *, source_sha256: str, revision: str) -> bo
     )
 
 
+def _cached_resume_summary(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    inference = value.get("inference") if isinstance(value, dict) else None
+    if not isinstance(inference, dict):
+        inference = {}
+    usable = inference.get("usable")
+    if not isinstance(usable, bool):
+        raw_characters = inference.get("raw_characters", 0)
+        cleaned_characters = inference.get("cleaned_characters", raw_characters)
+        diagnostics = _output_diagnostics(
+            inference.get("finish_reason"),
+            raw_characters=raw_characters if isinstance(raw_characters, int) else 0,
+            cleaned_characters=(
+                cleaned_characters if isinstance(cleaned_characters, int) else 0
+            ),
+        )
+    else:
+        reasons = inference.get("rejection_reasons")
+        diagnostics = {
+            "usable": usable,
+            "rejection_reasons": reasons if isinstance(reasons, list) else [],
+        }
+    result = {
+        "status": "ok" if diagnostics["usable"] else "rejected",
+        "reason": "resume",
+        "latency_s": value.get("latency_s"),
+        "segments": len(value.get("segments", [])),
+        **diagnostics,
+    }
+    for key in (
+        "finish_reason",
+        "usage",
+        "raw_characters",
+        "cleaned_characters",
+        "repeat_cleanup_removed_characters",
+    ):
+        if key in inference:
+            result[key] = inference[key]
+    return result
+
+
 def _validate_pages(manifest: Any, corpus_dir: Path, categories: set[str]) -> list[dict[str, Any]]:
     if not isinstance(manifest, dict) or not isinstance(manifest.get("pages"), list):
         raise ValueError("corpus manifest должен содержать pages")
@@ -393,7 +455,7 @@ def main() -> None:
             source_sha256=page["sha256"],
             revision=args.revision,
         ):
-            summary["results"][filename] = {"status": "skipped", "reason": "resume"}
+            summary["results"][filename] = _cached_resume_summary(prediction_path)
             continue
         print(f"{filename}: ovisocr2", flush=True)
         try:
@@ -433,7 +495,7 @@ def main() -> None:
             }
             _atomic_write_json(prediction_path, prediction)
             summary["results"][filename] = {
-                "status": "ok",
+                "status": "ok" if inference["usable"] else "rejected",
                 "latency_s": latency_s,
                 "segments": len(segments),
                 **inference,

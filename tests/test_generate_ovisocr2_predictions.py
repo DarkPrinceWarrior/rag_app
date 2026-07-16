@@ -7,6 +7,8 @@ _RUNNER = runpy.run_path(
     str(Path(__file__).parents[1] / "scripts" / "generate_ovisocr2_predictions.py")
 )
 _prediction_complete = _RUNNER["_prediction_complete"]
+_cached_resume_summary = _RUNNER["_cached_resume_summary"]
+_output_diagnostics = _RUNNER["_output_diagnostics"]
 _validate_endpoint = _RUNNER["_validate_endpoint"]
 clean_truncated_repeats = _RUNNER["clean_truncated_repeats"]
 markdown_to_segments = _RUNNER["markdown_to_segments"]
@@ -69,6 +71,18 @@ def test_clean_truncated_repeats_removes_only_long_cyclic_tail() -> None:
     assert clean_truncated_repeats("short " + unit * 12) == "short " + unit * 12
 
 
+def test_output_diagnostics_rejects_truncation_and_cleanup_collapse() -> None:
+    assert _output_diagnostics(
+        "stop", raw_characters=1000, cleaned_characters=1000
+    ) == {"usable": True, "rejection_reasons": []}
+    assert _output_diagnostics(
+        "length", raw_characters=1000, cleaned_characters=400
+    ) == {
+        "usable": False,
+        "rejection_reasons": ["unfinished_generation", "repeat_cleanup_collapse"],
+    }
+
+
 def test_prediction_complete_binds_revision_and_source(tmp_path) -> None:
     source_hash = "a" * 64
     revision = "b" * 40
@@ -83,3 +97,32 @@ def test_prediction_complete_binds_revision_and_source(tmp_path) -> None:
     )
     assert _prediction_complete(path, source_sha256=source_hash, revision=revision)
     assert not _prediction_complete(path, source_sha256="c" * 64, revision=revision)
+
+
+def test_cached_resume_summary_preserves_rejected_diagnostics(tmp_path) -> None:
+    path = tmp_path / "page.pdf.json"
+    path.write_text(
+        """{
+          "latency_s": 395.214,
+          "segments": [{"kind": "paragraph"}],
+          "inference": {
+            "finish_reason": "length",
+            "raw_characters": 18466,
+            "cleaned_characters": 4074,
+            "repeat_cleanup_removed_characters": 14392
+          }
+        }""",
+        encoding="utf-8",
+    )
+    assert _cached_resume_summary(path) == {
+        "status": "rejected",
+        "reason": "resume",
+        "latency_s": 395.214,
+        "segments": 1,
+        "usable": False,
+        "rejection_reasons": ["unfinished_generation", "repeat_cleanup_collapse"],
+        "finish_reason": "length",
+        "raw_characters": 18466,
+        "cleaned_characters": 4074,
+        "repeat_cleanup_removed_characters": 14392,
+    }
