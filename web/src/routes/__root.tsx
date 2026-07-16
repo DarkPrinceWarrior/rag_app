@@ -220,7 +220,9 @@ function TabLink({ to, label }: { to: string; label: string }) {
       style={{ borderBottomColor: active ? '#4b4ce6' : 'transparent' }}
       className={cn(
         'flex min-h-11 items-center border-b-[3px] border-transparent px-2.5 py-2 text-[14px] font-medium leading-[1.5] text-[#222226] transition-colors md:px-4 md:text-[16px]',
-        active ? 'font-semibold' : 'opacity-50 hover:opacity-80',
+        active
+          ? 'bg-gradient-to-b from-white/0 to-[rgba(75,76,230,0.08)] font-semibold'
+          : 'opacity-50 hover:opacity-80',
       )}
     >
       {label}

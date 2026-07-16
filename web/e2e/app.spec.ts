@@ -201,6 +201,7 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
   await expect(documentsTab).toHaveAttribute('aria-current', 'page')
   await expect(documentsTab).toHaveCSS('border-bottom-color', 'rgb(75, 76, 230)')
   await expect(documentsTab).toHaveCSS('border-bottom-width', '3px')
+  await expect(documentsTab).toHaveCSS('background-image', /linear-gradient/)
 
   for (const { path, activeTab } of [
     { path: '/upload', activeTab: 'Загрузка' },
@@ -222,14 +223,19 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
       await expect(activeLink).toHaveAttribute('aria-current', 'page')
       await expect(activeLink).toHaveCSS('border-bottom-color', 'rgb(75, 76, 230)')
       await expect(activeLink).toHaveCSS('border-bottom-width', '3px')
+      await expect(activeLink).toHaveCSS('background-image', /linear-gradient/)
     } else {
       await expect(navigation.locator('[aria-current="page"]')).toHaveCount(0)
     }
 
-    const inactiveUnderlineColors = await navigation.locator('a:not([aria-current="page"])').evaluateAll(
-      (links) => links.map((link) => getComputedStyle(link).borderBottomColor),
+    const inactiveStyles = await navigation.locator('a:not([aria-current="page"])').evaluateAll(
+      (links) => links.map((link) => ({
+        borderBottomColor: getComputedStyle(link).borderBottomColor,
+        backgroundImage: getComputedStyle(link).backgroundImage,
+      })),
     )
-    expect(inactiveUnderlineColors.every((color) => color === 'rgba(0, 0, 0, 0)')).toBe(true)
+    expect(inactiveStyles.every((style) => style.borderBottomColor === 'rgba(0, 0, 0, 0)')).toBe(true)
+    expect(inactiveStyles.every((style) => style.backgroundImage === 'none')).toBe(true)
   }
 
   await page.setViewportSize({ width: 390, height: 844 })

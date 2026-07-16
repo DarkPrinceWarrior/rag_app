@@ -15,6 +15,8 @@ import {
   Loader2,
   MessagesSquare,
   Minus,
+  Plus,
+  Search,
   Table as TableIcon,
   Timer,
   Trash2,
@@ -753,12 +755,17 @@ function SessionList({
   onNewChat: () => void
   busy: boolean
 }) {
+  const [searchQuery, setSearchQuery] = useState('')
   const dateFormatter = new Intl.DateTimeFormat('ru-RU', {
     day: 'numeric',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
   })
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase('ru-RU')
+  const visibleSessions = normalizedQuery
+    ? sessions.filter((session) => session.title.toLocaleLowerCase('ru-RU').includes(normalizedQuery))
+    : sessions
 
   return (
     <div className="flex flex-col gap-4">
@@ -771,19 +778,40 @@ function SessionList({
       >
         <span
           aria-hidden="true"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#4b4ce6]/10 text-base leading-none text-[#4b4ce6]"
+          data-testid="new-chat-icon-container"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#4b4ce6]/10 text-[#4b4ce6]"
         >
-          +
+          <Plus className="h-4 w-4" strokeWidth={2} />
         </span>
         Новый чат
       </Button>
+      <label className="relative block">
+        <span className="sr-only">Поиск по чатам</span>
+        <Search
+          aria-hidden="true"
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#222226]/30"
+        />
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="Поиск по чатам"
+          autoComplete="off"
+          className="min-h-11 w-full rounded-xl border border-[#222226]/10 bg-white py-2 pl-9 pr-3 text-[13px] text-[#222226] shadow-sm outline-none transition placeholder:text-[#222226]/35 focus:border-[#4b4ce6]/35 focus:ring-2 focus:ring-[#4b4ce6]/10 md:min-h-9"
+        />
+      </label>
       <ul className="flex flex-col gap-1" aria-label="История чатов">
         {sessions.length === 0 && (
           <li className="rounded-xl border border-dashed border-[#222226]/10 px-3 py-4 text-center text-[13px] text-[#a8a8ad]">
             История пуста
           </li>
         )}
-        {sessions.map((session) => {
+        {sessions.length > 0 && visibleSessions.length === 0 && (
+          <li className="rounded-xl border border-dashed border-[#222226]/10 px-3 py-4 text-center text-[13px] text-[#a8a8ad]">
+            Чаты не найдены
+          </li>
+        )}
+        {visibleSessions.map((session) => {
           const active = session.id === activeSid
           const folderCount = new Set([
             ...(session.folder_ids ?? []),

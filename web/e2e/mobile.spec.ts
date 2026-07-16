@@ -301,6 +301,22 @@ test('mobile chat history uses accessible session cards and touch-sized actions'
   await page.goto(`/chat?sid=${activeSessionId}`)
 
   await page.getByRole('button', { name: 'История чатов: 2' }).click()
+  const searchbox = page.getByRole('searchbox', { name: 'Поиск по чатам' })
+  const newChat = page.getByRole('button', { name: 'Новый чат' })
+  const plusContainer = newChat.getByTestId('new-chat-icon-container')
+  const plusIcon = plusContainer.locator('svg')
+  await expectTouchTarget(searchbox)
+  await searchbox.fill('ПРОЕКТНЫЙ')
+  await expect(page.getByRole('button', { name: 'Открыть чат «Проектный анализ»' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Открыть чат «Общие требования»' })).toHaveCount(0)
+  await searchbox.fill('нет совпадений')
+  await expect(page.getByText('Чаты не найдены', { exact: true })).toBeVisible()
+  await searchbox.fill('')
+
+  const [plusContainerBox, plusIconBox] = await Promise.all([plusContainer.boundingBox(), plusIcon.boundingBox()])
+  expect(Math.abs((plusContainerBox?.x ?? 0) + (plusContainerBox?.width ?? 0) / 2 - ((plusIconBox?.x ?? 0) + (plusIconBox?.width ?? 0) / 2))).toBeLessThanOrEqual(0.5)
+  expect(Math.abs((plusContainerBox?.y ?? 0) + (plusContainerBox?.height ?? 0) / 2 - ((plusIconBox?.y ?? 0) + (plusIconBox?.height ?? 0) / 2))).toBeLessThanOrEqual(0.5)
+
   const activeSession = page.getByRole('button', { name: 'Открыть чат «Проектный анализ»' })
   const inactiveSession = page.getByRole('button', { name: 'Открыть чат «Общие требования»' })
   const deleteActive = page.getByRole('button', { name: 'Удалить чат «Проектный анализ»' })
