@@ -8,10 +8,12 @@ from pydantic import ValidationError
 from rag_app.api.routes import chat as chat_route
 from rag_app.config import Settings
 from rag_app.rag.quantity_guard import (
+    QUANTITY_WARNING_MARKDOWN,
     RAG_QUANTITY_MENTIONS,
     RAG_QUANTITY_UNSUPPORTED,
     evaluate_quantity_support,
     private_quantity_guard_artifact,
+    quantity_warning_markdown,
     record_quantity_guard_metrics,
 )
 from rag_app.rag.retrieve import RetrievedChunk
@@ -110,13 +112,14 @@ def test_private_quantity_guard_artifact_rejects_empty_case_id() -> None:
         )
 
 
-def test_quantity_guard_config_has_no_enforce_mode_before_gold_gate() -> None:
+def test_quantity_guard_config_allows_warning_but_not_enforce_mode() -> None:
     assert Settings(rag_quantity_guard_mode="shadow").rag_quantity_guard_mode == "shadow"
+    assert Settings(rag_quantity_guard_mode="warn").rag_quantity_guard_mode == "warn"
     with pytest.raises(ValidationError):
         Settings.model_validate({"rag_quantity_guard_mode": "enforce"})
 
 
-def test_quantity_shadow_is_fail_open_and_logs_no_payload(
+def test_quantity_guard_is_fail_open_and_logs_no_payload(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -125,11 +128,29 @@ def test_quantity_shadow_is_fail_open_and_logs_no_payload(
 
     monkeypatch.setattr(chat_route, "evaluate_quantity_support", fail)
 
-    chat_route._audit_quantity_shadow("private answer", [_chunk("private evidence")])
+    result = chat_route._evaluate_quantity_guard(
+        "private answer", [_chunk("private evidence")], mode="warn"
+    )
 
+    assert result is None
     assert "RuntimeError" in caplog.text
     assert "private answer" not in caplog.text
     assert "private evidence" not in caplog.text
+
+
+def test_quantity_warning_is_user_visible_only_for_absent_values() -> None:
+    unsupported = evaluate_quantity_support(
+        "Рабочее давление 50 МПа.",
+        [_chunk("Рабочее давление 5 МПа.")],
+    )
+    supported = evaluate_quantity_support(
+        "Рабочее давление 5 МПа.",
+        [_chunk("Рабочее давление 5 МПа.")],
+    )
+
+    assert quantity_warning_markdown(unsupported) == QUANTITY_WARNING_MARKDOWN
+    assert quantity_warning_markdown(supported) == ""
+    assert not any(character.isdigit() for character in QUANTITY_WARNING_MARKDOWN)
 
 
 def test_quantity_guard_publishes_aggregate_only_prometheus_counters() -> None:

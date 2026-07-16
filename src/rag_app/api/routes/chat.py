@@ -25,7 +25,12 @@ from rag_app.rag.agent import AgentLoop, classify
 from rag_app.rag.chat import extract_citations, make_session_title
 from rag_app.rag.digest import render_docx, render_md, session_digest
 from rag_app.rag.memory.rls import apply_scope_guc
-from rag_app.rag.quantity_guard import evaluate_quantity_support, record_quantity_guard_metrics
+from rag_app.rag.quantity_guard import (
+    QuantityGuardResult,
+    evaluate_quantity_support,
+    quantity_warning_markdown,
+    record_quantity_guard_metrics,
+)
 from rag_app.rag.retrieve import RetrievedChunk
 from rag_app.rag.tools import AgentTools
 
@@ -110,14 +115,20 @@ def _apply_requested_scope(session: ChatSession, body: ChatIn) -> None:
     session.document_ids = document_ids
 
 
-def _audit_quantity_shadow(answer: str, chunks: Sequence[RetrievedChunk]) -> None:
-    """Записать только агрегаты; ошибка shadow-аудита не влияет на ответ."""
+def _evaluate_quantity_guard(
+    answer: str,
+    chunks: Sequence[RetrievedChunk],
+    *,
+    mode: str,
+) -> QuantityGuardResult | None:
+    """Записать только агрегаты; ошибка числового гейта не влияет на ответ."""
     try:
         quantity_guard = evaluate_quantity_support(answer, chunks)
         record_quantity_guard_metrics(quantity_guard)
         logger.info(
-            "RAG quantity guard shadow: mentioned=%d supported=%d unsupported=%d "
+            "RAG quantity guard: mode=%s mentioned=%d supported=%d unsupported=%d "
             "unsupported_pairs=%d unsupported_values=%d invalid_units=%d rate=%.6f",
+            mode,
             quantity_guard["mentioned_count"],
             quantity_guard["supported_count"],
             quantity_guard["unsupported_count"],
@@ -126,8 +137,10 @@ def _audit_quantity_shadow(answer: str, chunks: Sequence[RetrievedChunk]) -> Non
             quantity_guard["invalid_unit_count"],
             quantity_guard["unsupported_rate"],
         )
-    except Exception as exc:  # noqa: BLE001 - shadow must never alter the answer path
-        logger.warning("RAG quantity guard shadow failed: %s", type(exc).__name__)
+        return quantity_guard
+    except Exception as exc:  # noqa: BLE001 - guard must never alter the answer path
+        logger.warning("RAG quantity guard failed: mode=%s error=%s", mode, type(exc).__name__)
+        return None
 
 
 async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> None:
@@ -366,8 +379,14 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                 yield _sse({"type": "error", "detail": f"генерация не удалась: {exc}"})
                 return
 
-        if settings.rag_quantity_guard_mode == "shadow" and chunks:
-            _audit_quantity_shadow(answer, chunks)
+        quantity_mode = settings.rag_quantity_guard_mode
+        if quantity_mode != "off" and chunks:
+            quantity_guard = _evaluate_quantity_guard(answer, chunks, mode=quantity_mode)
+            if quantity_mode == "warn" and quantity_guard is not None:
+                warning = quantity_warning_markdown(quantity_guard)
+                if warning and warning not in answer:
+                    answer = f"{answer.rstrip()}{warning}"
+                    yield _sse({"type": "delta", "text": warning})
         citations = extract_citations(answer, chunks) if chunks else []
         async with sessionmaker() as db:
             msg = ChatMessage(

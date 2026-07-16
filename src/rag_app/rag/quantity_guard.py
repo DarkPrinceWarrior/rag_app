@@ -20,6 +20,12 @@ RAG_QUANTITY_UNSUPPORTED = Counter(
     ("reason",),
 )
 
+QUANTITY_WARNING_MARKDOWN = (
+    "\n\n> ⚠️ **Проверьте числовые значения.** "
+    "Часть числовых значений ответа не найдена в использованных фрагментах. "
+    "Сверьте их с первоисточником."
+)
+
 
 class QuantityGuardResult(TypedDict):
     """Aggregate-only result: safe to log without document or answer content."""
@@ -117,10 +123,18 @@ def record_quantity_guard_metrics(result: QuantityGuardResult) -> None:
     RAG_QUANTITY_UNSUPPORTED.labels("invalid_unit").inc(result["invalid_unit_count"])
 
 
+def quantity_warning_markdown(result: QuantityGuardResult) -> str:
+    """Return a persistent user warning only for values absent from evidence."""
+
+    return QUANTITY_WARNING_MARKDOWN if result["unsupported_value_count"] else ""
+
+
 __all__ = [
     "PrivateQuantityGuardArtifact",
+    "QUANTITY_WARNING_MARKDOWN",
     "QuantityGuardResult",
     "evaluate_quantity_support",
     "private_quantity_guard_artifact",
+    "quantity_warning_markdown",
     "record_quantity_guard_metrics",
 ]
