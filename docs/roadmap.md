@@ -258,7 +258,13 @@ CT 135 — LXC-контейнер: драйвер NVIDIA живёт на хос�
   - `popup` — мини-история, кнопка «перевести страницу», drag-n-drop файла, переход в веб-версию;
   - `content script` — UI в **Shadow DOM** (изоляция стилей от страницы): floating-кнопка у выделения → перевод выделенного (быстрый контур Hunyuan-MT, ответ < 2 c); полностраничный перевод через TreeWalker-батчи с прогрессивной заменой узлов;
   - `background SW` — очередь батчей, auth-токен (OIDC PKCE через chrome.identity → Keycloak), ретраи.
-- Раздача — корпоративная политика Chrome/Edge (ExtensionInstallForcelist), не публичный стор.
+- Текущая пилотная раздача — готовый ZIP из профиля: распаковать в постоянную
+  папку → `chrome://extensions` → режим разработчика → «Загрузить
+  распакованное» → выбрать папку с `manifest.json` → войти под корпоративной
+  учётной записью. Production API уже зашит в сборку, ручная настройка не нужна.
+- Автообновление через Chrome Web Store (Unlisted) либо управляемую политику
+  Chrome/Edge (`ExtensionInstallForcelist`, MDM/GPO) — отдельный будущий канал
+  раздачи; текущий unpacked ZIP автоматически не обновляется.
 
 ---
 
@@ -422,6 +428,7 @@ CT 135 — LXC-контейнер: драйвер NVIDIA живёт на хос�
 
 | Дата | Что сделано | Проверка | Статус |
 |---|---|---|---|
+| 2026-07-16 | **Подготовлен готовый Chrome ZIP-пакет для пилотной раздачи.** В профиле добавлено скачивание `web/public/downloads/DocRAGenslate-Chrome.zip`; внутри есть русская инструкция. Поток пользователя: распаковать ZIP → `chrome://extensions` → режим разработчика → `Load unpacked` → выбрать папку с `manifest.json` → войти под своей учёткой. Production API `https://doc-rag-translate.ds-mind-lab.ru` настроен по умолчанию; ID закреплён как `mhjdfiggibjmaiomlggloepafgphgdpa`; локальные host permissions из релизной сборки исключены. CWS/MDM/GPO и автообновление оставлены отдельным будущим вариантом. | Extension TypeScript compile и production build — PASS. Чистый Playwright smoke: ожидаемый runtime ID, production API, `/api/config=200`, `auth_enabled=true`, кнопка «Войти» видима. Web ESLint/TypeScript/build/bundle budget — PASS; Playwright **12/12**; мобильная карточка скачивания без горизонтального overflow, целевая высота кнопки не менее 44 px. | ✅ **Пилотный пакет готов к раздаче.** Интерактивный вход и перевод под одной из выданных пользовательских учёток остаются короткой ручной приёмкой после доставки; unpacked ZIP не обновляется автоматически. § 3/P0-security не затрагивался. |
 | 2026-07-16 | **Focus-зазор поиска чатов сделан симметричным (`d2ab6de`).** Scroll-контейнер расширен на 12 px в обе стороны, поэтому внешняя обводка больше не подрезается слева или справа; положение и ширина контента не изменились. | Playwright **21/21**. Playwright MCP с 20 сессиями и реальным overflow: поиск `304 px`, зазоры `12/12 px`. A100: SHA `d2ab6de`, SPA доставлен, `rag-api.service=active`, `NRestarts=0`, `/healthz=ok`. | ✅ **Принято и развернуто в production.** § 3/P0-security не затрагивался. |
 | 2026-07-16 | **По скриншоту владельца разделены focus-обводка поиска чатов и scrollbar (`df1097f`).** Причиной был внутренний scroll-контейнер, а не общая ширина панели: полоса прокрутки вынесена на 12 px вправо, при этом полезная ширина поиска, кнопки и карточек сохранена 304 px. | ESLint, TypeScript, production build и bundle budget — PASS; Playwright **21/21**. Playwright MCP с 20 сессиями и реальным overflow: поиск `304 px`, зазор до scrollbar `12 px`. A100: SHA `df1097f`, SPA доставлен, `rag-api.service=active`, `NRestarts=0`, `/healthz=ok`. | ✅ **Принято и развернуто в production.** § 3/P0-security не затрагивался. |
 | 2026-07-16 | **Расширена desktop-панель «Мои чаты» (`36cca62`).** При переключении с документов ширина панели плавно меняется с 320 до 352 px; полезная ширина поиска, кнопки и карточек увеличена с 272 до 304 px при симметричных полях 24 px. Дерево документов не изменено. | ESLint, TypeScript, production build и bundle budget — PASS; Playwright **21/21**. Playwright MCP: `documents=320 px`, `sessions=352 px`, `search=newChat=304 px`, поля `24/24 px`. A100: SHA `36cca62`, SPA доставлен, `rag-api.service=active`, `NRestarts=0`, `/healthz=ok`. | ✅ **Принято и развернуто в production.** § 3/P0-security не затрагивался. |

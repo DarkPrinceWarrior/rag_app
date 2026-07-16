@@ -2,13 +2,16 @@
   "name": "rag-app-extension",
   "description": "rag_app — перевод выделения и страниц (EN→RU), on-prem контур",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packageManager": "pnpm@11.12.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
+    "build:prod": "pnpm icons && node scripts/build-production.mjs",
+    "icons": "node scripts/generate-icons.mjs",
     "zip": "wxt zip",
+    "smoke:prod": "node e2e/smoke_prod.mjs",
     "compile": "tsc --noEmit",
     "postinstall": "wxt prepare"
   },

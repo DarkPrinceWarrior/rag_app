@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Download, Puzzle } from 'lucide-react'
 import { api, type MemoryItem } from '@/lib/api'
 import { authFetch, currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -34,7 +35,7 @@ const kindRu = (k: string) => KIND_RU[k] ?? k
 function AccountPage() {
   const user = currentUser()
   return (
-    <div className="mx-auto max-w-3xl px-4 py-5">
+    <div className="mx-auto w-full max-w-3xl px-4 py-5">
       {/* Карточка пользователя */}
       <div className="mb-5 flex items-center gap-3 rounded-xl border bg-card p-4">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-lg font-semibold text-primary">
@@ -53,6 +54,33 @@ function AccountPage() {
         <Button variant="outline" size="sm" className="ml-auto" onClick={logout}>
           Выйти
         </Button>
+      </div>
+
+      <div className="mb-5 rounded-xl border bg-card p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Puzzle className="h-5 w-5" aria-hidden="true" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold">Расширение для Google Chrome</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Переводите выделенный текст и целые страницы через корпоративный контур.
+            </p>
+            <ol className="mt-2 list-decimal space-y-0.5 pl-4 text-xs text-muted-foreground">
+              <li>Скачайте и распакуйте ZIP.</li>
+              <li>Откройте chrome://extensions и выберите «Загрузить распакованное».</li>
+              <li>Откройте расширение и войдите под своей учётной записью.</li>
+            </ol>
+          </div>
+          <a
+            href="/downloads/DocRAGenslate-Chrome.zip"
+            download
+            className="flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 sm:w-auto"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Скачать ZIP
+          </a>
+        </div>
       </div>
 
       <MemorySection isAdmin={user.isAdmin} />

@@ -226,6 +226,8 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
       await expect(activeLink).toHaveCSS('background-image', /linear-gradient/)
     } else {
       await expect(navigation.locator('[aria-current="page"]')).toHaveCount(0)
+      const extensionDownload = page.getByRole('link', { name: 'Скачать ZIP' })
+      await expect(extensionDownload).toHaveAttribute('href', '/downloads/DocRAGenslate-Chrome.zip')
     }
 
     const inactiveStyles = await navigation.locator('a:not([aria-current="page"])').evaluateAll(
@@ -239,6 +241,13 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
   }
 
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/account')
+  const mobileDownload = page.getByRole('link', { name: 'Скачать ZIP' })
+  const mobileDownloadBox = await mobileDownload.boundingBox()
+  expect(mobileDownloadBox?.width ?? Infinity).toBeLessThanOrEqual(358)
+  expect(mobileDownloadBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
+
   await page.goto('/chat')
   for (const control of [
     navigation.getByRole('link', { name: 'ИИ-консультант', exact: true }),

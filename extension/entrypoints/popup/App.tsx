@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { getApiBase, type HistoryEntry } from '@/utils/api';
+import { DEFAULT_API_BASE, getApiBase, type HistoryEntry } from '@/utils/api';
 import { getAccessToken } from '@/utils/auth';
 
 interface AuthState {
@@ -18,7 +18,7 @@ export default function App() {
   const [pageTranslated, setPageTranslated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [apiBase, setApiBase] = useState('http://localhost:8100');
+  const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
   const [auth, setAuth] = useState<AuthState>({ enabled: false, loggedIn: false });
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -189,13 +189,17 @@ export default function App() {
           </div>
         ))}
 
-        <div className="section">Адрес API</div>
-        <input
-          type="text"
-          value={apiBase}
-          onChange={(e) => void saveApiBase(e.target.value)}
-          spellCheck={false}
-        />
+        <details className="connection-settings">
+          <summary>Настройки подключения</summary>
+          <label htmlFor="api-base">Адрес корпоративного сервиса</label>
+          <input
+            id="api-base"
+            type="text"
+            value={apiBase}
+            onChange={(e) => void saveApiBase(e.target.value)}
+            spellCheck={false}
+          />
+        </details>
       </main>
     </>
   );

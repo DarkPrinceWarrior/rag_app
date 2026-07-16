@@ -22,8 +22,10 @@ export interface HistoryEntry {
   ts: number;
 }
 
+export const DEFAULT_API_BASE = __RAG_EXT_DEFAULT_API__;
+
 export async function getApiBase(): Promise<string> {
-  const { apiBase } = await browser.storage.sync.get({ apiBase: 'http://localhost:8100' });
+  const { apiBase } = await browser.storage.sync.get({ apiBase: DEFAULT_API_BASE });
   return (apiBase as string).replace(/\/+$/, '');
 }
 
