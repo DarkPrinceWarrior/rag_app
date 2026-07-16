@@ -206,6 +206,21 @@ def test_vllm_candidate_profiles_cannot_target_parser_environments() -> None:
     assert "отказ: кандидат нельзя устанавливать" in prepare
     assert "mineru)" not in runner
     assert "paddle)" not in runner
+
+
+def test_gpu4_profiles_use_pinned_runtime_and_direct_reranker() -> None:
+    embedding = _read("deploy/vllm-embedding.service")
+    reranker = _read("deploy/vllm-reranker.service")
+    runner = _read("deploy/vllm/run_candidate.sh")
+
+    assert "/root/services/vllm-main-0.24.0/.venv/bin/vllm" in embedding
+    assert "--enforce-eager" in embedding
+    assert "--dtype float16" in embedding
+    assert "/root/services/vllm-main-0.24.0/.venv/bin/uvicorn" in reranker
+    assert "direct_qwen3_reranker_server:app" in reranker
+    assert "DIRECT_RERANK_DTYPE=bfloat16" in reranker
+    assert "--runner pooling" not in reranker
+    assert "direct-reranker" in runner
     assert "systemctl is-active --quiet" in runner
 
 
@@ -216,6 +231,63 @@ def test_backup_and_redteam_yaml_are_valid() -> None:
         "deploy/redteam/cases.yaml",
     ):
         assert yaml.safe_load(_read(relative)) is not None
+
+
+def test_backup_root_guard_rejects_root_symlink_and_volatile_filesystem(tmp_path: Path) -> None:
+    common = ROOT / "deploy/backup/backup_common.sh"
+    symlink = tmp_path / "backup-link"
+    symlink.symlink_to("/dev/shm", target_is_directory=True)
+    for candidate, expected in (
+        ("/", "корень системы"),
+        (str(ROOT), "не является отдельной точкой монтирования"),
+        (str(symlink), "не должен быть symlink"),
+        ("/dev/shm", "не является долговременным носителем"),
+    ):
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1"; validate_backup_root', "backup-test", str(common)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "RAG_BACKUP_ROOT": candidate},
+        )
+        assert result.returncode != 0
+        assert expected in result.stderr
+
+
+def test_backup_schedule_is_tracked_but_not_installed_by_app_installer() -> None:
+    service = _read("deploy/backup/pgbackrest-backup@.service")
+    full = _read("deploy/backup/pgbackrest-backup-full.timer")
+    diff = _read("deploy/backup/pgbackrest-backup-diff.timer")
+    wal = _read("deploy/backup/pgbackrest-wal-check.timer")
+    installer = _read("deploy/install_rag_app_services.sh")
+    assert "RequiresMountsFor=/backup" in service
+    assert "EnvironmentFile=-/etc/docragenslate/backup-storage.env" in service
+    assert "OnCalendar=Sun *-*-* 02:00:00" in full
+    assert "OnCalendar=Mon..Sat *-*-* 02:00:00" in diff
+    assert "OnCalendar=hourly" in wal
+    assert "pgbackrest-backup" not in installer
+
+
+def test_backup_scripts_share_fail_closed_guard_and_content_free_markers() -> None:
+    common = _read("deploy/backup/backup_common.sh")
+    assert '"$resolved" != /' in common
+    assert '"$backup_device" != "$root_device"' in common
+    assert "tmpfs|ramfs|overlay|overlayfs" in common
+    assert "RAG_BACKUP_EXPECTED_SOURCE" in common
+    assert "RAG_BACKUP_EXPECTED_FSTYPE" in common
+    for relative in (
+        "deploy/backup/pgbackrest_backup.sh",
+        "deploy/backup/keycloak_export.sh",
+        "deploy/backup/restore_drill.sh",
+    ):
+        text = _read(relative)
+        assert "backup_common.sh" in text
+        assert "validate_backup_root" in text
+    assert "record_backup_success minio_mirror" in _read("deploy/backup/minio_mirror.sh")
+    assert "record_backup_success keycloak_export" in _read("deploy/backup/keycloak_export.sh")
+    assert "record_backup_success wal_archive_check" in _read(
+        "deploy/backup/pgbackrest_backup.sh"
+    )
 
 
 def test_restore_drill_refuses_production_targets() -> None:

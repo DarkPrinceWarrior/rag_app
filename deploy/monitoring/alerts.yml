@@ -54,6 +54,38 @@ groups:
         annotations:
           summary: Более 1% защищённых чисел не подтверждены в переводе
 
+      - alert: RagDatabaseBackupStale
+        expr: |
+          time() - max(rag_backup_last_success_timestamp_seconds{operation=~"pgbackrest_full|pgbackrest_diff"}) > 129600
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: Нет успешной PostgreSQL-копии более 36 часов
+
+      - alert: RagWalArchiveCheckStale
+        expr: |
+          time() - rag_backup_last_success_timestamp_seconds{operation="wal_archive_check"} > 7200
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: pgBackRest не подтверждал WAL archive более 2 часов
+
+      - alert: RagMinioMirrorStale
+        expr: |
+          time() - rag_backup_last_success_timestamp_seconds{operation="minio_mirror"} > 7200
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: Независимый MinIO mirror не обновлялся более 2 часов
+
+      - alert: RagKeycloakExportStale
+        expr: |
+          time() - rag_backup_last_success_timestamp_seconds{operation="keycloak_export"} > 691200
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: Realm Keycloak не экспортировался более 8 суток
+
       - alert: RagModelEndpointDown
         expr: up{job="vllm"} == 0
         for: 5m

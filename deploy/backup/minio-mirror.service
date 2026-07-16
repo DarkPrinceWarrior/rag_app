@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 Environment=REPO_DIR=/root/projects/rag_app
 Environment=BACKUP_ENV=/etc/docragenslate/backup.env
+Environment=RAG_BACKUP_STATE_DIR=/var/lib/docragenslate/backup-metrics
 ExecStart=/root/projects/rag_app/deploy/backup/minio_mirror.sh
 UMask=0077
 Nice=10

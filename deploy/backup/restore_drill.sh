@@ -3,7 +3,8 @@
 # Сам production не меняет; печатает следующие команды только после проверок.
 set -euo pipefail
 
-: "${RAG_BACKUP_ROOT:?}"
+REPO_DIR="${REPO_DIR:-/root/projects/rag_app}"
+source "$REPO_DIR/deploy/backup/backup_common.sh"
 : "${RESTORE_PGDATA:?задайте пустой каталог тестового PostgreSQL}"
 : "${RESTORE_MINIO_URL:?задайте адрес тестового MinIO}"
 : "${RESTORE_DOCUMENT_ID:?задайте UUID контрольного документа}"
@@ -20,7 +21,7 @@ case "$RESTORE_MINIO_URL" in
     exit 1
     ;;
 esac
-mountpoint -q "$RAG_BACKUP_ROOT"
+validate_backup_root
 test -d "$RAG_BACKUP_ROOT/pgbackrest"
 test -d "$RESTORE_PGDATA"
 [[ -z "$(ls -A "$RESTORE_PGDATA")" ]] || { echo "RESTORE_PGDATA не пуст" >&2; exit 1; }

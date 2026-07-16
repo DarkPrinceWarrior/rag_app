@@ -3,15 +3,12 @@
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/root/projects/rag_app}"
-: "${RAG_BACKUP_ROOT:?задайте путь отдельного backup-носителя}"
+source "$REPO_DIR/deploy/backup/backup_common.sh"
 [[ "${1:-}" == "--maintenance-window" ]] || {
   echo "usage: $0 --maintenance-window" >&2
   exit 2
 }
-mountpoint -q "$RAG_BACKUP_ROOT" || {
-  echo "отказ: RAG_BACKUP_ROOT не является отдельной точкой монтирования" >&2
-  exit 1
-}
+validate_backup_root
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="$RAG_BACKUP_ROOT/keycloak/$stamp"
@@ -26,3 +23,4 @@ trap restart_keycloak EXIT
   export --realm rag-app --users skip --file "/backup/rag-app-realm.json"
 (cd "$out" && sha256sum rag-app-realm.json > SHA256SUMS)
 chmod 0600 "$out/rag-app-realm.json" "$out/SHA256SUMS"
+record_backup_success keycloak_export

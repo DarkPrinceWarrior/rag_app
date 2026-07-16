@@ -6,8 +6,13 @@ import json
 from pathlib import Path
 
 import yaml
+from prometheus_client import CollectorRegistry, generate_latest
 
-from rag_app.metrics_exporter import _number_guard_counts
+from rag_app.metrics_exporter import (
+    _backup_marker_timestamp,
+    _backup_metrics,
+    _number_guard_counts,
+)
 from rag_app.workers.queueing import _document_number_guard_counts
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +29,25 @@ def test_number_guard_counts_use_absolute_document_snapshots() -> None:
     )
     assert protected == 15
     assert unconfirmed == 2
+
+
+def test_backup_markers_fail_closed_and_export_only_fixed_operations(tmp_path: Path) -> None:
+    (tmp_path / "pgbackrest_full.timestamp").write_text("150\n", encoding="ascii")
+    (tmp_path / "pgbackrest_diff.timestamp").write_text("not-a-time\n", encoding="ascii")
+    (tmp_path / "wal_archive_check.timestamp").write_text("999999\n", encoding="ascii")
+    assert _backup_marker_timestamp(tmp_path / "pgbackrest_full.timestamp", now=200) == 150
+    assert _backup_marker_timestamp(tmp_path / "pgbackrest_diff.timestamp", now=200) == 0
+    assert _backup_marker_timestamp(tmp_path / "wal_archive_check.timestamp", now=200) == 0
+
+    registry = CollectorRegistry()
+    _backup_metrics(registry, state_dir=tmp_path, now=200)
+    payload = generate_latest(registry).decode()
+
+    assert 'rag_backup_last_success_timestamp_seconds{operation="pgbackrest_full"} 150.0' in payload
+    assert 'rag_backup_age_seconds{operation="pgbackrest_full"} 50.0' in payload
+    assert 'rag_backup_last_success_timestamp_seconds{operation="pgbackrest_diff"} 0.0' in payload
+    assert 'rag_backup_age_seconds{operation="pgbackrest_diff"} -1.0' in payload
+    assert "not-a-time" not in payload
 
 
 def test_document_number_guard_includes_quantities_with_units() -> None:
@@ -80,7 +104,15 @@ def test_alerts_and_dashboard_are_valid_and_cover_dlq_numbers_gpu() -> None:
         for group in alerts["groups"]
         for rule in group["rules"]
     }
-    assert {"RagDeadLetterQueueNotEmpty", "RagUnconfirmedNumbers", "RagGpuTemperatureHigh"} <= names
+    assert {
+        "RagDeadLetterQueueNotEmpty",
+        "RagUnconfirmedNumbers",
+        "RagGpuTemperatureHigh",
+        "RagDatabaseBackupStale",
+        "RagWalArchiveCheckStale",
+        "RagMinioMirrorStale",
+        "RagKeycloakExportStale",
+    } <= names
     dashboard = json.loads(
         (ROOT / "deploy/monitoring/grafana/dashboards/rag-operations.json").read_text()
     )

@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly DocRAGenslate pgBackRest WAL archive check
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=10m
+Unit=pgbackrest-backup@check.service
+
+[Install]
+WantedBy=timers.target

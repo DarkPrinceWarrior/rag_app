@@ -1,0 +1,17 @@
+[Unit]
+Description=DocRAGenslate pgBackRest %i operation
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/backup
+
+[Service]
+Type=oneshot
+Environment=REPO_DIR=/root/projects/rag_app
+Environment=RAG_BACKUP_ROOT=/backup
+Environment=RAG_BACKUP_STATE_DIR=/var/lib/docragenslate/backup-metrics
+EnvironmentFile=-/etc/docragenslate/backup-storage.env
+ExecStart=/root/projects/rag_app/deploy/backup/pgbackrest_backup.sh %i
+UMask=0077
+Nice=10
+NoNewPrivileges=true
+TimeoutStartSec=6h

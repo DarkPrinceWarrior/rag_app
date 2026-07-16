@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from arq import create_pool
@@ -23,6 +25,17 @@ from rag_app.workers.queueing import (
     NUMBER_GUARD_HASH,
     RETRY_HASH,
     all_queue_names,
+)
+
+_BACKUP_OPERATIONS = (
+    "pgbackrest_full",
+    "pgbackrest_diff",
+    "wal_archive_check",
+    "minio_mirror",
+    "keycloak_export",
+)
+_BACKUP_STATE_DIR = Path(
+    os.environ.get("RAG_BACKUP_STATE_DIR", "/var/lib/docragenslate/backup-metrics")
 )
 
 
@@ -48,6 +61,19 @@ def _number_guard_counts(rows: dict[bytes | str, bytes | str]) -> tuple[int, int
         except ValueError:
             continue
     return protected, unconfirmed
+
+
+def _backup_marker_timestamp(path: Path, *, now: float) -> float:
+    """Read a content-free epoch marker; malformed/future values fail closed to zero."""
+
+    try:
+        raw = path.read_text(encoding="ascii").strip()
+        timestamp = float(raw)
+    except (OSError, UnicodeError, ValueError):
+        return 0.0
+    if not 0 < timestamp <= now + 300:
+        return 0.0
+    return timestamp
 
 
 @asynccontextmanager
@@ -143,11 +169,40 @@ async def _quality_metrics(registry: CollectorRegistry, redis: Any) -> None:
     ratio.set(unconfirmed / protected if protected else 0.0)
 
 
+def _backup_metrics(
+    registry: CollectorRegistry,
+    *,
+    state_dir: Path = _BACKUP_STATE_DIR,
+    now: float | None = None,
+) -> None:
+    current = time.time() if now is None else now
+    last_success = Gauge(
+        "rag_backup_last_success_timestamp_seconds",
+        "Unix timestamp of the last successful durable-backup operation",
+        ["operation"],
+        registry=registry,
+    )
+    age = Gauge(
+        "rag_backup_age_seconds",
+        "Age of the last successful durable-backup operation; -1 means missing/invalid marker",
+        ["operation"],
+        registry=registry,
+    )
+    for operation in _BACKUP_OPERATIONS:
+        timestamp = _backup_marker_timestamp(
+            state_dir / f"{operation}.timestamp",
+            now=current,
+        )
+        last_success.labels(operation).set(timestamp)
+        age.labels(operation).set(max(current - timestamp, 0.0) if timestamp else -1.0)
+
+
 @app.get("/metrics", include_in_schema=False)
 async def metrics() -> Response:
     registry = CollectorRegistry()
     await _queue_metrics(registry, app.state.redis)
     await _quality_metrics(registry, app.state.redis)
+    _backup_metrics(registry)
     return Response(generate_latest(registry), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 

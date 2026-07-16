@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly DocRAGenslate pgBackRest full backup
+
+[Timer]
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=pgbackrest-backup@full.service
+
+[Install]
+WantedBy=timers.target

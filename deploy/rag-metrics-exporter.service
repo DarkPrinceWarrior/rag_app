@@ -14,6 +14,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=RAG_REDIS_HOST=127.0.0.1
 Environment=RAG_REDIS_PORT=6379
 Environment=RAG_REDIS_DB=0
+# Content-free epoch markers; exporter still receives no DB/S3/OIDC secrets.
+Environment=RAG_BACKUP_STATE_DIR=/var/lib/docragenslate/backup-metrics
 ExecStart=/root/projects/rag_app/.venv/bin/uvicorn rag_app.metrics_exporter:app --host 127.0.0.1 --port 9108
 Restart=on-failure
 RestartSec=5

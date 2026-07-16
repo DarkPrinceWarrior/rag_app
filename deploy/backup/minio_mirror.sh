@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/root/projects/rag_app}"
 BACKUP_ENV="${BACKUP_ENV:-/etc/docragenslate/backup.env}"
+source "$REPO_DIR/deploy/backup/backup_common.sh"
 test -r "$BACKUP_ENV" || { echo "нет $BACKUP_ENV" >&2; exit 1; }
 set -a
 # shellcheck disable=SC1090
@@ -26,3 +27,4 @@ for bucket in originals artifacts translated exports; do
   # Без --remove: удаление/компрометация источника не стирает резервную копию.
   "${mc[@]}" mirror --overwrite "source/$bucket" "backup/$bucket"
 done
+record_backup_success minio_mirror

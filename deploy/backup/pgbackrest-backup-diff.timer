@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily DocRAGenslate pgBackRest differential backup
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=pgbackrest-backup@diff.service
+
+[Install]
+WantedBy=timers.target
