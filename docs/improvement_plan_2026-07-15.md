@@ -942,3 +942,11 @@ SHA-256 скачанного файла совпадает с проверенн
 по production API-контракту; реальный Hy-MT2 проверен отдельно. TypeScript,
 production build, целостность ZIP, web production build и целевой браузерный
 тест профиля — PASS.
+
+Выпущено коммитом `5d1e859`: локальная и серверная копии синхронизированы,
+`rag-api.service=active`, `vllm-hymt2.service=active`, `NRestarts=0`,
+`/healthz=ok`. Production ZIP версии 0.2.1 возвращает HTTP 200,
+`Content-Type: application/zip`, `Content-Length: 86808`; удалённый SHA-256
+совпал с локальным:
+`e230a71bfb585fdec3736a87e3ff0ddc4330ba12b94ea106cb0d2fb689010802`.
+Playwright MCP подтвердил карточку и ссылку скачивания в боевом профиле.
