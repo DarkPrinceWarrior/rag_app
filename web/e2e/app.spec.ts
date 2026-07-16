@@ -280,9 +280,29 @@ test('account explains Chrome extension installation and serves the archive', as
   const card = page.locator('section[aria-labelledby="chrome-extension-title"]')
   await expect(card).toBeVisible()
   await expect(card.getByRole('heading', { name: 'Как установить расширение' })).toBeVisible()
-  await expect(card.locator('ol > li')).toHaveCount(8)
+  const installGuide = card.locator('#chrome-install-guide-content')
+  const installGuideToggle = card.locator('button[aria-controls="chrome-install-guide-content"]')
+  await expect(installGuideToggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(installGuideToggle).toHaveAttribute('aria-controls', 'chrome-install-guide-content')
+  await expect(installGuide).toBeVisible()
+  await expect(installGuide.locator('ol > li')).toHaveCount(8)
 
-  expect(await card.locator('ol > li > div > p:first-child').allTextContents()).toEqual([
+  await installGuideToggle.click()
+  await expect(installGuideToggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(installGuideToggle).toHaveAccessibleName('Показать 8 шагов')
+  await expect(installGuide).toBeHidden()
+  await installGuideToggle.click()
+  await expect(installGuideToggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(installGuideToggle).toHaveAccessibleName('Скрыть 8 шагов')
+  await expect(installGuide).toBeVisible()
+
+  await installGuideToggle.focus()
+  await page.keyboard.press('Enter')
+  await expect(installGuide).toBeHidden()
+  await page.keyboard.press('Space')
+  await expect(installGuide).toBeVisible()
+
+  expect(await installGuide.locator('ol > li > div > p:first-child').allTextContents()).toEqual([
     'Скачайте расширение',
     'Распакуйте архив',
     'Откройте страницу расширений Chrome',
@@ -342,6 +362,8 @@ test('account explains Chrome extension installation and serves the archive', as
   expect(downloadBox?.height ?? 0).toBeGreaterThanOrEqual(44)
   const copyBox = await copyAddress.boundingBox()
   expect(copyBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+  const toggleBox = await installGuideToggle.boundingBox()
+  expect(toggleBox?.height ?? 0).toBeGreaterThanOrEqual(44)
   const layout = await page.evaluate(() => ({
     pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
     stepOverflows: [...document.querySelectorAll('section[aria-labelledby="chrome-extension-title"] ol > li')].map(
@@ -350,6 +372,10 @@ test('account explains Chrome extension installation and serves the archive', as
   }))
   expect(layout.pageOverflow).toBeLessThanOrEqual(1)
   expect(layout.stepOverflows.every((overflow) => overflow <= 1)).toBe(true)
+
+  await installGuideToggle.click()
+  await expect(installGuide).toBeHidden()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
 })
 
 test('document cards stay compact on wide screens', async ({ page }) => {

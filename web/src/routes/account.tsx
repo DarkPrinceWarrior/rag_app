@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, Download, Puzzle } from 'lucide-react'
+import { Check, ChevronDown, Copy, Download, Puzzle } from 'lucide-react'
 import { api, type MemoryItem } from '@/lib/api'
 import { authFetch, currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -77,6 +77,7 @@ function AccountPage() {
   const user = currentUser()
   const chromeAddressRef = useRef<HTMLElement>(null)
   const [addressCopyStatus, setAddressCopyStatus] = useState<'idle' | 'copied' | 'manual'>('idle')
+  const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(true)
 
   function copyAddressWithFallback(): boolean {
     const field = document.createElement('textarea')
@@ -163,70 +164,91 @@ function AccountPage() {
         </div>
 
         <div className="mt-5 border-t pt-5">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="text-sm font-semibold">Как установить расширение</h3>
-            <span className="text-xs text-muted-foreground">Займёт 2–3 минуты · только один раз</span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 id="chrome-install-guide-title" className="text-sm font-semibold">
+                Как установить расширение
+              </h3>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Займёт 2–3 минуты · только один раз
+              </span>
+            </div>
+            <button
+              type="button"
+              aria-expanded={isInstallGuideOpen}
+              aria-controls="chrome-install-guide-content"
+              onClick={() => setIsInstallGuideOpen((isOpen) => !isOpen)}
+              className="flex min-h-11 items-center gap-2 rounded-lg border bg-background px-3 text-sm font-semibold text-foreground transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            >
+              {isInstallGuideOpen ? 'Скрыть 8 шагов' : 'Показать 8 шагов'}
+              <ChevronDown
+                className={`h-4 w-4 transition-transform duration-200 ${isInstallGuideOpen ? 'rotate-180' : ''}`}
+                aria-hidden="true"
+              />
+            </button>
           </div>
 
-          <ol className="mt-4 space-y-3" aria-label="Инструкция по установке расширения">
-            {EXTENSION_INSTALL_STEPS.map((step, index) => (
-              <li
-                key={step.title}
-                className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-xl border border-border/80 bg-muted/20 p-3 sm:p-4"
-              >
-                <span
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground"
-                  aria-hidden="true"
+          <div id="chrome-install-guide-content" hidden={!isInstallGuideOpen}>
+            <ol className="mt-4 space-y-3" aria-label="Инструкция по установке расширения">
+              {EXTENSION_INSTALL_STEPS.map((step, index) => (
+                <li
+                  key={step.title}
+                  className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-xl border border-border/80 bg-muted/20 p-3 sm:p-4"
                 >
-                  {index + 1}
-                </span>
-                <div className="min-w-0 pt-0.5">
-                  <p className="text-sm font-semibold text-foreground">{step.title}</p>
-                  <p className="mt-1 text-sm leading-6 text-muted-foreground">{step.description}</p>
-                  {step.showAddress && (
-                    <div className="mt-3 flex flex-col gap-2 rounded-lg border bg-background p-2 sm:flex-row sm:items-center">
-                      <code
-                        ref={chromeAddressRef}
-                        className="min-w-0 flex-1 select-all overflow-x-auto px-2 py-1 text-sm font-semibold text-foreground"
-                      >
-                        {CHROME_EXTENSIONS_ADDRESS}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() => void copyChromeExtensionsAddress()}
-                        className="flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border bg-card px-3 text-xs font-semibold transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                        aria-label="Скопировать адрес страницы расширений Chrome"
-                      >
-                        {addressCopyStatus === 'copied' ? (
-                          <Check className="h-4 w-4 text-emerald-600" aria-hidden="true" />
-                        ) : (
-                          <Copy className="h-4 w-4" aria-hidden="true" />
-                        )}
-                        {addressCopyStatus === 'copied'
-                          ? 'Скопировано'
-                          : addressCopyStatus === 'manual'
-                            ? 'Адрес выделен — нажмите Ctrl+C'
-                            : 'Скопировать адрес'}
-                      </button>
-                      <span className="sr-only" role="status" aria-live="polite">
-                        {addressCopyStatus === 'copied'
-                          ? 'Адрес страницы расширений скопирован'
-                          : addressCopyStatus === 'manual'
-                            ? 'Адрес выделен. Нажмите Ctrl+C'
-                            : ''}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
+                  <span
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground"
+                    aria-hidden="true"
+                  >
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 pt-0.5">
+                    <p className="text-sm font-semibold text-foreground">{step.title}</p>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">{step.description}</p>
+                    {step.showAddress && (
+                      <div className="mt-3 flex flex-col gap-2 rounded-lg border bg-background p-2 sm:flex-row sm:items-center">
+                        <code
+                          ref={chromeAddressRef}
+                          className="min-w-0 flex-1 select-all overflow-x-auto px-2 py-1 text-sm font-semibold text-foreground"
+                        >
+                          {CHROME_EXTENSIONS_ADDRESS}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => void copyChromeExtensionsAddress()}
+                          className="flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border bg-card px-3 text-xs font-semibold transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          aria-label="Скопировать адрес страницы расширений Chrome"
+                        >
+                          {addressCopyStatus === 'copied' ? (
+                            <Check className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                          ) : (
+                            <Copy className="h-4 w-4" aria-hidden="true" />
+                          )}
+                          {addressCopyStatus === 'copied'
+                            ? 'Скопировано'
+                            : addressCopyStatus === 'manual'
+                              ? 'Адрес выделен — нажмите Ctrl+C'
+                              : 'Скопировать адрес'}
+                        </button>
+                        <span className="sr-only" role="status" aria-live="polite">
+                          {addressCopyStatus === 'copied'
+                            ? 'Адрес страницы расширений скопирован'
+                            : addressCopyStatus === 'manual'
+                              ? 'Адрес выделен. Нажмите Ctrl+C'
+                              : ''}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
 
-          <div className="mt-4 rounded-xl border border-primary/20 bg-primary/[0.04] p-4 text-sm leading-6 text-foreground">
-            <span className="font-semibold">Если позже выйдет новая версия:</span> замените файлы в сохранённой папке,
-            нажмите «Обновить» на странице{' '}
-            <code className="rounded bg-background px-1.5 py-0.5 text-xs">chrome://extensions</code>, затем обновите
-            открытые вкладки через <kbd className="rounded border bg-background px-1.5 py-0.5 text-xs">Ctrl+R</kbd>.
+            <div className="mt-4 rounded-xl border border-primary/20 bg-primary/[0.04] p-4 text-sm leading-6 text-foreground">
+              <span className="font-semibold">Если позже выйдет новая версия:</span> замените файлы в сохранённой папке,
+              нажмите «Обновить» на странице{' '}
+              <code className="rounded bg-background px-1.5 py-0.5 text-xs">chrome://extensions</code>, затем обновите
+              открытые вкладки через <kbd className="rounded border bg-background px-1.5 py-0.5 text-xs">Ctrl+R</kbd>.
+            </div>
           </div>
         </div>
       </section>
