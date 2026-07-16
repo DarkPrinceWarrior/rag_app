@@ -5,6 +5,7 @@
 import { browser } from 'wxt/browser';
 
 const BATCH_SIZE = 60;
+const MESSAGE_TIMEOUT_MS = 35_000;
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA', 'INPUT']);
 
 interface OriginalText {
@@ -34,7 +35,7 @@ export default defineContentScript({
                  box-shadow: 0 2px 10px rgba(0,0,0,.3); display: none; }
       </style>
       <button class="btn">Перевести</button>
-      <div class="tip"></div>
+      <div class="tip" role="status" aria-live="polite"></div>
       <div class="badge"></div>`;
     document.documentElement.appendChild(host);
     const btn = shadow.querySelector('.btn') as HTMLButtonElement;
@@ -42,12 +43,36 @@ export default defineContentScript({
     const badge = shadow.querySelector('.badge') as HTMLDivElement;
 
     let selectionText = '';
+    let selectionRequestId = 0;
 
     const hide = (el: HTMLElement) => (el.style.display = 'none');
     const placeAt = (el: HTMLElement, x: number, y: number) => {
       el.style.left = `${x + window.scrollX}px`;
       el.style.top = `${y + window.scrollY}px`;
       el.style.display = 'block';
+    };
+    const withMessageTimeout = async <T,>(promise: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`Сервис не ответил за ${Math.round(MESSAGE_TIMEOUT_MS / 1000)} секунд`)),
+              MESSAGE_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    const userMessage = (error: unknown): string => {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (/Extension context invalidated|Receiving end does not exist/i.test(detail)) {
+        return 'Расширение обновилось. Обновите эту вкладку и повторите перевод.';
+      }
+      return detail;
     };
 
     // ---------- перевод выделения ----------
@@ -68,23 +93,32 @@ export default defineContentScript({
     });
 
     btn.addEventListener('click', async () => {
+      const requestId = ++selectionRequestId;
       const rect = { x: parseFloat(btn.style.left), y: parseFloat(btn.style.top) };
+      const text = selectionText;
       hide(btn);
       tip.textContent = 'Перевожу…';
+      host.dataset.ragStatus = 'loading';
       tip.style.left = `${rect.x}px`;
       tip.style.top = `${rect.y}px`;
       tip.style.display = 'block';
-      const res = await browser.runtime.sendMessage({ type: 'selection', text: selectionText });
-      if (res?.error) {
-        tip.textContent = `Ошибка: ${res.error}`;
-        return;
+      try {
+        const res = await withMessageTimeout(browser.runtime.sendMessage({ type: 'selection', text }));
+        if (requestId !== selectionRequestId) return;
+        if (res?.error) throw new Error(res.error);
+        if (!res || typeof res.text !== 'string') throw new Error('Расширение не получило ответ от сервиса');
+        tip.innerHTML = '';
+        tip.append(document.createTextNode(res.text));
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = `${res.engine} · ${res.ms} мс`;
+        tip.append(meta);
+        host.dataset.ragStatus = 'done';
+      } catch (error) {
+        if (requestId !== selectionRequestId) return;
+        tip.textContent = `Ошибка: ${userMessage(error)}`;
+        host.dataset.ragStatus = 'error';
       }
-      tip.innerHTML = '';
-      tip.append(document.createTextNode(res.text));
-      const meta = document.createElement('div');
-      meta.className = 'meta';
-      meta.textContent = `${res.engine} · ${res.ms} мс`;
-      tip.append(meta);
     });
 
     document.addEventListener('mousedown', (e) => {
@@ -131,10 +165,12 @@ export default defineContentScript({
         for (let i = 0; i < entries.length; i += BATCH_SIZE) {
           const batch = entries.slice(i, i + BATCH_SIZE);
           badge.textContent = `Перевод страницы… ${done}/${entries.length}`;
-          const res = await browser.runtime.sendMessage({
-            type: 'web-batch',
-            items: batch.map(([id, node]) => ({ id, text: node.textContent ?? '' })),
-          });
+          const res = await withMessageTimeout(
+            browser.runtime.sendMessage({
+              type: 'web-batch',
+              items: batch.map(([id, node]) => ({ id, text: node.textContent ?? '' })),
+            }),
+          );
           if (res?.error) throw new Error(res.error);
           for (const item of res.items as { id: string; text: string }[]) {
             const node = nodes.get(item.id);

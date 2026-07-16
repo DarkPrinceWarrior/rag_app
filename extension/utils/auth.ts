@@ -4,6 +4,7 @@
 // storage.local; refresh_token продлевает доступ без повторного окна логина.
 import { browser } from 'wxt/browser';
 import { getApiBase } from '@/utils/api';
+import { fetchWithTimeout } from '@/utils/network';
 
 export interface OidcConfig {
   auth_enabled: boolean;
@@ -42,7 +43,8 @@ const randomString = (): string => b64url(crypto.getRandomValues(new Uint8Array(
 export async function getOidcConfig(): Promise<OidcConfig> {
   const base = await getApiBase();
   if (cfgCache && cfgCache.base === base) return cfgCache.cfg;
-  const resp = await fetch(`${base}/api/config`);
+  const resp = await fetchWithTimeout(`${base}/api/config`);
+  if (!resp.ok) throw new Error(`Конфигурация авторизации недоступна: ${resp.status}`);
   const cfg = (await resp.json()) as OidcConfig;
   cfgCache = { base, cfg };
   return cfg;
@@ -58,8 +60,12 @@ async function saveTokens(tokens: Tokens | null): Promise<void> {
   else await browser.storage.local.remove(TOKENS_KEY);
 }
 
+export async function clearAuthTokens(): Promise<void> {
+  await saveTokens(null);
+}
+
 async function tokenRequest(cfg: OidcConfig, body: Record<string, string>): Promise<Tokens> {
-  const resp = await fetch(`${cfg.oidc_authority}/protocol/openid-connect/token`, {
+  const resp = await fetchWithTimeout(`${cfg.oidc_authority}/protocol/openid-connect/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body),
@@ -144,11 +150,15 @@ export async function login(): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  await saveTokens(null);
+  await clearAuthTokens();
 }
 
 export async function authStatus(): Promise<{ enabled: boolean; loggedIn: boolean }> {
   const cfg = await getOidcConfig();
   if (!cfg.auth_enabled) return { enabled: false, loggedIn: false };
-  return { enabled: true, loggedIn: Boolean(await loadTokens()) };
+  try {
+    return { enabled: true, loggedIn: Boolean(await getAccessToken(false)) };
+  } catch {
+    return { enabled: true, loggedIn: false };
+  }
 }
