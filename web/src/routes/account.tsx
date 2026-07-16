@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, Copy, Download, Puzzle } from 'lucide-react'
+import { Check, Copy, Download, Puzzle } from 'lucide-react'
 import { api, type MemoryItem } from '@/lib/api'
 import { authFetch, currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -77,7 +77,7 @@ function AccountPage() {
   const user = currentUser()
   const chromeAddressRef = useRef<HTMLElement>(null)
   const [addressCopyStatus, setAddressCopyStatus] = useState<'idle' | 'copied' | 'manual'>('idle')
-  const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(true)
+  const [isInstallGuideOpen, setIsInstallGuideOpen] = useState(false)
 
   function copyAddressWithFallback(): boolean {
     const field = document.createElement('textarea')
@@ -163,33 +163,29 @@ function AccountPage() {
           </a>
         </div>
 
-        <div className="mt-5 border-t pt-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 id="chrome-install-guide-title" className="text-sm font-semibold">
-                Как установить расширение
-              </h3>
-              <span className="mt-0.5 block text-xs text-muted-foreground">
-                Займёт 2–3 минуты · только один раз
-              </span>
-            </div>
-            <button
-              type="button"
-              aria-expanded={isInstallGuideOpen}
-              aria-controls="chrome-install-guide-content"
-              onClick={() => setIsInstallGuideOpen((isOpen) => !isOpen)}
-              className="flex min-h-11 items-center gap-2 rounded-lg border bg-background px-3 text-sm font-semibold text-foreground transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-            >
-              {isInstallGuideOpen ? 'Скрыть 8 шагов' : 'Показать 8 шагов'}
-              <ChevronDown
-                className={`h-4 w-4 transition-transform duration-200 ${isInstallGuideOpen ? 'rotate-180' : ''}`}
-                aria-hidden="true"
-              />
-            </button>
-          </div>
+        <div className="mt-5 overflow-hidden rounded-xl border bg-card">
+          <button
+            type="button"
+            aria-expanded={isInstallGuideOpen}
+            aria-controls="chrome-install-guide-content"
+            aria-label={`${isInstallGuideOpen ? 'Свернуть' : 'Развернуть'} инструкцию «Как установить расширение»`}
+            onClick={() => setIsInstallGuideOpen((isOpen) => !isOpen)}
+            className="flex min-h-11 w-full items-center gap-2 px-4 py-3 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+          >
+            <span className="shrink-0 text-muted-foreground" aria-hidden="true">
+              {isInstallGuideOpen ? '▾' : '▸'}
+            </span>
+            <span id="chrome-install-guide-title" role="heading" aria-level={3} className="shrink-0 text-sm font-semibold">
+              Как установить расширение
+            </span>
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              Займёт 2–3 минуты · только один раз
+            </span>
+          </button>
 
-          <div id="chrome-install-guide-content" hidden={!isInstallGuideOpen}>
-            <ol className="mt-4 space-y-3" aria-label="Инструкция по установке расширения">
+          {isInstallGuideOpen && (
+            <div id="chrome-install-guide-content" className="border-t px-4 py-4">
+            <ol className="space-y-3" aria-label="Инструкция по установке расширения">
               {EXTENSION_INSTALL_STEPS.map((step, index) => (
                 <li
                   key={step.title}
@@ -250,6 +246,7 @@ function AccountPage() {
               открытые вкладки через <kbd className="rounded border bg-background px-1.5 py-0.5 text-xs">Ctrl+R</kbd>.
             </div>
           </div>
+          )}
         </div>
       </section>
 
