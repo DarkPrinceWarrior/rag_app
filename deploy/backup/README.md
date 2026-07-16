@@ -40,6 +40,34 @@ versioned mirror MinIO на второй приемник и offline-export real
 Ни один скрипт не делает restore поверх production. Realm-export кратко
 останавливает Keycloak и поэтому требует явного `--maintenance-window`.
 
+## Что должен предоставить владелец инфраструктуры
+
+До активации нужны три ресурса из разных failure-domain; значения секретов в
+Git не записываются.
+
+1. **Proxmox/LXC 135:** независимый долговременный POSIX mount в `/backup`, не
+   root disk/tmpfs/overlay, с емкостью под 2 full, 4 diff, WAL и realm-export.
+   В handoff приложить точный вывод
+   `findmnt -n -o SOURCE,FSTYPE -T /backup`, правила snapshot/retention,
+   encryption-at-rest и владельца capacity-alert. Каталог
+   `/backup/pgbackrest` заранее создать с UID/GID контейнерного `postgres` и
+   режимом `0750`; отдельно согласовать короткое окно рестарта PostgreSQL.
+2. **Независимый MinIO/S3:** TLS endpoint на другом хосте/носителе и отдельный
+   service account с правами create/list/versioning/get/put для четырех backup
+   buckets. Удаление объектов текущему mirror не требуется. В handoff указать
+   secret references, политику version retention/immutability и шифрование.
+3. **Restore-host:** отдельный непроизводственный host/network с Docker,
+   совместимыми PostgreSQL 17/pgBackRest, пустыми `RESTORE_PGDATA` и временным
+   MinIO, который не равен production endpoint. Backup repo подключить
+   read-only; заранее выбрать один контрольный document UUID и приватно
+   зафиксировать ожидаемые SHA original/export.
+
+Приемка полного drill: совпали revision БД, документ/segments/chunks и SHA
+объектов, realm импортирован, `/healthz` успешен, один grounded RAG smoke PASS,
+фактические RPO/RTO записаны в `restore-evidence.example.md`. Если внешний
+носитель не гарантирует шифрование, перед вводом нужно настроить repo cipher
+pgBackRest; незашифрованный backup контур не принимается.
+
 ## Установка расписания после появления независимого носителя
 
 Следующие команды только устанавливают unit-файлы; запуск и включение выделены

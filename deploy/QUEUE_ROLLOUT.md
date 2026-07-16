@@ -11,9 +11,13 @@ worker. Split-workers устанавливаются отдельно и не в
 1. **Установка, legacy.** Установить `rag-queue-worker@.service` и
    `rag-split-workers.target`, оставить mode `legacy`. Старый `rag-worker`
    продолжает выполнять все функции и cron. Проверить `rag-pipeline:9108`.
-2. **Пустые consumers.** Запустить `rag-split-workers.target`. Четыре worker
-   слушают `arq:parse`, `arq:translate`, `arq:export-index`, `arq:memory`, но
-   постановщик ещё пишет в legacy. Убедиться, что health-check keys обновляются.
+2. **Пустые consumers.** Выполнить
+   `systemctl enable --now rag-split-workers.target`. Четыре worker слушают
+   `arq:parse`, `arq:translate`, `arq:export-index`, `arq:memory`, но постановщик
+   ещё пишет в legacy. Проверить `is-enabled` самого target и убедиться, что
+   health-check keys обновляются. Обычный `start` недостаточен: после reboot
+   профильные consumers не восстановятся, потому что staged installer
+   намеренно включает только legacy `rag-app.target`.
 3. **Split новых job.** В отдельном окне изменить только
    `RAG_QUEUE_ROLLOUT_MODE=split` и перезапустить API плюс workers. Уже лежащие
    job остаются в `arq:queue` и исполняются старым worker. Если legacy parse

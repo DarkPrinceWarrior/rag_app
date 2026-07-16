@@ -188,6 +188,7 @@ def test_split_workers_are_installed_but_not_enabled_with_legacy_target() -> Non
     app_target = _read("deploy/rag-app.target")
     split_target = _read("deploy/rag-split-workers.target")
     installer = _read("deploy/install_rag_app_services.sh")
+    rollout = _read("deploy/QUEUE_ROLLOUT.md")
     wrapper = _read("deploy/run_queue_worker.sh")
     assert "rag-split-workers.target" not in app_target
     assert all(
@@ -196,6 +197,8 @@ def test_split_workers_are_installed_but_not_enabled_with_legacy_target() -> Non
     )
     assert "systemctl enable rag-app.target" in installer
     assert "systemctl enable rag-split-workers.target" not in installer
+    assert "systemctl enable --now rag-split-workers.target" in rollout
+    assert "Обычный `start` недостаточен" in rollout
     assert '*) echo "usage: $0 {parse|translate|export-index|memory}"' in wrapper
 
 
