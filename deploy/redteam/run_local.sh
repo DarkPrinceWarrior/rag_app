@@ -5,6 +5,9 @@ cd "$(dirname "$0")"
 required=(
   RAG_REDTEAM_TOKEN
   RAG_REDTEAM_BASE_URL
+  RAG_REDTEAM_API_PORT
+  RAG_REDTEAM_API_PID
+  RAG_REDTEAM_RUN_ID
   RAG_REDTEAM_CONFIRM_ISOLATED
   RAG_REDTEAM_INJECTED_DOCUMENT_ID
   RAG_REDTEAM_INJECTED_CANARY
@@ -22,6 +25,23 @@ for name in "${required[@]}"; do
 done
 [[ "$RAG_REDTEAM_CONFIRM_ISOLATED" == "YES" ]] \
   || { echo "отказ: подтвердите одноразовый стенд через RAG_REDTEAM_CONFIRM_ISOLATED=YES" >&2; exit 2; }
+[[ "$RAG_REDTEAM_RUN_ID" =~ ^[0-9a-f]{12}$ \
+  && "$RAG_REDTEAM_API_PORT" =~ ^[0-9]{4,5}$ \
+  && "$RAG_REDTEAM_API_PORT" != "8100" \
+  && "$RAG_REDTEAM_API_PID" =~ ^[0-9]+$ \
+  && "$RAG_REDTEAM_BASE_URL" == "http://127.0.0.1:$RAG_REDTEAM_API_PORT" ]] || {
+  echo "отказ: launcher не привязан к disposable API" >&2
+  exit 2
+}
+kill -0 "$RAG_REDTEAM_API_PID" 2>/dev/null || {
+  echo "отказ: disposable API не запущен" >&2
+  exit 2
+}
+api_environment="$(tr '\0' '\n' < "/proc/$RAG_REDTEAM_API_PID/environ" 2>/dev/null || true)"
+[[ "$api_environment" == *"RAG_REDTEAM_PROCESS_MARKER=docragenslate-redteam-api-$RAG_REDTEAM_RUN_ID"* ]] || {
+  echo "отказ: PID API не принадлежит disposable стенду" >&2
+  exit 2
+}
 uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
 for name in RAG_REDTEAM_INJECTED_DOCUMENT_ID RAG_REDTEAM_FILENAME_DOCUMENT_ID RAG_REDTEAM_ZH_DOCUMENT_ID RAG_REDTEAM_POISON_DOCUMENT_ID; do
   [[ "${!name}" =~ $uuid_re ]] || { echo "отказ: $name не является UUID" >&2; exit 2; }
@@ -56,4 +76,4 @@ actual_version="$(node -p "require('./node_modules/promptfoo/package.json').vers
 evidence="$PROMPTFOO_CONFIG_DIR/redteam-$(date -u +%Y%m%dT%H%M%SZ).json"
 echo "локальный evidence: $evidence"
 exec ./node_modules/.bin/promptfoo eval -c promptfooconfig.yaml \
-  --no-cache --no-share --no-write --no-progress-bar --output "$evidence"
+  --no-cache --no-share --no-progress-bar --output "$evidence"

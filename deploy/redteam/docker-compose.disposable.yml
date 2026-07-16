@@ -1,0 +1,53 @@
+name: ${RAG_REDTEAM_COMPOSE_PROJECT}
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.5-pg17-bookworm@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0
+    restart: "no"
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${RAG_REDTEAM_PG_OWNER_PASSWORD}
+      POSTGRES_DB: ${RAG_REDTEAM_PG_DATABASE}
+    ports:
+      - "127.0.0.1:${RAG_REDTEAM_PG_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d ${RAG_REDTEAM_PG_DATABASE}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: "no"
+    command: redis-server --appendonly no --save ""
+    ports:
+      - "127.0.0.1:${RAG_REDTEAM_REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: "no"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${RAG_REDTEAM_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${RAG_REDTEAM_S3_SECRET_KEY}
+    ports:
+      - "127.0.0.1:${RAG_REDTEAM_MINIO_PORT}:9000"
+      - "127.0.0.1:${RAG_REDTEAM_MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  postgres_data:
+  minio_data:

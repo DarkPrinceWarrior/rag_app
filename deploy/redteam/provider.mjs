@@ -1,34 +1,39 @@
-import net from 'node:net';
+const ENV_TEMPLATE = /{{\s*env\.([A-Z][A-Z0-9_]*)\s*}}/g;
 
-function isPrivateAddress(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host === '::1') return true;
-  if (net.isIP(host) === 4) {
-    const octets = host.split('.').map(Number);
-    return octets[0] === 127
-      || octets[0] === 10
-      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
-      || (octets[0] === 192 && octets[1] === 168);
+export function resolveEnvTemplates(value) {
+  if (typeof value !== 'string') return value;
+  const resolved = value.replace(ENV_TEMPLATE, (_match, name) => {
+    const replacement = process.env[name];
+    if (typeof replacement !== 'string' || !replacement) {
+      throw new Error(`required environment variable ${name} is missing`);
+    }
+    return replacement;
+  });
+  if (/{{\s*env\./.test(resolved)) {
+    throw new Error('unsupported environment template in red-team input');
   }
-  if (net.isIP(host) === 6) {
-    const normalized = host.toLowerCase();
-    return normalized.startsWith('fc') || normalized.startsWith('fd')
-      || /^fe[89ab]/.test(normalized);
-  }
-  return false;
+  return resolved;
 }
 
-export function redteamBaseUrl(raw = process.env.RAG_REDTEAM_BASE_URL ?? 'http://127.0.0.1:8100') {
+export function redteamBaseUrl(
+  raw = process.env.RAG_REDTEAM_BASE_URL,
+  expectedPort = process.env.RAG_REDTEAM_API_PORT,
+) {
+  if (!raw || !expectedPort || !/^\d{4,5}$/.test(expectedPort)) {
+    throw new Error('disposable red-team URL and port are required');
+  }
   let url;
   try {
     url = new URL(raw);
   } catch {
     throw new Error('RAG_REDTEAM_BASE_URL must be a valid URL');
   }
-  if (!['http:', 'https:'].includes(url.protocol)
+  if (url.protocol !== 'http:'
       || url.username || url.password || url.search || url.hash
-      || !isPrivateAddress(url.hostname)) {
-    throw new Error('RAG_REDTEAM_BASE_URL must use HTTP(S) on loopback or a private IP literal');
+      || url.hostname !== '127.0.0.1'
+      || url.port !== expectedPort
+      || expectedPort === '8100') {
+    throw new Error('RAG_REDTEAM_BASE_URL must match the disposable loopback API');
   }
   if (url.pathname !== '/' && url.pathname !== '') {
     throw new Error('RAG_REDTEAM_BASE_URL must not contain a path');
@@ -51,10 +56,17 @@ export default class DocRAGenslateProvider {
       return { error: error instanceof Error ? error.message : 'invalid red-team URL' };
     }
     const vars = context?.vars ?? {};
-    const body = { message: prompt };
-    if (vars.document_id) body.document_id = vars.document_id;
-    if (Array.isArray(vars.document_ids)) body.document_ids = vars.document_ids;
-    if (vars.folder_id) body.folder_id = vars.folder_id;
+    let body;
+    try {
+      body = { message: resolveEnvTemplates(prompt) };
+      if (vars.document_id) body.document_id = resolveEnvTemplates(vars.document_id);
+      if (Array.isArray(vars.document_ids)) {
+        body.document_ids = vars.document_ids.map(resolveEnvTemplates);
+      }
+      if (vars.folder_id) body.folder_id = resolveEnvTemplates(vars.folder_id);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'invalid red-team template' };
+    }
     const response = await fetch(`${baseUrl}/api/chat?memory=off`, {
       method: 'POST',
       redirect: 'error',
