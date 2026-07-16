@@ -849,3 +849,17 @@ ESLint, TypeScript, production build и bundle budget — PASS; полный Pla
 ширину поиска и кнопки `304 px`, поля `24/24 px`. Изменения выпущены коммитом
 `36cca62`; SPA доставлен на A100, `rag-api.service=active`, `NRestarts=0`,
 `/healthz=ok`.
+
+### 10.9. Зазор между поиском чатов и scrollbar 16 июля
+
+Скриншот владельца показал, что оставшийся дефект был не в ширине панели:
+вертикальная полоса прокрутки того же контейнера подходила почти вплотную к
+внешней фиолетовой focus-обводке поиска. Scrollbar вынесен на 12 px вправо в
+свободное поле панели через отдельную геометрию scroll-контейнера; ширина
+поиска, кнопки и карточек осталась 304 px.
+
+ESLint, TypeScript, production build и bundle budget — PASS; полный Playwright
+— **21/21**. Playwright MCP воспроизвел 20 сессий и реальный вертикальный
+overflow: ширина поиска `304 px`, зазор до края scrollbar `12 px`. Изменения
+выпущены коммитом `df1097f`; SPA доставлен на A100,
+`rag-api.service=active`, `NRestarts=0`, `/healthz=ok`.
