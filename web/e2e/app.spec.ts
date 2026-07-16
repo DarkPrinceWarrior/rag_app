@@ -279,6 +279,30 @@ test('document cards stay compact on wide screens', async ({ page }) => {
   }
 })
 
+test('chat history widens its desktop panel without squeezing search controls', async ({ page }) => {
+  await mockApi(page)
+  await page.setViewportSize({ width: 1440, height: 800 })
+  await page.goto('/chat')
+
+  const sidebar = page.getByTestId('chat-sidebar')
+  await expect(sidebar).toHaveCSS('width', '320px')
+  await page.getByRole('button', { name: 'Мои чаты' }).click()
+  await expect(sidebar).toHaveCSS('width', '352px')
+
+  const search = page.getByRole('searchbox', { name: 'Поиск по чатам' })
+  const newChat = page.getByRole('button', { name: 'Новый чат' })
+  await search.focus()
+  const [sidebarBox, searchBox, newChatBox] = await Promise.all([
+    sidebar.boundingBox(),
+    search.boundingBox(),
+    newChat.boundingBox(),
+  ])
+  expect(searchBox?.width ?? 0).toBeGreaterThanOrEqual(303)
+  expect(Math.abs((searchBox?.width ?? 0) - (newChatBox?.width ?? 0))).toBeLessThanOrEqual(1)
+  expect((searchBox?.x ?? 0) - (sidebarBox?.x ?? 0)).toBeGreaterThanOrEqual(23)
+  expect((sidebarBox?.x ?? 0) + (sidebarBox?.width ?? 0) - ((searchBox?.x ?? 0) + (searchBox?.width ?? 0))).toBeGreaterThanOrEqual(23)
+})
+
 test('library sections share one left edge and upload uses the wider workspace', async ({ page }) => {
   await mockApi(page, 'done', {
     folders: [{ id: 'folder-a', name: 'Проект А', documents: 1 }],

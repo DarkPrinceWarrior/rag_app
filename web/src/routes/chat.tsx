@@ -330,7 +330,13 @@ function Chat() {
   return (
     <div className="mx-auto flex min-h-0 w-full max-w-[1136px] flex-1 gap-6 px-4 py-4 lg:py-6">
       {/* Сайдбар: переключатель «Документы» (область чата) / «Мои чаты» (история) */}
-      <aside className="hidden min-h-0 w-[320px] shrink-0 flex-col gap-5 rounded-[24px] bg-[#222226]/[0.02] p-6 md:flex">
+      <aside
+        data-testid="chat-sidebar"
+        className={cn(
+          'hidden min-h-0 shrink-0 flex-col gap-5 rounded-[24px] bg-[#222226]/[0.02] p-6 transition-[width] duration-200 md:flex',
+          sideTab === 'sessions' ? 'w-[352px]' : 'w-[320px]',
+        )}
+      >
         <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
