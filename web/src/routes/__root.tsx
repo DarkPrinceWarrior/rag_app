@@ -216,11 +216,11 @@ function TabLink({ to, label }: { to: string; label: string }) {
   return (
     <Link
       to={to}
+      aria-current={active ? 'page' : undefined}
+      style={{ borderBottomColor: active ? '#4b4ce6' : 'transparent' }}
       className={cn(
-        'flex min-h-11 items-center px-4 py-2 text-[16px] font-medium leading-[1.5] text-[#222226] transition',
-        active
-          ? 'border-b-2 border-[#6269f3] bg-gradient-to-b from-white/0 to-[rgba(75,76,230,0.08)]'
-          : 'opacity-50 hover:opacity-80',
+        'flex min-h-11 items-center border-b-[3px] border-transparent px-2.5 py-2 text-[14px] font-medium leading-[1.5] text-[#222226] transition-colors md:px-4 md:text-[16px]',
+        active ? 'font-semibold' : 'opacity-50 hover:opacity-80',
       )}
     >
       {label}
@@ -230,6 +230,7 @@ function TabLink({ to, label }: { to: string; label: string }) {
 
 function RootLayout() {
   const path = useRouterState({ select: (s) => s.location.pathname })
+  const showLibraryHeader = path === '/'
   const [query, setQuery] = useState('')
   const [submitted, setSubmitted] = useState('')
   const [filters, setFilters] = useState<DocFilters>({})
@@ -256,18 +257,34 @@ function RootLayout() {
         )}
       >
         <header className="sticky top-0 z-20 border-b border-[#222226]/[0.12] bg-white">
-          <div className="flex min-h-[57px] items-center justify-between gap-2 px-3 py-3 md:gap-4 md:px-8">
-            <div className="h-10 w-10 shrink-0" aria-hidden="true" />
-            {path === '/' ? <HeaderSearch /> : <div className="min-w-0 flex-1" aria-hidden="true" />}
-            <ProfileButton />
-          </div>
-          <nav className="flex h-[72px] items-end overflow-x-auto border-t border-[#222226]/[0.04] px-4 pt-8 md:px-[168px]">
-            <div className="flex items-center gap-1.5">
-              <TabLink to="/" label="Документы" />
-              <TabLink to="/upload" label="Загрузка" />
-              <TabLink to="/chat" label="ИИ-консультант" />
+          {showLibraryHeader && (
+            <div
+              data-testid="header-primary-row"
+              className="flex min-h-[57px] items-center justify-between gap-2 px-3 py-3 md:gap-4 md:px-8"
+            >
+              <div className="h-10 w-10 shrink-0" aria-hidden="true" />
+              <HeaderSearch />
+              <ProfileButton />
             </div>
-          </nav>
+          )}
+          <div
+            data-testid="header-navigation-row"
+            className={cn(
+              'flex items-center gap-2 px-3 md:px-8',
+              showLibraryHeader
+                ? 'h-[72px] border-t border-[#222226]/[0.04] pt-7 md:px-[168px]'
+                : 'min-h-[64px]',
+            )}
+          >
+            <nav aria-label="Основная навигация" className="min-w-0 flex-1 overflow-x-auto">
+              <div className="flex w-max items-center gap-0.5 md:gap-1.5">
+                <TabLink to="/" label="Документы" />
+                <TabLink to="/upload" label="Загрузка" />
+                <TabLink to="/chat" label="ИИ-консультант" />
+              </div>
+            </nav>
+            {!showLibraryHeader && <ProfileButton />}
+          </div>
         </header>
         <main className="flex min-h-0 flex-1 flex-col">
           <Outlet />

@@ -97,7 +97,7 @@ function UploadPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1136px] px-4 py-12">
+    <div className="mx-auto w-full max-w-[1240px] px-4 py-12">
       <input
         ref={fileInput}
         type="file"
@@ -110,9 +110,10 @@ function UploadPage() {
         }}
       />
       <div className="flex flex-wrap items-start gap-6">
-        <div className="flex min-w-0 max-w-[695px] flex-1 flex-col gap-3">
+        <div className="flex min-w-0 max-w-[800px] flex-1 flex-col gap-3">
           {files.length === 0 ? (
             <div
+              data-testid="upload-dropzone"
               onDragOver={(e) => {
                 e.preventDefault()
                 setDragOver(true)
@@ -204,7 +205,7 @@ function UploadPage() {
           {upload.isError && <p className="text-xs text-destructive">Ошибка загрузки: {String(upload.error)}</p>}
         </div>
 
-        <div className="flex w-full max-w-[385px] shrink-0 flex-col gap-6 pt-2">
+        <div className="flex w-full max-w-[360px] shrink-0 flex-col gap-6 pt-2">
           <div className="flex flex-col gap-4">
             <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Настройки</h2>
             <div>

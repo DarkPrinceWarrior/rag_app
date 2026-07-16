@@ -285,6 +285,7 @@ function FolderCard({
 }) {
   return (
     <article
+      data-testid="folder-card"
       className={cn(
         'group relative flex w-[237px] shrink-0 flex-col gap-[11px] rounded-lg border border-[#e5e5e5] bg-card p-1 pb-4 transition hover:shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
         active && 'shadow-[0_7px_14px_rgba(0,0,0,0.07)]',
@@ -598,7 +599,7 @@ function FolderModal({
 
 function DocList({ docs, folders }: { docs: Document[]; folders: Folder[] }) {
   return (
-    <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(237px,280px))] sm:justify-center">
+    <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(237px,280px))] sm:justify-start">
       {docs.map((d) => (
         <DocCard key={d.id} d={d} folders={folders} />
       ))}

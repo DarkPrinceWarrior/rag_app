@@ -182,20 +182,79 @@ test('retry updates the library card after a successful enqueue', async ({ page 
   await expect(page.getByText('Обработка…')).toBeVisible()
 })
 
-test('library search is limited to documents and profile uses a conventional control', async ({ page }) => {
+test('header keeps two library rows and a compact branded navigation elsewhere', async ({ page }) => {
   await mockApi(page)
 
   await page.goto('/')
+  const navigation = page.getByRole('navigation', { name: 'Основная навигация' })
+  const navigationRow = page.getByTestId('header-navigation-row')
+  const primaryRow = page.getByTestId('header-primary-row')
+  await expect(primaryRow).toBeVisible()
+  await expect(navigationRow).toBeVisible()
   await expect(page.getByPlaceholder('Найти среди документов')).toBeVisible()
   const profile = page.getByRole('link', { name: 'Профиль' })
   await expect(profile).toBeVisible()
   await expect(profile.locator('svg')).toHaveCount(1)
+  await expect(navigationRow.getByRole('link', { name: 'Профиль' })).toHaveCount(0)
 
-  for (const path of ['/upload', '/chat', '/account']) {
+  const documentsTab = navigation.getByRole('link', { name: 'Документы', exact: true })
+  await expect(documentsTab).toHaveAttribute('aria-current', 'page')
+  await expect(documentsTab).toHaveCSS('border-bottom-color', 'rgb(75, 76, 230)')
+  await expect(documentsTab).toHaveCSS('border-bottom-width', '3px')
+
+  for (const { path, activeTab } of [
+    { path: '/upload', activeTab: 'Загрузка' },
+    { path: '/chat', activeTab: 'ИИ-консультант' },
+    { path: '/account', activeTab: null },
+  ]) {
     await page.goto(path)
+    await expect(primaryRow).toHaveCount(0)
     await expect(page.getByPlaceholder('Найти среди документов')).toHaveCount(0)
-    await expect(page.getByRole('link', { name: 'Профиль' })).toBeVisible()
+    const compactProfile = navigationRow.getByRole('link', { name: 'Профиль' })
+    await expect(compactProfile).toBeVisible()
+
+    const [rowBox, profileBox] = await Promise.all([navigationRow.boundingBox(), compactProfile.boundingBox()])
+    expect(Math.abs((rowBox?.y ?? 0) + (rowBox?.height ?? 0) / 2 - ((profileBox?.y ?? 0) + (profileBox?.height ?? 0) / 2))).toBeLessThanOrEqual(1)
+    expect((rowBox?.x ?? 0) + (rowBox?.width ?? 0) - ((profileBox?.x ?? 0) + (profileBox?.width ?? 0))).toBeLessThanOrEqual(33)
+
+    if (activeTab) {
+      const activeLink = navigation.getByRole('link', { name: activeTab, exact: true })
+      await expect(activeLink).toHaveAttribute('aria-current', 'page')
+      await expect(activeLink).toHaveCSS('border-bottom-color', 'rgb(75, 76, 230)')
+      await expect(activeLink).toHaveCSS('border-bottom-width', '3px')
+    } else {
+      await expect(navigation.locator('[aria-current="page"]')).toHaveCount(0)
+    }
+
+    const inactiveUnderlineColors = await navigation.locator('a:not([aria-current="page"])').evaluateAll(
+      (links) => links.map((link) => getComputedStyle(link).borderBottomColor),
+    )
+    expect(inactiveUnderlineColors.every((color) => color === 'rgba(0, 0, 0, 0)')).toBe(true)
   }
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/chat')
+  for (const control of [
+    navigation.getByRole('link', { name: 'ИИ-консультант', exact: true }),
+    navigationRow.getByRole('link', { name: 'Профиль' }),
+  ]) {
+    const box = await control.boundingBox()
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+  }
+  const chatViewport = await page.evaluate(() => {
+    const app = document.querySelector('#root > div')
+    const box = app?.getBoundingClientRect()
+    return {
+      position: app ? getComputedStyle(app).position : '',
+      top: box?.top ?? Infinity,
+      bottom: box?.bottom ?? -Infinity,
+      viewportHeight: window.innerHeight,
+    }
+  })
+  expect(chatViewport.position).toBe('fixed')
+  expect(chatViewport.top).toBe(0)
+  expect(chatViewport.bottom).toBeCloseTo(chatViewport.viewportHeight, 0)
 })
 
 test('document cards stay compact on wide screens', async ({ page }) => {
@@ -212,6 +271,27 @@ test('document cards stay compact on wide screens', async ({ page }) => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
   }
+})
+
+test('library sections share one left edge and upload uses the wider workspace', async ({ page }) => {
+  await mockApi(page, 'done', {
+    folders: [{ id: 'folder-a', name: 'Проект А', documents: 1 }],
+  })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/')
+
+  const geometry = await Promise.all([
+    page.getByRole('heading', { name: 'Папки', exact: true }).boundingBox(),
+    page.getByTestId('folder-card').first().boundingBox(),
+    page.getByRole('heading', { name: 'Документы', exact: true }).boundingBox(),
+    page.getByTestId('document-card').first().boundingBox(),
+  ])
+  const leftEdges = geometry.map((box) => box?.x ?? Infinity)
+  expect(Math.max(...leftEdges) - Math.min(...leftEdges)).toBeLessThanOrEqual(1)
+
+  await page.goto('/upload')
+  const dropzone = await page.getByTestId('upload-dropzone').boundingBox()
+  expect(dropzone?.width ?? 0).toBeGreaterThanOrEqual(790)
 })
 
 test('upload shows processing before the document reaches the completed state', async ({ page }) => {

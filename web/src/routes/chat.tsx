@@ -753,43 +753,118 @@ function SessionList({
   onNewChat: () => void
   busy: boolean
 }) {
+  const dateFormatter = new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
   return (
-    <div className="flex flex-col gap-3">
-      <Button variant="outline" size="sm" onClick={onNewChat} disabled={busy}>
-        + Новый чат
+    <div className="flex flex-col gap-4">
+      <Button
+        variant="outline"
+        size="sm"
+        className="min-h-11 w-full justify-start rounded-xl border-[#222226]/10 bg-white px-2.5 text-[#424247] shadow-sm hover:border-[#4b4ce6]/20 hover:bg-[#4b4ce6]/[0.04] md:min-h-9"
+        onClick={onNewChat}
+        disabled={busy}
+      >
+        <span
+          aria-hidden="true"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#4b4ce6]/10 text-base leading-none text-[#4b4ce6]"
+        >
+          +
+        </span>
+        Новый чат
       </Button>
-      <div className="flex flex-col gap-0.5">
-        {sessions.length === 0 && <p className="px-1 pt-2 text-[13px] text-[#c1c1c1]">История пуста</p>}
-        {sessions.map((s) => (
-          <div
-            key={s.id}
-            className={cn(
-              'group flex items-center rounded-lg',
-              s.id === activeSid ? 'bg-[#4b4ce6]/10' : 'hover:bg-[#222226]/[0.04]',
-            )}
-          >
-            <button
-              type="button"
-              onClick={() => onOpen(s)}
-              title={s.title}
+      <ul className="flex flex-col gap-1" aria-label="История чатов">
+        {sessions.length === 0 && (
+          <li className="rounded-xl border border-dashed border-[#222226]/10 px-3 py-4 text-center text-[13px] text-[#a8a8ad]">
+            История пуста
+          </li>
+        )}
+        {sessions.map((session) => {
+          const active = session.id === activeSid
+          const folderCount = new Set([
+            ...(session.folder_ids ?? []),
+            ...(session.folder_id ? [session.folder_id] : []),
+          ]).size
+          const documentCount = new Set([
+            ...(session.document_ids ?? []),
+            ...(session.document_id ? [session.document_id] : []),
+          ]).size
+          const scopeMeta = folderCount
+            ? `Папок: ${folderCount}${documentCount ? ` · Документов: ${documentCount}` : ''}`
+            : documentCount
+              ? `Документов: ${documentCount}`
+              : 'Вся библиотека'
+          const updatedAt = new Date(session.updated_at)
+          const updatedLabel = Number.isNaN(updatedAt.getTime()) ? '' : dateFormatter.format(updatedAt)
+
+          return (
+            <li
+              key={session.id}
               className={cn(
-                'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-[13px]',
-                s.id === activeSid ? 'font-medium text-[#222226]' : 'text-[#222226]/60',
+                'group flex min-h-14 items-center rounded-xl transition md:min-h-[52px]',
+                active
+                  ? 'bg-[#4b4ce6]/[0.09] ring-1 ring-inset ring-[#4b4ce6]/10'
+                  : 'hover:bg-[#222226]/[0.04]',
               )}
             >
-              {s.title}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => onDelete(s, e)}
-              title="Удалить чат"
-              className="mr-1 shrink-0 rounded p-1 text-[#c1c1c1] opacity-0 transition hover:bg-white hover:text-destructive group-hover:opacity-70 hover:!opacity-100"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ))}
-      </div>
+              <button
+                type="button"
+                onClick={() => onOpen(session)}
+                title={session.title}
+                aria-label={`Открыть чат «${session.title}»`}
+                aria-current={active ? 'page' : undefined}
+                className="flex min-h-14 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2 py-1.5 text-left md:min-h-[52px]"
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] transition',
+                    active ? 'bg-[#4b4ce6] text-white shadow-sm' : 'bg-[#222226]/[0.05] text-[#222226]/35',
+                  )}
+                >
+                  <MessagesSquare className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span
+                    className={cn(
+                      'block truncate text-[13.5px] font-medium leading-[1.35]',
+                      active ? 'text-[#222226]' : 'text-[#222226]/75',
+                    )}
+                  >
+                    {session.title}
+                  </span>
+                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-[1.3] text-[#8f8f95]">
+                    <span className="truncate">{scopeMeta}</span>
+                    {updatedLabel && (
+                      <>
+                        <span aria-hidden="true" className="shrink-0 text-[#c1c1c5]">
+                          ·
+                        </span>
+                        <time dateTime={session.updated_at} className="shrink-0">
+                          {updatedLabel}
+                        </time>
+                      </>
+                    )}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={(event) => onDelete(session, event)}
+                aria-label={`Удалить чат «${session.title}»`}
+                title="Удалить чат"
+                className="mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#8f8f95] opacity-70 transition hover:bg-white hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4b4ce6]/40 md:h-9 md:w-9 md:opacity-0 md:group-hover:opacity-70 md:focus-visible:opacity-100"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }

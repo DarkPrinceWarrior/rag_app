@@ -273,6 +273,49 @@ test('mobile scope Done without changes preserves the active session', async ({ 
   await expect(page).toHaveURL(new RegExp(`\\?sid=${sessionId}$`))
 })
 
+test('mobile chat history uses accessible session cards and touch-sized actions', async ({ page }) => {
+  const activeSessionId = '00000000-0000-4000-8000-000000000030'
+  const sessions = [
+    {
+      id: activeSessionId,
+      title: 'Проектный анализ',
+      document_id: null,
+      document_ids: [documentId],
+      folder_id: null,
+      folder_ids: ['folder-a'],
+      created_at: '2026-07-15T09:00:00Z',
+      updated_at: '2026-07-16T10:00:00Z',
+    },
+    {
+      id: '00000000-0000-4000-8000-000000000031',
+      title: 'Общие требования',
+      document_id: null,
+      document_ids: null,
+      folder_id: null,
+      folder_ids: null,
+      created_at: '2026-07-14T09:00:00Z',
+      updated_at: '2026-07-15T08:00:00Z',
+    },
+  ]
+  await mockApi(page, sessions)
+  await page.goto(`/chat?sid=${activeSessionId}`)
+
+  await page.getByRole('button', { name: 'История чатов: 2' }).click()
+  const activeSession = page.getByRole('button', { name: 'Открыть чат «Проектный анализ»' })
+  const inactiveSession = page.getByRole('button', { name: 'Открыть чат «Общие требования»' })
+  const deleteActive = page.getByRole('button', { name: 'Удалить чат «Проектный анализ»' })
+
+  await expectTouchTarget(activeSession)
+  await expectTouchTarget(inactiveSession)
+  await expectTouchTarget(deleteActive)
+  await expect(activeSession).toHaveAttribute('aria-current', 'page')
+  await expect(inactiveSession).not.toHaveAttribute('aria-current', 'page')
+  await expect(page.getByText('Папок: 1 · Документов: 1', { exact: true })).toBeVisible()
+  await expect(page.getByText('Вся библиотека', { exact: true })).toBeVisible()
+  await expect(page.locator('time[datetime="2026-07-16T10:00:00Z"]')).toBeVisible()
+  await expectAccessibleViewport(page)
+})
+
 test('390px document viewer keeps both source and translation usable', async ({ page }) => {
   await mockApi(page)
   await page.goto(`/view/${documentId}`)
