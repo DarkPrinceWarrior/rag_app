@@ -11,12 +11,23 @@ import logging
 import math
 import os
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Annotated, Literal, cast
 
 import torch
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    ProcessCollector,
+    generate_latest,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -32,6 +43,30 @@ MODEL_DTYPE = cast(
     os.environ.get("DIRECT_RERANK_DTYPE", "bfloat16").casefold(),
 )
 _QWEN3_RERANK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+_METRICS = CollectorRegistry()
+ProcessCollector(registry=_METRICS)
+_REQUESTS = Counter(
+    "direct_reranker_requests_total",
+    "Direct reranker requests by aggregate outcome.",
+    ("outcome",),
+    registry=_METRICS,
+)
+_DOCUMENTS = Counter(
+    "direct_reranker_documents_total",
+    "Documents scored by the direct reranker.",
+    registry=_METRICS,
+)
+_LATENCY = Histogram(
+    "direct_reranker_request_duration_seconds",
+    "Direct reranker request latency.",
+    registry=_METRICS,
+)
+_MODEL_LOADED = Gauge(
+    "direct_reranker_model_loaded",
+    "Whether the direct reranker model is loaded.",
+    registry=_METRICS,
+)
 
 
 def _pack_token_ids(
@@ -200,10 +235,12 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     global _runtime
     logger.info("Loading deterministic reranker from %s", MODEL_PATH)
     _runtime = Qwen3RerankerRuntime(MODEL_PATH)
+    _MODEL_LOADED.set(1)
     logger.info("Deterministic reranker loaded")
     try:
         yield
     finally:
+        _MODEL_LOADED.set(0)
         _runtime = None
 
 
@@ -228,13 +265,29 @@ def models() -> ModelList:
     return ModelList(data=[ModelCard(id=SERVED_MODEL_NAME)])
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> Response:
+    return Response(generate_latest(_METRICS), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.post("/v1/rerank")
 def rerank(request: RerankRequest) -> RerankResponse:
     if _runtime is None:
+        _REQUESTS.labels(outcome="unavailable").inc()
         raise HTTPException(status_code=503, detail="reranker is not loaded")
     if request.model != SERVED_MODEL_NAME:
+        _REQUESTS.labels(outcome="unknown_model").inc()
         raise HTTPException(status_code=404, detail="requested model is not served")
-    scores = _runtime.score(request.query, request.documents)
+    started = time.perf_counter()
+    try:
+        scores = _runtime.score(request.query, request.documents)
+    except Exception:
+        _REQUESTS.labels(outcome="error").inc()
+        raise
+    finally:
+        _LATENCY.observe(time.perf_counter() - started)
+    _REQUESTS.labels(outcome="success").inc()
+    _DOCUMENTS.inc(len(request.documents))
     results = sorted(
         (
             RerankResult(index=index, relevance_score=score)

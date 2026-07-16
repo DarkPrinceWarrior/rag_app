@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 def _load_server(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -59,6 +60,29 @@ def test_models_and_health_expose_deterministic_runtime(
     assert health.model_loaded is True
     assert health.deterministic_algorithms is True
     assert health.dtype == "bfloat16"
+
+
+def test_metrics_expose_aggregate_runtime_counters(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _load_server(monkeypatch)
+    server._runtime = SimpleNamespace(score=lambda query, documents: [0.1, 0.9])
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/v1/rerank",
+        json={
+            "model": "qwen3-reranker-4b",
+            "query": "wrapped query",
+            "documents": ["wrapped document a", "wrapped document b"],
+        },
+    )
+    metrics = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert metrics.status_code == 200
+    assert 'direct_reranker_requests_total{outcome="success"} 1.0' in metrics.text
+    assert "direct_reranker_documents_total 2.0" in metrics.text
+    assert "wrapped query" not in metrics.text
+    assert "wrapped document" not in metrics.text
 
 
 def test_health_exposes_requested_float32_profile(monkeypatch: pytest.MonkeyPatch) -> None:

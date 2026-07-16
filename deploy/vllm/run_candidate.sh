@@ -25,7 +25,7 @@ case "$profile" in
     ;;
   reranker)
     production_unit=vllm-reranker.service; venv="$main_dir/.venv"; gpu=4; numa=1
-    args=(serve /root/models/Qwen3-Reranker-4B --served-model-name qwen3-reranker-4b --runner pooling --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' --host 127.0.0.1 --port 18003 --gpu-memory-utilization 0.35 --max-model-len 8192)
+    args=(direct-reranker)
     ;;
   visual-embedding)
     production_unit=vllm-visual-embedding.service; venv="$visual_dir/.venv"; gpu=2; numa=0
@@ -45,4 +45,15 @@ fi
 test -x "$venv/bin/vllm"
 export CUDA_VISIBLE_DEVICES="$gpu" NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_HOME=/usr/local/cuda
 export PATH="$venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+if [[ "${args[0]}" == direct-reranker ]]; then
+  export CUBLAS_WORKSPACE_CONFIG=:4096:2 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+  export DIRECT_RERANK_MODEL_PATH=/root/models/Qwen3-Reranker-4B
+  export DIRECT_RERANK_SERVED_MODEL_NAME=qwen3-reranker-4b
+  export DIRECT_RERANK_MAX_LENGTH=8192 DIRECT_RERANK_BATCH_SIZE=4
+  export DIRECT_RERANK_DTYPE=bfloat16
+  cd /root/projects/rag_app/scripts
+  exec /usr/bin/numactl --cpunodebind="$numa" --membind="$numa" \
+    "$venv/bin/uvicorn" direct_qwen3_reranker_server:app \
+    --host 127.0.0.1 --port 18003
+fi
 exec /usr/bin/numactl --cpunodebind="$numa" --membind="$numa" "$venv/bin/vllm" "${args[@]}"

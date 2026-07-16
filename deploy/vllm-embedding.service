@@ -1,8 +1,9 @@
 # Эмбеддинги Qwen3-Embedding-8B (выход 4096 → MRL-усечение клиентом до 1024,
 # схема pgvector не меняется) — GPU4, порт 8002. Принят 2026-06-19 по retrieval-A/B
 # на реальной библиотеке (recall@5 0.975 vs 0.887 у 0.6B). КЛЮЧЕВОЕ: на Ampere
-# (A100) ОБЯЗАТЕЛЬНЫ --enforce-eager и --dtype float16, иначе vLLM 0.22.1 выдаёт
-# NaN-эмбеддинги (recall≈0). Память 0.45 (~18 ГБ) — GPU4 делит с reranker-4B.
+# (A100) ОБЯЗАТЕЛЬНЫ --enforce-eager и --dtype float16. Профиль повторно
+# квалифицирован на immutable vLLM 0.24.0. Память 0.45 (~18 ГБ) — GPU4 делит с
+# direct reranker-4B.
 [Unit]
 Description=vLLM Qwen3-Embedding-8B (GPU4, :8002)
 After=network-online.target
@@ -14,10 +15,10 @@ Environment=CUDA_VISIBLE_DEVICES=4
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/root/services/vllm-main-0.24.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU4 — NUMA node1
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-Embedding-8B \
+    /root/services/vllm-main-0.24.0/.venv/bin/vllm serve /root/models/Qwen3-Embedding-8B \
     --served-model-name qwen3-embedding-8b \
     --runner pooling \
     --host 127.0.0.1 \

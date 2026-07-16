@@ -1,8 +1,9 @@
 # Reranker Qwen3-Reranker-4B — GPU4, порт 8003 (§ 12.1 шаг 1; заменяет BGE).
-# Генеративный yes/no-reranker сервится как классификатор — официальный рецепт
-# vLLM: hf_overrides (Qwen3ForSequenceClassification + classifier_from_token).
+# Native vLLM pooling отклонен index-aware квалификацией. Production использует
+# официальный direct yes/no scoring последнего токена из immutable окружения
+# vLLM 0.24.0; ручной Qwen-шаблон по-прежнему применяет клиент приложения.
 [Unit]
-Description=vLLM Qwen3-Reranker-4B (GPU4, :8003)
+Description=Direct Qwen3-Reranker-4B (GPU4, :8003)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,19 +13,24 @@ Environment=CUDA_VISIBLE_DEVICES=4
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-Environment=PATH=/root/services/vllm-qwen32b/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CUBLAS_WORKSPACE_CONFIG=:4096:2
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=DIRECT_RERANK_MODEL_PATH=/root/models/Qwen3-Reranker-4B
+Environment=DIRECT_RERANK_SERVED_MODEL_NAME=qwen3-reranker-4b
+Environment=DIRECT_RERANK_MAX_LENGTH=8192
+Environment=DIRECT_RERANK_BATCH_SIZE=4
+Environment=DIRECT_RERANK_DTYPE=bfloat16
+Environment=PATH=/root/services/vllm-main-0.24.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/root/projects/rag_app/scripts
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-qwen32b/.venv/bin/vllm serve /root/models/Qwen3-Reranker-4B \
-    --served-model-name qwen3-reranker-4b \
-    --runner pooling \
-    --hf-overrides '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}' \
+    /root/services/vllm-main-0.24.0/.venv/bin/uvicorn direct_qwen3_reranker_server:app \
     --host 127.0.0.1 \
-    --port 8003 \
-    --gpu-memory-utilization 0.35 \
-    --max-model-len 8192
+    --port 8003
 Restart=always
 RestartSec=10
-TimeoutStartSec=600
+TimeoutStartSec=900
+TimeoutStopSec=60
 LimitNOFILE=65536
 
 [Install]
