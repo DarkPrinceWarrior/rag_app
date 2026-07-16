@@ -303,6 +303,7 @@ test('chat history widens its desktop panel without squeezing search controls', 
   expect(Math.abs((searchBox?.width ?? 0) - (newChatBox?.width ?? 0))).toBeLessThanOrEqual(1)
   expect((searchBox?.x ?? 0) - (sidebarBox?.x ?? 0)).toBeGreaterThanOrEqual(23)
   expect((sidebarBox?.x ?? 0) + (sidebarBox?.width ?? 0) - ((searchBox?.x ?? 0) + (searchBox?.width ?? 0))).toBeGreaterThanOrEqual(23)
+  expect((searchBox?.x ?? 0) - (scrollBox?.x ?? 0)).toBeGreaterThanOrEqual(11)
   expect((scrollBox?.x ?? 0) + (scrollBox?.width ?? 0) - ((searchBox?.x ?? 0) + (searchBox?.width ?? 0))).toBeGreaterThanOrEqual(11)
 })
 

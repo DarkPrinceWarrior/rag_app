@@ -363,7 +363,7 @@ function Chat() {
 
         <div
           data-testid="chat-sidebar-scroll"
-          className={cn('min-h-0 flex-1 overflow-y-auto', sideTab === 'sessions' && '-mr-3 pr-3')}
+          className={cn('min-h-0 flex-1 overflow-y-auto', sideTab === 'sessions' && '-mx-3 px-3')}
         >
           {sideTab === 'docs' ? (
             <DocPicker scope={scope} onChange={onScopeChange} docs={docsQ.data ?? []} folders={foldersQ.data ?? []} />
