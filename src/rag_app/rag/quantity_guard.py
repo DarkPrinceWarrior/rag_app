@@ -19,9 +19,15 @@ RAG_QUANTITY_UNSUPPORTED = Counter(
     "Unsupported quantity observations in grounded RAG answers",
     ("reason",),
 )
+RAG_QUANTITY_GUARD_ERRORS = Counter(
+    "rag_chat_quantity_guard_errors_total",
+    "Quantity guard evaluation errors by configured mode",
+    ("mode",),
+)
 
+QUANTITY_WARNING_MARKER = "<!-- docragenslate:quantity-warning -->"
 QUANTITY_WARNING_MARKDOWN = (
-    "\n\n> ⚠️ **Проверьте числовые значения.** "
+    f"\n\n{QUANTITY_WARNING_MARKER}\n> ⚠️ **Проверьте числовые значения.** "
     "Часть числовых значений ответа не найдена в использованных фрагментах. "
     "Сверьте их с первоисточником."
 )
@@ -129,12 +135,31 @@ def quantity_warning_markdown(result: QuantityGuardResult) -> str:
     return QUANTITY_WARNING_MARKDOWN if result["unsupported_value_count"] else ""
 
 
+def annotate_quantity_warning(answer: str, result: QuantityGuardResult) -> str:
+    """Append one machine-marked warning while keeping the model answer intact."""
+
+    warning = quantity_warning_markdown(result)
+    if not warning or answer.endswith(warning):
+        return answer
+    return f"{answer}{warning}"
+
+
+def strip_quantity_warning(answer: str) -> str:
+    """Remove only the exact trailing annotation before model/memory reuse."""
+
+    return answer.removesuffix(QUANTITY_WARNING_MARKDOWN)
+
+
 __all__ = [
     "PrivateQuantityGuardArtifact",
+    "QUANTITY_WARNING_MARKER",
     "QUANTITY_WARNING_MARKDOWN",
+    "RAG_QUANTITY_GUARD_ERRORS",
     "QuantityGuardResult",
+    "annotate_quantity_warning",
     "evaluate_quantity_support",
     "private_quantity_guard_artifact",
     "quantity_warning_markdown",
     "record_quantity_guard_metrics",
+    "strip_quantity_warning",
 ]

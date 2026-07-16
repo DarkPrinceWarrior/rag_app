@@ -26,10 +26,12 @@ from rag_app.rag.chat import extract_citations, make_session_title
 from rag_app.rag.digest import render_docx, render_md, session_digest
 from rag_app.rag.memory.rls import apply_scope_guc
 from rag_app.rag.quantity_guard import (
+    RAG_QUANTITY_GUARD_ERRORS,
     QuantityGuardResult,
+    annotate_quantity_warning,
     evaluate_quantity_support,
-    quantity_warning_markdown,
     record_quantity_guard_metrics,
+    strip_quantity_warning,
 )
 from rag_app.rag.retrieve import RetrievedChunk
 from rag_app.rag.tools import AgentTools
@@ -139,8 +141,26 @@ def _evaluate_quantity_guard(
         )
         return quantity_guard
     except Exception as exc:  # noqa: BLE001 - guard must never alter the answer path
+        RAG_QUANTITY_GUARD_ERRORS.labels(mode).inc()
         logger.warning("RAG quantity guard failed: mode=%s error=%s", mode, type(exc).__name__)
         return None
+
+
+def _apply_quantity_guard(
+    answer: str,
+    chunks: Sequence[RetrievedChunk],
+    *,
+    mode: str,
+) -> tuple[str, str]:
+    """Return persisted answer and the exact SSE suffix; all failures are fail-open."""
+
+    if mode == "off" or not chunks:
+        return answer, ""
+    quantity_guard = _evaluate_quantity_guard(answer, chunks, mode=mode)
+    if mode != "warn" or quantity_guard is None:
+        return answer, ""
+    annotated = annotate_quantity_warning(answer, quantity_guard)
+    return annotated, annotated[len(answer) :]
 
 
 async def _validate_chat_scope(request: Request, body: ChatIn, user: User) -> None:
@@ -260,7 +280,12 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
         # контекст и переполняет окно модели на 2-м ходу). Обычные вопросы короче
         # лимита и не страдают; актуальный контекст страницы шлётся текущим ходом.
         history = [
-            {"role": m.role, "content": (m.content or "")[: settings.rag_history_msg_chars]}
+            {
+                "role": m.role,
+                "content": (
+                    strip_quantity_warning(m.content or "") if m.role == "assistant" else m.content or ""
+                )[: settings.rag_history_msg_chars],
+            }
             for m in recent
         ]
         yield _sse({"type": "session", "session_id": str(session_id)})
@@ -379,15 +404,15 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
                 yield _sse({"type": "error", "detail": f"генерация не удалась: {exc}"})
                 return
 
-        quantity_mode = settings.rag_quantity_guard_mode
-        if quantity_mode != "off" and chunks:
-            quantity_guard = _evaluate_quantity_guard(answer, chunks, mode=quantity_mode)
-            if quantity_mode == "warn" and quantity_guard is not None:
-                warning = quantity_warning_markdown(quantity_guard)
-                if warning and warning not in answer:
-                    answer = f"{answer.rstrip()}{warning}"
-                    yield _sse({"type": "delta", "text": warning})
-        citations = extract_citations(answer, chunks) if chunks else []
+        model_answer = answer
+        answer, warning = _apply_quantity_guard(
+            model_answer,
+            chunks,
+            mode=settings.rag_quantity_guard_mode,
+        )
+        if warning:
+            yield _sse({"type": "delta", "text": warning})
+        citations = extract_citations(model_answer, chunks) if chunks else []
         async with sessionmaker() as db:
             msg = ChatMessage(
                 session_id=session_id, role="assistant", content=answer, citations=citations
@@ -400,7 +425,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
             # ответ → memory_events (ground-truth для асинхронной экстракции, Этап 2)
             if mem_on:
                 await app.state.memory.record_message(
-                    db, mem_scope, "assistant", answer, source_message_id=msg.id
+                    db, mem_scope, "assistant", model_answer, source_message_id=msg.id
                 )
             await db.commit()
             message_id = msg.id
@@ -417,7 +442,7 @@ async def chat(request: Request, body: ChatIn, memory: bool = True) -> Streaming
         log_chat_trace(
             question=body.message,
             chunks=chunks,
-            answer=answer,
+            answer=model_answer,
             model=settings.llm_model,
             ms=int((time.monotonic() - t_gen) * 1000),
             session_id=str(session_id),

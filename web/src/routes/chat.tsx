@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertTriangle,
   ArrowUp,
   Check,
   Download,
@@ -66,6 +67,20 @@ interface Msg {
   citations: Citation[]
   table?: ExtractTable
   error?: string
+}
+
+const QUANTITY_WARNING_MARKER = '<!-- docragenslate:quantity-warning -->'
+const QUANTITY_WARNING_TEXT =
+  'Часть числовых значений ответа не найдена в использованных фрагментах. Сверьте их с первоисточником.'
+const QUANTITY_WARNING_SUFFIX =
+  `\n\n${QUANTITY_WARNING_MARKER}\n> ⚠️ **Проверьте числовые значения.** ${QUANTITY_WARNING_TEXT}`
+
+export function splitQuantityWarning(content: string): { markdown: string; hasWarning: boolean } {
+  if (!content.endsWith(QUANTITY_WARNING_SUFFIX)) return { markdown: content, hasWarning: false }
+  return {
+    markdown: content.slice(0, -QUANTITY_WARNING_SUFFIX.length).trimEnd(),
+    hasWarning: true,
+  }
 }
 
 function Chat() {
@@ -841,6 +856,7 @@ function Bubble({
         </p>
       </div>
     )
+  const quantityWarning = splitQuantityWarning(m.content)
   return (
     <div className="max-w-[90%]">
       {m.trace.length > 0 && (
@@ -855,9 +871,12 @@ function Bubble({
       ) : m.table && m.table.rows.length > 0 ? (
         <TableCard t={m.table} />
       ) : (
-        <div className="text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] text-[#222226]">
-          <Markdown content={m.content || '…'} />
-        </div>
+        <>
+          <div className="text-[14.3px] font-medium leading-[1.5] tracking-[-0.2145px] text-[#222226]">
+            <Markdown content={quantityWarning.markdown || '…'} />
+          </div>
+          {quantityWarning.hasWarning && <QuantityWarning />}
+        </>
       )}
       {m.citations.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -881,5 +900,40 @@ function Bubble({
         </div>
       )}
     </div>
+  )
+}
+
+function QuantityWarning() {
+  return (
+    <aside
+      role="status"
+      aria-live="polite"
+      aria-label="Проверьте числовые значения"
+      className="relative mt-3 overflow-hidden rounded-xl border border-[#b98217]/30 bg-[#f8f4e8] text-[#3d3320] shadow-[0_1px_0_rgba(34,34,38,0.03)]"
+      data-testid="quantity-warning"
+    >
+      <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-[#b98217]" />
+      <div className="grid grid-cols-[32px_minmax(0,1fr)] gap-3 px-4 py-3 pl-5">
+        <span
+          aria-hidden="true"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-[#b98217]/25 bg-[#b98217]/10 text-[#8a5f0c]"
+        >
+          <AlertTriangle className="h-4 w-4" strokeWidth={2} />
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <p className="text-[12px] font-bold uppercase leading-5 tracking-[0.08em] text-[#70500f]">
+              Проверьте числовые значения
+            </p>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#8a5f0c]/65">
+              Контроль источников
+            </span>
+          </div>
+          <p className="mt-0.5 text-[13px] font-medium leading-[1.45] text-[#51452d]">
+            {QUANTITY_WARNING_TEXT}
+          </p>
+        </div>
+      </div>
+    </aside>
   )
 }

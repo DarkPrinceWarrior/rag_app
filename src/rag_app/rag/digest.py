@@ -10,6 +10,7 @@ from docx import Document as Docx
 from openai import AsyncOpenAI
 
 from rag_app.config import settings
+from rag_app.rag.quantity_guard import strip_quantity_warning
 
 
 def _src_line(i: int, c: dict[str, Any]) -> str:
@@ -20,7 +21,9 @@ def _src_line(i: int, c: dict[str, Any]) -> str:
 
 async def session_digest(client: AsyncOpenAI, title: str, messages: list[Any]) -> dict[str, Any]:
     """LLM-выжимка + транскрипт + источники (дедуп по документу/странице/разделу)."""
-    convo = "\n".join(f"{m.role}: {m.content[:1200]}" for m in messages)
+    convo = "\n".join(
+        f"{m.role}: {strip_quantity_warning(m.content)[:1200]}" for m in messages
+    )
     summary = ""
     if convo.strip():
         try:

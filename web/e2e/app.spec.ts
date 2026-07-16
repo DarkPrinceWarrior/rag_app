@@ -45,6 +45,12 @@ interface ApiState {
   requestedTranslation: string | null
 }
 
+interface ChatMockOptions {
+  answer?: string
+  sessions?: unknown[]
+  messages?: Record<string, unknown[]>
+}
+
 async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 }
@@ -74,7 +80,11 @@ function segmentFor(state: ApiState) {
   }
 }
 
-async function mockApi(page: Page, initialStatus: ApiState['documentStatus'] = 'done') {
+async function mockApi(
+  page: Page,
+  initialStatus: ApiState['documentStatus'] = 'done',
+  chat: ChatMockOptions = {},
+) {
   const state: ApiState = {
     documentStatus: initialStatus,
     documentPolls: 0,
@@ -92,7 +102,9 @@ async function mockApi(page: Page, initialStatus: ApiState['documentStatus'] = '
       return fulfillJson(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
     }
     if (path === '/api/folders') return fulfillJson(route, [])
-    if (path === '/api/chat/sessions') return fulfillJson(route, [])
+    const historyMatch = /^\/api\/chat\/sessions\/([^/]+)\/messages$/.exec(path)
+    if (historyMatch) return fulfillJson(route, chat.messages?.[historyMatch[1]] ?? [])
+    if (path === '/api/chat/sessions') return fulfillJson(route, chat.sessions ?? [])
 
     if (path === `/api/documents/${documentId}/translations`) {
       if (method === 'POST') {
@@ -148,7 +160,7 @@ async function mockApi(page: Page, initialStatus: ApiState['documentStatus'] = '
         contentType: 'text/event-stream',
         body: [
           `data: ${JSON.stringify({ type: 'session', session_id: 'chat-1' })}\n\n`,
-          `data: ${JSON.stringify({ type: 'delta', text: 'Расчётное давление — 16 МПа [1].' })}\n\n`,
+          `data: ${JSON.stringify({ type: 'delta', text: chat.answer ?? 'Расчётное давление — 16 МПа [1].' })}\n\n`,
           `data: ${JSON.stringify({ type: 'done', citations: [citation] })}\n\n`,
         ].join(''),
       })
@@ -191,6 +203,61 @@ test('chat renders SSE deltas, citations, and the cited source', async ({ page }
   await expect(page.getByText('Источник [1]')).toBeVisible()
   await expect(page.getByText('Расчётное давление — 16 МПа.', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'Открыть во вьювере' })).toBeVisible()
+})
+
+test('chat renders a persisted or streamed quantity warning outside malformed Markdown', async ({ page }) => {
+  const warningSuffix =
+    '\n\n<!-- docragenslate:quantity-warning -->\n> ⚠️ **Проверьте числовые значения.** Часть числовых значений ответа не найдена в использованных фрагментах. Сверьте их с первоисточником.'
+  const malformedAnswer = 'Расчёт:\n```text\n16 МПа'
+  const warnedAnswer = `${malformedAnswer}${warningSuffix}`
+  const persistedSession = {
+    id: 'persisted-quantity',
+    title: 'Проверка чисел',
+    document_id: null,
+    document_ids: null,
+    folder_id: null,
+    created_at: '2026-07-16T08:00:00Z',
+    updated_at: '2026-07-16T08:00:00Z',
+  }
+  await mockApi(page, 'done', {
+    answer: warnedAnswer,
+    sessions: [persistedSession],
+    messages: {
+      'persisted-quantity': [
+        {
+          id: 'persisted-answer',
+          role: 'assistant',
+          content: warnedAnswer,
+          citations: [],
+          created_at: '2026-07-16T08:00:00Z',
+        },
+        {
+          id: 'marker-in-body',
+          role: 'assistant',
+          content: `Текст${warningSuffix}\n\nПродолжение ответа.`,
+          citations: [],
+          created_at: '2026-07-16T08:01:00Z',
+        },
+      ],
+    },
+  })
+
+  await page.goto('/chat')
+  await page.getByPlaceholder('Введите запрос').fill('Проверь расчёт')
+  await page.getByTitle('Отправить').click()
+
+  const streamedWarning = page.getByRole('status', { name: 'Проверьте числовые значения' })
+  await expect(streamedWarning).toBeVisible()
+  await expect(streamedWarning.getByText('Контроль источников')).toBeVisible()
+  await expect(page.locator('code')).toContainText('16 МПа')
+  await expect(page.locator('body')).not.toContainText('docragenslate:quantity-warning')
+
+  await page.goto('/chat?sid=persisted-quantity')
+  const persistedWarning = page.getByTestId('quantity-warning')
+  await expect(persistedWarning).toHaveCount(1)
+  await expect(persistedWarning).toContainText('Часть числовых значений ответа не найдена')
+  await expect(page.locator('code')).toContainText('16 МПа')
+  await expect(page.getByText('Продолжение ответа.')).toBeVisible()
 })
 
 test('viewer edits a segment and downloads the translated export', async ({ page }) => {
