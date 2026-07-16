@@ -994,3 +994,9 @@ Playwright MCP на production подтвердил восемь шагов, р�
 `hidden`. ESLint, TypeScript, production build и bundle budget — PASS; полный
 Playwright веб-приложения — **13/13**, включая оба состояния на экране 390 px
 без горизонтального переполнения.
+
+Выпущено коммитом `a2af6b2`: SPA доставлен на A100,
+`rag-api.service=active`, `NRestarts=0`, `/healthz=ok`. Playwright MCP на
+production подтвердил переход `true → false → true`, подписи
+«Скрыть 8 шагов / Показать 8 шагов», повторное появление всех восьми шагов,
+кнопку 44 px и нулевое горизонтальное переполнение на 1440 и 390 px.
