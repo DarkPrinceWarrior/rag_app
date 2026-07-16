@@ -291,16 +291,19 @@ test('chat history widens its desktop panel without squeezing search controls', 
 
   const search = page.getByRole('searchbox', { name: 'Поиск по чатам' })
   const newChat = page.getByRole('button', { name: 'Новый чат' })
+  const scrollArea = page.getByTestId('chat-sidebar-scroll')
   await search.focus()
-  const [sidebarBox, searchBox, newChatBox] = await Promise.all([
+  const [sidebarBox, searchBox, newChatBox, scrollBox] = await Promise.all([
     sidebar.boundingBox(),
     search.boundingBox(),
     newChat.boundingBox(),
+    scrollArea.boundingBox(),
   ])
   expect(searchBox?.width ?? 0).toBeGreaterThanOrEqual(303)
   expect(Math.abs((searchBox?.width ?? 0) - (newChatBox?.width ?? 0))).toBeLessThanOrEqual(1)
   expect((searchBox?.x ?? 0) - (sidebarBox?.x ?? 0)).toBeGreaterThanOrEqual(23)
   expect((sidebarBox?.x ?? 0) + (sidebarBox?.width ?? 0) - ((searchBox?.x ?? 0) + (searchBox?.width ?? 0))).toBeGreaterThanOrEqual(23)
+  expect((scrollBox?.x ?? 0) + (scrollBox?.width ?? 0) - ((searchBox?.x ?? 0) + (searchBox?.width ?? 0))).toBeGreaterThanOrEqual(11)
 })
 
 test('library sections share one left edge and upload uses the wider workspace', async ({ page }) => {
