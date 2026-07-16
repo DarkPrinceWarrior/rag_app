@@ -141,7 +141,7 @@ def _request_ocr(
     served_model: str,
     max_tokens: int,
     timeout_s: float,
-) -> tuple[str, dict[str, Any], float]:
+) -> tuple[str, str, dict[str, Any], float]:
     image = base64.b64encode(image_png).decode("ascii")
     payload = {
         "model": served_model,
@@ -177,11 +177,16 @@ def _request_ocr(
         raise ValueError("OvisOCR2 вернул неожиданный OpenAI-ответ") from exc
     if not isinstance(text, str) or not text.strip():
         raise ValueError("OvisOCR2 вернул пустой Markdown")
+    raw_text = text.strip()
+    cleaned_text = clean_truncated_repeats(raw_text)
     metadata = {
         "finish_reason": choice.get("finish_reason"),
         "usage": body.get("usage"),
+        "raw_characters": len(raw_text),
+        "cleaned_characters": len(cleaned_text),
+        "repeat_cleanup_removed_characters": len(raw_text) - len(cleaned_text),
     }
-    return clean_truncated_repeats(text.strip()), metadata, latency_s
+    return cleaned_text, raw_text, metadata, latency_s
 
 
 def _text_segments(text: str, page_idx: int) -> list[dict[str, Any]]:
@@ -364,6 +369,8 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = args.output_dir / "_raw"
     raw_dir.mkdir(exist_ok=True)
+    original_dir = args.output_dir / "_raw_original"
+    original_dir.mkdir(exist_ok=True)
     summary: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSION,
         "source": manifest.get("source"),
@@ -394,7 +401,7 @@ def main() -> None:
                 args.corpus_dir / filename,
                 args.dpi,
             )
-            markdown, inference, latency_s = _request_ocr(
+            markdown, original_markdown, inference, latency_s = _request_ocr(
                 args.endpoint,
                 image_png,
                 served_model=args.served_model,
@@ -407,6 +414,9 @@ def main() -> None:
             raw_path = raw_dir / f"{filename}.md"
             raw_path.write_text(markdown, encoding="utf-8")
             raw_path.chmod(0o600)
+            original_path = original_dir / f"{filename}.md"
+            original_path.write_text(original_markdown, encoding="utf-8")
+            original_path.chmod(0o600)
             prediction = {
                 "schema_version": _SCHEMA_VERSION,
                 "source": {"file": filename, "sha256": page["sha256"]},
