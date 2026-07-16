@@ -226,7 +226,7 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
       await expect(activeLink).toHaveCSS('background-image', /linear-gradient/)
     } else {
       await expect(navigation.locator('[aria-current="page"]')).toHaveCount(0)
-      const extensionDownload = page.getByRole('link', { name: 'Скачать ZIP' })
+      const extensionDownload = page.getByRole('link', { name: 'Скачать расширение для Google Chrome' })
       await expect(extensionDownload).toHaveAttribute('href', '/downloads/DocRAGenslate-Chrome.zip')
     }
 
@@ -242,7 +242,7 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/account')
-  const mobileDownload = page.getByRole('link', { name: 'Скачать ZIP' })
+  const mobileDownload = page.getByRole('link', { name: 'Скачать расширение для Google Chrome' })
   const mobileDownloadBox = await mobileDownload.boundingBox()
   expect(mobileDownloadBox?.width ?? Infinity).toBeLessThanOrEqual(358)
   expect(mobileDownloadBox?.height ?? 0).toBeGreaterThanOrEqual(44)
@@ -270,6 +270,86 @@ test('header keeps two library rows and a compact branded navigation elsewhere',
   expect(chatViewport.position).toBe('fixed')
   expect(chatViewport.top).toBe(0)
   expect(chatViewport.bottom).toBeCloseTo(chatViewport.viewportHeight, 0)
+})
+
+test('account explains Chrome extension installation and serves the archive', async ({ page }) => {
+  await mockApi(page)
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/account')
+
+  const card = page.locator('section[aria-labelledby="chrome-extension-title"]')
+  await expect(card).toBeVisible()
+  await expect(card.getByRole('heading', { name: 'Как установить расширение' })).toBeVisible()
+  await expect(card.locator('ol > li')).toHaveCount(8)
+
+  expect(await card.locator('ol > li > div > p:first-child').allTextContents()).toEqual([
+    'Скачайте расширение',
+    'Распакуйте архив',
+    'Откройте страницу расширений Chrome',
+    'Включите режим разработчика',
+    'Установите расширение',
+    'Закрепите DocRAGenslate',
+    'Войдите под своей учётной записью',
+    'Обновите страницу и проверьте перевод',
+  ])
+
+  for (const text of [
+    'Извлечь всё',
+    'Режим разработчика',
+    'Загрузить распакованное',
+    'значок пазла',
+    'нажмите «Войти»',
+    'Ctrl+R',
+    'не удаляйте и не перемещайте',
+    'Выбирайте папку, а не ZIP-архив',
+    'булавку рядом с DocRAGenslate',
+    'выданные вам логин и пароль',
+    'кнопку «Перевести»',
+  ]) {
+    await expect(card.getByText(text, { exact: false }).first()).toBeVisible()
+  }
+  await expect(card.getByText('chrome://extensions', { exact: true }).first()).toBeVisible()
+  const copyAddress = card.getByRole('button', { name: 'Скопировать адрес страницы расширений Chrome' })
+  await expect(copyAddress).toBeVisible()
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  await copyAddress.click()
+  await expect(copyAddress).toContainText(/Скопировано|Адрес выделен/)
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('chrome://extensions')
+
+  const download = card.getByRole('link', { name: 'Скачать расширение для Google Chrome' })
+  await expect(download).toHaveAttribute('href', '/downloads/DocRAGenslate-Chrome.zip')
+  await expect(download).toHaveAttribute('download', '')
+  const archive = await page.request.get(new URL('/downloads/DocRAGenslate-Chrome.zip', page.url()).toString())
+  expect(archive.ok()).toBe(true)
+  expect(archive.headers()['content-type']).toContain('application/zip')
+  const archiveBody = await archive.body()
+  expect(archiveBody.byteLength).toBeGreaterThan(0)
+  expect([...archiveBody.subarray(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04])
+
+  const [cardBox, introBox, desktopDownloadBox] = await Promise.all([
+    card.boundingBox(),
+    card.getByRole('heading', { name: 'Расширение для Google Chrome' }).locator('..').boundingBox(),
+    download.boundingBox(),
+  ])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
+  expect((cardBox?.x ?? 0) + (cardBox?.width ?? Infinity)).toBeLessThanOrEqual(1440)
+  expect(desktopDownloadBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+  expect((introBox?.x ?? 0) + (introBox?.width ?? Infinity)).toBeLessThanOrEqual(desktopDownloadBox?.x ?? 0)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const downloadBox = await download.boundingBox()
+  expect(downloadBox?.width ?? Infinity).toBeLessThanOrEqual(358)
+  expect(downloadBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+  const copyBox = await copyAddress.boundingBox()
+  expect(copyBox?.height ?? 0).toBeGreaterThanOrEqual(44)
+  const layout = await page.evaluate(() => ({
+    pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    stepOverflows: [...document.querySelectorAll('section[aria-labelledby="chrome-extension-title"] ol > li')].map(
+      (item) => item.scrollWidth - item.clientWidth,
+    ),
+  }))
+  expect(layout.pageOverflow).toBeLessThanOrEqual(1)
+  expect(layout.stepOverflows.every((overflow) => overflow <= 1)).toBe(true)
 })
 
 test('document cards stay compact on wide screens', async ({ page }) => {

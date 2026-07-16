@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, Puzzle } from 'lucide-react'
+import { Check, Copy, Download, Puzzle } from 'lucide-react'
 import { api, type MemoryItem } from '@/lib/api'
 import { authFetch, currentUser, logout } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -32,8 +32,88 @@ const KIND_RU: Record<string, string> = {
 const scopeRu = (s: string) => SCOPE_RU[s] ?? s
 const kindRu = (k: string) => KIND_RU[k] ?? k
 
+const CHROME_EXTENSIONS_ADDRESS = 'chrome://extensions'
+const EXTENSION_INSTALL_STEPS = [
+  {
+    title: 'Скачайте расширение',
+    description: 'Нажмите кнопку «Скачать расширение» в верхней части карточки и дождитесь окончания загрузки.',
+  },
+  {
+    title: 'Распакуйте архив',
+    description:
+      'Откройте папку «Загрузки», нажмите на ZIP-архив правой кнопкой мыши и выберите «Извлечь всё…», затем «Извлечь». Полученную папку не удаляйте и не перемещайте.',
+  },
+  {
+    title: 'Откройте страницу расширений Chrome',
+    description: 'Вставьте адрес ниже в адресную строку Google Chrome и нажмите Enter.',
+    showAddress: true,
+  },
+  {
+    title: 'Включите режим разработчика',
+    description: 'В правом верхнем углу страницы включите переключатель «Режим разработчика».',
+  },
+  {
+    title: 'Установите расширение',
+    description:
+      'Нажмите «Загрузить распакованное» и выберите папку, полученную после распаковки. Выбирайте папку, а не ZIP-архив.',
+  },
+  {
+    title: 'Закрепите DocRAGenslate',
+    description:
+      'Нажмите значок пазла «Расширения» справа от адресной строки Chrome и нажмите булавку рядом с DocRAGenslate.',
+  },
+  {
+    title: 'Войдите под своей учётной записью',
+    description: 'Откройте DocRAGenslate, нажмите «Войти» и введите выданные вам логин и пароль.',
+  },
+  {
+    title: 'Обновите страницу и проверьте перевод',
+    description:
+      'На уже открытой английской странице нажмите Ctrl+R. Выделите текст и нажмите появившуюся кнопку «Перевести» — либо откройте расширение и выберите «Перевести страницу».',
+  },
+]
+
 function AccountPage() {
   const user = currentUser()
+  const chromeAddressRef = useRef<HTMLElement>(null)
+  const [addressCopyStatus, setAddressCopyStatus] = useState<'idle' | 'copied' | 'manual'>('idle')
+
+  function copyAddressWithFallback(): boolean {
+    const field = document.createElement('textarea')
+    try {
+      field.value = CHROME_EXTENSIONS_ADDRESS
+      field.style.position = 'fixed'
+      field.style.opacity = '0'
+      document.body.appendChild(field)
+      field.select()
+      return document.execCommand('copy')
+    } catch {
+      return false
+    } finally {
+      field.remove()
+    }
+  }
+
+  async function copyChromeExtensionsAddress() {
+    let copied: boolean
+    try {
+      await navigator.clipboard.writeText(CHROME_EXTENSIONS_ADDRESS)
+      copied = true
+    } catch {
+      copied = copyAddressWithFallback()
+    }
+    if (copied) {
+      setAddressCopyStatus('copied')
+    } else if (chromeAddressRef.current) {
+      const range = document.createRange()
+      range.selectNodeContents(chromeAddressRef.current)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+      setAddressCopyStatus('manual')
+    }
+    window.setTimeout(() => setAddressCopyStatus('idle'), 2200)
+  }
+
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-5">
       {/* Карточка пользователя */}
@@ -56,32 +136,100 @@ function AccountPage() {
         </Button>
       </div>
 
-      <div className="mb-5 rounded-xl border bg-card p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <Puzzle className="h-5 w-5" aria-hidden="true" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold">Расширение для Google Chrome</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Переводите выделенный текст и целые страницы через корпоративный контур.
-            </p>
-            <ol className="mt-2 list-decimal space-y-0.5 pl-4 text-xs text-muted-foreground">
-              <li>Скачайте и распакуйте ZIP.</li>
-              <li>Откройте chrome://extensions и выберите «Загрузить распакованное».</li>
-              <li>Откройте расширение и войдите под своей учётной записью.</li>
-            </ol>
+      <section className="mb-5 rounded-2xl border bg-card p-4 sm:p-5" aria-labelledby="chrome-extension-title">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Puzzle className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <h2 id="chrome-extension-title" className="text-base font-semibold">
+                Расширение для Google Chrome
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                Переводите выделенный текст и целые страницы через корпоративный контур.
+              </p>
+            </div>
           </div>
           <a
             href="/downloads/DocRAGenslate-Chrome.zip"
             download
-            className="flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 sm:w-auto"
+            aria-label="Скачать расширение для Google Chrome"
+            className="flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 sm:ml-auto sm:w-auto"
           >
             <Download className="h-4 w-4" aria-hidden="true" />
-            Скачать ZIP
+            Скачать расширение
           </a>
         </div>
-      </div>
+
+        <div className="mt-5 border-t pt-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold">Как установить расширение</h3>
+            <span className="text-xs text-muted-foreground">Займёт 2–3 минуты · только один раз</span>
+          </div>
+
+          <ol className="mt-4 space-y-3" aria-label="Инструкция по установке расширения">
+            {EXTENSION_INSTALL_STEPS.map((step, index) => (
+              <li
+                key={step.title}
+                className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-xl border border-border/80 bg-muted/20 p-3 sm:p-4"
+              >
+                <span
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground"
+                  aria-hidden="true"
+                >
+                  {index + 1}
+                </span>
+                <div className="min-w-0 pt-0.5">
+                  <p className="text-sm font-semibold text-foreground">{step.title}</p>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">{step.description}</p>
+                  {step.showAddress && (
+                    <div className="mt-3 flex flex-col gap-2 rounded-lg border bg-background p-2 sm:flex-row sm:items-center">
+                      <code
+                        ref={chromeAddressRef}
+                        className="min-w-0 flex-1 select-all overflow-x-auto px-2 py-1 text-sm font-semibold text-foreground"
+                      >
+                        {CHROME_EXTENSIONS_ADDRESS}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => void copyChromeExtensionsAddress()}
+                        className="flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border bg-card px-3 text-xs font-semibold transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                        aria-label="Скопировать адрес страницы расширений Chrome"
+                      >
+                        {addressCopyStatus === 'copied' ? (
+                          <Check className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                        ) : (
+                          <Copy className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        {addressCopyStatus === 'copied'
+                          ? 'Скопировано'
+                          : addressCopyStatus === 'manual'
+                            ? 'Адрес выделен — нажмите Ctrl+C'
+                            : 'Скопировать адрес'}
+                      </button>
+                      <span className="sr-only" role="status" aria-live="polite">
+                        {addressCopyStatus === 'copied'
+                          ? 'Адрес страницы расширений скопирован'
+                          : addressCopyStatus === 'manual'
+                            ? 'Адрес выделен. Нажмите Ctrl+C'
+                            : ''}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-4 rounded-xl border border-primary/20 bg-primary/[0.04] p-4 text-sm leading-6 text-foreground">
+            <span className="font-semibold">Если позже выйдет новая версия:</span> замените файлы в сохранённой папке,
+            нажмите «Обновить» на странице{' '}
+            <code className="rounded bg-background px-1.5 py-0.5 text-xs">chrome://extensions</code>, затем обновите
+            открытые вкладки через <kbd className="rounded border bg-background px-1.5 py-0.5 text-xs">Ctrl+R</kbd>.
+          </div>
+        </div>
+      </section>
 
       <MemorySection isAdmin={user.isAdmin} />
     </div>
