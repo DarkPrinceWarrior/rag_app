@@ -31,7 +31,9 @@ def test_runtime_flags_are_declarative_and_non_secret() -> None:
         "RAG_TRANSLATION_ENTITY_GUARD_MODE=shadow",
         "RAG_TRANSLATION_MEMORY_MODE=enforce",
         "RAG_TRANSLATION_MEMORY_NEAREST_TOP_K=0",
+        "RAG_EMBED_BASE_URL=http://127.0.0.1:8002/v1",
         "RAG_EMBED_MODEL=nemotron-3-embed-8b",
+        "RAG_EMBED_DIM=1024",
         "RAG_EMBED_INPUT_PROFILE=nemotron3",
         "RAG_QUEUE_ROLLOUT_MODE=split",
     }
