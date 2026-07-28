@@ -85,11 +85,11 @@ def _adapt_sparse_translated_table(
     занимала 68%, поэтому русский текст в Topics разрывал одну логическую строку
     между страницами.
 
-    Для этого класса немного перераспределяем только существующую ширину
-    (содержательной колонке до 32%, пустой остаётся не менее 45%), убираем
-    исходные минимальные высоты строк, ставим 11 pt только содержательным
-    абзацам данных и запрещаем межстраничный разрыв строки. Остальные таблицы
-    остаются байт-в-байт по параметрам раскладки.
+    Для этого класса перераспределяем только существующую ширину: пустой
+    колонке сохраняем не менее 45%, а безопасный остаток отдаём содержательной.
+    Затем убираем исходные минимальные высоты строк, ставим 11 pt только
+    содержательным абзацам данных и запрещаем межстраничный разрыв строки.
+    Остальные таблицы остаются байт-в-байт по параметрам раскладки.
     """
     widths = _docx_table_grid_widths(table)
     if len(widths) < 3 or len(original_rows) < 4 or any(len(row) != len(widths) for row in original_rows):
@@ -140,9 +140,8 @@ def _adapt_sparse_translated_table(
         return False
     target = max(target_candidates)[1]
 
-    desired_target = round(total_width * 0.32)
     minimum_donor = round(total_width * 0.45)
-    transfer = min(desired_target - widths[target], widths[donor] - minimum_donor)
+    transfer = widths[donor] - minimum_donor
     if transfer <= 0:
         return False
     widths[target] += transfer
@@ -151,14 +150,11 @@ def _adapt_sparse_translated_table(
     grid_columns = table._tbl.xpath("./w:tblGrid/w:gridCol")
     for ci in (target, donor):
         grid_columns[ci].set(qn("w:w"), str(widths[ci]))
-        seen_cells: set[int] = set()
         for row in table.rows:
-            cell = row.cells[ci]
-            identity = id(cell._tc)
-            if identity in seen_cells:
-                continue
-            seen_cells.add(identity)
-            cell.width = Twips(widths[ci])
+            # Merged-таблицы отсечены выше. Дедупликация через id(_tc)
+            # недопустима: python-docx создаёт временные proxy, и Python может
+            # переиспользовать их id, оставляя случайные tcW без обновления.
+            row.cells[ci].width = Twips(widths[ci])
 
     for row in table.rows:
         tr_properties = row._tr.get_or_add_trPr()

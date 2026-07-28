@@ -125,12 +125,16 @@ def test_docx_injection_adapts_sparse_wide_table_without_splitting_rows(
     translated_widths = ooxml._docx_table_grid_widths(translated.tables[0])
 
     assert sum(translated_widths) == sum(original_widths)
-    assert translated_widths[1] >= round(sum(original_widths) * 0.32)
-    assert translated_widths[2] < original_widths[2]
+    minimum_donor = round(sum(original_widths) * 0.45)
+    assert translated_widths[2] == minimum_donor
+    assert translated_widths[1] == original_widths[1] + original_widths[2] - minimum_donor
     for row in translated.tables[0].rows:
         properties = row._tr.get_or_add_trPr()
         assert properties.find(qn("w:trHeight")) is None
         assert properties.find(qn("w:cantSplit")) is not None
+        for ci in (1, 2):
+            tc_width = row.cells[ci]._tc.get_or_add_tcPr().get_or_add_tcW().get(qn("w:w"))
+            assert int(tc_width) == translated_widths[ci]
     first_topic_run = translated.tables[0].cell(1, 1).paragraphs[0].runs[0]
     assert first_topic_run.font.size == Pt(11)
 

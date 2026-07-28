@@ -43,6 +43,21 @@ TERMS: list[tuple[str, str, str]] = [
         "установочное совещание по разработке проектной документации",
         "проектирование",
     ),
+    (
+        "CHINA KUNLUN CONTRACTING AND ENGINEERING COORPERATION",
+        "КИТАЙСКАЯ ПРОЕКТНО-СТРОИТЕЛЬНАЯ КОМПАНИЯ «КУНЬЛУНЬ»",
+        "организации",
+    ),
+    (
+        "CHINA KUNLUN CONTRACTING AND ENGINEERING COOPERATION",
+        "КИТАЙСКАЯ ПРОЕКТНО-СТРОИТЕЛЬНАЯ КОМПАНИЯ «КУНЬЛУНЬ»",
+        "организации",
+    ),
+    (
+        "CHINA KUNLUN CONTRACTING & ENGINEERING CORPORATION",
+        "КИТАЙСКАЯ ПРОЕКТНО-СТРОИТЕЛЬНАЯ КОМПАНИЯ «КУНЬЛУНЬ»",
+        "организации",
+    ),
     ("Project Documentation", "проектная документация", "проектирование"),
     ("piping system", "трубопроводная система", "проектирование"),
     ("spiral wound gasket", "спирально-навитая прокладка", "трубопроводы"),
