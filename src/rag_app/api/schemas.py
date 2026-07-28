@@ -29,7 +29,7 @@ class DocumentOut(BaseModel):
     # Вьювер показывает «как в Microsoft» по оригиналу сразу, не дожидаясь перевода.
     has_view_orig: bool = False
     has_view_ru: bool = False
-    # движок парсинга pdf_text: null → дефолт (mineru). mineru | dots_mocr | paddle_vl
+    # движок разбора: PDF — mineru | paddle_vl; Office — native_ooxml
     parser_backend: str | None = None
     # язык-источник, определённый автоматически (ru|en|zh; "auto" — ещё не определён).
     # Цель перевода всегда русский. Для бейджа направления в библиотеке.

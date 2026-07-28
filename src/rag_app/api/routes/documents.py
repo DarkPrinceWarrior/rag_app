@@ -331,18 +331,20 @@ async def reparse_ocr(request: Request, doc_id: uuid.UUID, body: ReparseOcrIn) -
     return {"status": "queued", "ocr_lang": body.lang}
 
 
-_PARSER_BACKENDS = {"mineru", "dots_mocr", "paddle_vl"}
+_PARSER_BACKENDS = {"mineru", "paddle_vl"}
 
 
 class ReparseIn(BaseModel):
-    # mineru (MinerU2.5-Pro + добор) | dots_mocr | paddle_vl
+    # mineru (MinerU2.5-Pro + добор) | paddle_vl
     backend: str = "mineru"
 
 
 @router.post("/{doc_id}/reparse")
 async def reparse(request: Request, doc_id: uuid.UUID, body: ReparseIn) -> dict:
-    """Переразбор выбранным движком парсинга pdf_text (mineru | dots_mocr |
-    paddle_vl). Выбор сохраняется на документе и переживает retry/reexport."""
+    """Переразбор выбранным PDF-парсером (mineru | paddle_vl).
+
+    Выбор сохраняется на документе и переживает retry/reexport.
+    """
     if body.backend not in _PARSER_BACKENDS:
         raise HTTPException(422, f"неизвестный backend: {body.backend}")
     await _require_pdf_reparse_target(request, doc_id)

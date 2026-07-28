@@ -34,8 +34,6 @@ scrape_configs:
         labels: { service: text-reranker, gpu: "4" }
       - targets: ["127.0.0.1:8007"]
         labels: { service: visual-embedding, gpu: "2" }
-      - targets: ["127.0.0.1:8120"]
-        labels: { service: dots-mocr, gpu: "0" }
       - targets: ["127.0.0.1:30010"]
         labels: { service: mineru, gpu: "5" }
       - targets: ["127.0.0.1:8118"]

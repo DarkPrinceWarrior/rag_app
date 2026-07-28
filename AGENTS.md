@@ -118,12 +118,11 @@ MRL 1024; профиль `nemotron3` добавляет `query:`/`passage:`; н�
 против `0.7250/0.9125/0.80480655/0.84048804` у Qwen3-Embedding-8B;
 Qwen-веса и прежняя unit/runtime-конфигурация сохранены для отката),
 Qwen3-Reranker-4B GPU4 `:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5
-`:30010` (дефолт) + постоянные
-dots.mocr GPU0 `:8120` и PaddleOCR-VL 1.6 GPU0 `:8118` (альтернативы по
+`:30010` (дефолт) + постоянный PaddleOCR-VL 1.6 GPU0 `:8118` (альтернатива по
 `parser_backend`). На GPU2 совместно с приложением Alma активен визуальный
 контур: Qwen3-VL-Embedding-8B `:8007` + Qwen3-VL-Reranker-2B `:8009`;
 генеративный Qwen3-VL-8B `:8008` погашен, его роль выполняет мультимодальный
-Qwen3.5 на GPU3. Фактическая раскладка: GPU0 — dots/Paddle, GPU1 — Hy-MT2,
+Qwen3.5 на GPU3. Фактическая раскладка: GPU0 — Paddle/whisperx, GPU1 — Hy-MT2,
 GPU2 — visual embed/rerank, GPU3 — Qwen3.5, GPU4 — text embed/rerank, GPU5 —
 MinerU. По прямому решению владельца лицензия модели фиксируется в реестре, но
 не блокирует техническую квалификацию и выбор production-модели; решают

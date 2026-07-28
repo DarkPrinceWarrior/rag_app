@@ -20,7 +20,6 @@ const PARSER_INPUT_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png'])
 const PARSER_OPTIONS = [
   { value: '', label: 'Автоматически (по умолчанию)' },
   { value: 'mineru', label: 'MinerU + добор' },
-  { value: 'dots_mocr', label: 'dots.mocr' },
   { value: 'paddle_vl', label: 'PaddleOCR-VL 1.6' },
 ]
 

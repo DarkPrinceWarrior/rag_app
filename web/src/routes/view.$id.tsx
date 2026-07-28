@@ -184,8 +184,11 @@ function Viewer() {
 
   const PARSER_NAMES: Record<string, string> = {
     mineru: 'MinerU2.5-Pro + добор',
-    dots_mocr: 'dots.mocr',
     paddle_vl: 'PaddleOCR-VL 1.6',
+  }
+
+  function parserName(backend: string): string {
+    return PARSER_NAMES[backend] ?? 'недоступный парсер'
   }
 
   function askReexport() {
@@ -230,30 +233,30 @@ function Viewer() {
     })
   }
 
-  // Выбор движка парсинга pdf_text/docx (mineru / dots.mocr / PaddleOCR-VL 1.6).
+  // Выбор движка парсинга PDF (MinerU / PaddleOCR-VL 1.6).
   function askReparseBackend(backend: string) {
     const cur = docQ.data?.parser_backend || 'mineru'
     if (backend === cur) return
     setConfirmAction({
-      title: `Сменить парсер на «${PARSER_NAMES[backend]}»?`,
+      title: `Сменить парсер на «${parserName(backend)}»?`,
       tone: 'danger',
       confirmLabel: 'Переразобрать',
       description: (
         <>
           Сейчас документ разобран движком{' '}
-          <span className="font-medium text-foreground">{PARSER_NAMES[cur]}</span>. Он будет
+          <span className="font-medium text-foreground">{parserName(cur)}</span>. Он будет
           полностью переразобран другим парсером.
         </>
       ),
       points: [
-        <>Полный переразбор движком <span className="font-medium text-foreground">{PARSER_NAMES[backend]}</span></>,
+        <>Полный переразбор движком <span className="font-medium text-foreground">{parserName(backend)}</span></>,
         'Повторный перевод всех сегментов',
         'Пересборка экспорта (PDF/DOCX)',
       ],
       warning: 'Текущие сегменты, перевод и экспорт будут заменены.',
       note: 'Несколько минут. Обновите страницу после завершения.',
       run: async () => {
-        setMsg(`Переразбор через ${PARSER_NAMES[backend]} в очереди…`)
+        setMsg(`Переразбор через ${parserName(backend)} в очереди…`)
         await api.reparse(id, backend)
         setMsg('Переразбор запущен — обновите страницу через ~минуту')
         setTimeout(() => setMsg(''), 8000)
@@ -351,13 +354,19 @@ function Viewer() {
       )}
       {isPdfDoc && (
         <select
-          value={docQ.data?.parser_backend || 'mineru'}
+          value={
+            PARSER_NAMES[docQ.data?.parser_backend || 'mineru']
+              ? docQ.data?.parser_backend || 'mineru'
+              : ''
+          }
           onChange={(e) => askReparseBackend(e.target.value)}
           title="Движок парсинга PDF: переразобрать документ выбранным парсером"
           className="min-h-8 max-w-full rounded-md border bg-background px-2 py-1 text-xs max-md:min-h-11 max-md:flex-1"
         >
+          {docQ.data?.parser_backend && !PARSER_NAMES[docQ.data.parser_backend] && (
+            <option value="" disabled>парсер: недоступен</option>
+          )}
           <option value="mineru">парсер: MinerU+добор</option>
-          <option value="dots_mocr">парсер: dots.mocr</option>
           <option value="paddle_vl">парсер: PaddleOCR-VL 1.6</option>
         </select>
       )}

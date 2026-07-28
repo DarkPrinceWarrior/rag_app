@@ -8,8 +8,8 @@ from sqlalchemy.dialects import postgresql
 
 from rag_app.api.auth import User
 from rag_app.api.routes.documents import _queue_reparse
-from rag_app.db.models import DocumentStatus
-from rag_app.workers.tasks import _claim_parse
+from rag_app.db.models import Document, DocumentKind, DocumentStatus
+from rag_app.workers.tasks import _claim_parse, _parser_backend
 
 
 class _ScalarResult:
@@ -98,3 +98,11 @@ def test_reparse_uses_monotonic_revision_as_job_identity() -> None:
     assert "documents.parse_revision +" in sql_text
     status_values = next(value for value in params.values() if isinstance(value, list))
     assert status_values == [DocumentStatus.error, DocumentStatus.done]
+
+
+def test_legacy_dots_rows_are_normalized_without_backend_execution() -> None:
+    scan = Document(kind=DocumentKind.pdf_scan, parser_backend="dots_mocr")
+    text = Document(kind=DocumentKind.pdf_text, parser_backend="dots_mocr")
+
+    assert _parser_backend(scan) == "paddle_vl"
+    assert _parser_backend(text) == "mineru"

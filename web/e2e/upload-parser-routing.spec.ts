@@ -90,6 +90,7 @@ test('upload applies the selected parser to PDF and images but keeps native Offi
   await expect(officeInfo).toContainText('сохраняются абзацы, таблицы, ячейки и слайды')
 
   await page.getByRole('button', { name: 'Автоматически (по умолчанию)' }).click()
+  await expect(page.locator('body > div.z-50 > button')).toHaveCount(3)
   await page.getByRole('button', { name: 'PaddleOCR-VL 1.6', exact: true }).click()
   await page.getByRole('button', { name: 'Обработать' }).click()
 

@@ -31,11 +31,7 @@ case "$profile" in
     production_unit=vllm-visual-embedding.service; venv="$visual_dir/.venv"; gpu=2; numa=0
     args=(serve /root/models/Qwen3-VL-Embedding-8B --served-model-name qwen3-vl-embedding-8b --runner pooling --host 127.0.0.1 --port 18007 --gpu-memory-utilization 0.6 --max-model-len 16384 --dtype float16 --enforce-eager)
     ;;
-  dots-mocr)
-    production_unit=dots-mocr.service; venv="$visual_dir/.venv"; gpu=0; numa=0
-    args=(serve /root/models/DotsMOCR --served-model-name model --host 127.0.0.1 --port 18120 --trust-remote-code --gpu-memory-utilization 0.33 --max-model-len 24576 --chat-template-content-format string)
-    ;;
-  *) echo "usage: $0 {qwen35|hymt2|embedding|reranker|visual-embedding|dots-mocr}" >&2; exit 2 ;;
+  *) echo "usage: $0 {qwen35|hymt2|embedding|reranker|visual-embedding}" >&2; exit 2 ;;
 esac
 
 if systemctl is-active --quiet "$production_unit"; then

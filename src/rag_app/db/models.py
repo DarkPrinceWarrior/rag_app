@@ -96,7 +96,7 @@ class Document(Base):
     parse_force_ocr: Mapped[bool] = mapped_column(Boolean, default=False)
     ocr_lang: Mapped[str | None] = mapped_column(String(16), default=None)
     # Выбор парсера PDF (включая image-only сканы; null → settings.pdf_parser_backend).
-    # mineru | dots_mocr | paddle_vl. Переживает retry/reexport.
+    # mineru | paddle_vl; для Office — native_ooxml. Переживает retry/reexport.
     parser_backend: Mapped[str | None] = mapped_column(String(16), default=None)
     # Монотонная ревизия parse job: защищает от дублей и запоздавших задач ARQ.
     parse_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

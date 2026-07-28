@@ -32,7 +32,7 @@ export interface Document {
   has_view?: boolean // PDF-рендер OOXML готов целиком (оригинал И перевод)
   has_view_orig?: boolean // рендер оригинала готов (рано, после парсинга)
   has_view_ru?: boolean // рендер перевода готов (на экспорте)
-  parser_backend?: string | null // движок разбора: mineru | dots_mocr | paddle_vl | native_ooxml
+  parser_backend?: string | null // движок разбора: mineru | paddle_vl | native_ooxml
   source_lang?: string | null // язык-источник, определён автоматически (ru|en|zh|auto); цель всегда ru
   source_type?: string // file | web (ТЗ §4.7.2)
   project_object?: string | null // объект строительства (ТЗ §4.7.2/§4.7.3)

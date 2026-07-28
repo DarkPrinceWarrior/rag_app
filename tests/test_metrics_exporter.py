@@ -92,7 +92,6 @@ def test_prometheus_config_has_all_required_targets() -> None:
         "127.0.0.1:8006",
         "127.0.0.1:8007",
         "127.0.0.1:8118",
-        "127.0.0.1:8120",
         "127.0.0.1:30010",
     } == vllm_targets
 

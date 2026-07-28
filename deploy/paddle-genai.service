@@ -5,7 +5,7 @@
 # в 3.7 виснет без inference-движка — поэтому только через этот постоянный сервер.
 # Изолированный paddle-venv (vllm 0.10.2 — пин PaddleOCR genai-plugin, НЕ трогает
 # основной стек). Модель Apache-2.0, кэш /root/.paddlex/official_models/PaddleOCR-VL-1.6.
-# Память 0.35 (~14 ГБ) — GPU0 делят dots.mocr :8120 + whisperx + layout runner'а.
+# Память 0.35 (~14 ГБ) — консервативный лимит для whisperx и layout runner'а на GPU0.
 # ExecStartPre чинит баг prometheus_fastapi_instrumentator (route.path → 500), идемпотентно.
 [Unit]
 Description=PaddleOCR-VL genai vLLM server (GPU0, :8118)

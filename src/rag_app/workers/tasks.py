@@ -48,7 +48,6 @@ from rag_app.llm.visual import VisualEmbedder
 from rag_app.observability import log_translate_trace
 from rag_app.pipeline import ooxml
 from rag_app.pipeline.babeldoc import BabelDocUnavailableError, run_babeldoc, write_glossary_csv
-from rag_app.pipeline.dots import dots_to_segments, run_dots
 from rag_app.pipeline.export_docx import build_docx
 from rag_app.pipeline.office_render import render_to_pdf
 from rag_app.pipeline.paddle_vl import paddle_to_segments, run_paddle
@@ -213,8 +212,19 @@ async def _upload_segment_images(
 
 
 def _parser_backend(doc: Document) -> str:
-    """Выбранный движок парсинга pdf_text: на документе или дефолт из settings."""
-    return doc.parser_backend or settings.pdf_parser_backend
+    """Вернуть действующий PDF-парсер, нормализовав устаревшее значение."""
+    backend = doc.parser_backend or settings.pdf_parser_backend
+    if backend in {"mineru", "paddle_vl"}:
+        return backend
+
+    fallback = "paddle_vl" if doc.kind == DocumentKind.pdf_scan else "mineru"
+    logger.warning(
+        "document %s uses unsupported historical parser backend %r; falling back to %s",
+        doc.id,
+        backend,
+        fallback,
+    )
+    return fallback
 
 
 async def _vlm_segments(
@@ -224,10 +234,7 @@ async def _vlm_segments(
     *,
     timeout_s: int | None = None,
 ) -> list[SegmentDraft]:
-    """Парс PDF альтернативным VLM-движком (dots.mocr / PaddleOCR-VL) → SegmentDraft."""
-    if backend == "dots_mocr":
-        page_dir = await run_dots(pdf_path, out_dir)
-        return await asyncio.to_thread(dots_to_segments, page_dir, pdf_path)
+    """Разобрать PDF через PaddleOCR-VL и вернуть унифицированные сегменты."""
     if backend == "paddle_vl":
         await run_paddle(pdf_path, out_dir, timeout_s=timeout_s)
         page_sizes = await asyncio.to_thread(_pdf_page_sizes_from_path, pdf_path)
@@ -370,21 +377,20 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 backend = _parser_backend(doc)
                 quality_backend = backend
                 out_dir = tmp_path / "parser_out"
-                if not doc.parse_force_ocr and backend in ("dots_mocr", "paddle_vl"):
+                if not doc.parse_force_ocr and backend == "paddle_vl":
                     # Альтернативный VLM-движок должен получать и PDF с текстовым
                     # слоем, и image-only сканы. Раньше `has_text` молча отправлял
                     # любой скан обратно в MinerU, хотя в документе/аудите оставался
-                    # явно выбранный Paddle/dots backend.
+                    # явно выбранный Paddle backend.
                     # Вывод → SegmentDraft напрямую, без mineru content_list/geo.
                     kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan
                     drafts = await _vlm_segments(backend, local_file, out_dir)
                     raw_parser_drafts = list(drafts)
                     if settings.parser_quality_shadow_enabled or router_allowed:
                         native_text_by_page = await asyncio.to_thread(read_pdf_text_by_page, local_file)
-                    # PaddleOCR-VL вырезает рисунки в файлы (dots — нет) → грузим в
-                    # img_s3, чтобы они появились в текст-просмотре (как у MinerU)
-                    if backend == "paddle_vl":
-                        await _upload_segment_images(storage, doc_id, out_dir, drafts)
+                    # PaddleOCR-VL вырезает рисунки в файлы → грузим в img_s3,
+                    # чтобы они появились в текст-просмотре (как у MinerU).
+                    await _upload_segment_images(storage, doc_id, out_dir, drafts)
                 else:
                     quality_backend = "mineru"
                     if doc.parse_force_ocr:
@@ -655,7 +661,15 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 "s3_key_content_list": artifact_key,
                 "parse_quality": quality_payload,
             }
-            if ext in ("docx", "xlsx", "pptx"):
+            if (
+                ext == "pdf"
+                and doc.parser_backend is not None
+                and doc.parser_backend not in {"mineru", "paddle_vl"}
+            ):
+                # Лениво исправляем старые строки БД только после успешного
+                # переразбора; исходные сегменты и экспорты до этого не трогаем.
+                document_values["parser_backend"] = backend
+            elif ext in ("docx", "xlsx", "pptx"):
                 document_values["parser_backend"] = "native_ooxml"
             updated = await session.execute(
                 update(Document)

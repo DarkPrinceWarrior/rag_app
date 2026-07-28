@@ -321,10 +321,9 @@ class Settings(BaseSettings):
 
     # --- Выбор парсера pdf_text (на документе можно переопределить) ---
     # mineru → MinerU2.5-Pro (VLM) + добор из текстового слоя (дефолт, единственный
-    # с middle.json-геометрией для bbox/цитат); dots_mocr → rednote-hilab/dots.mocr
-    # (3B, чистые слитые таблицы); paddle_vl → PaddleOCR-VL 1.6 (0.9B). dots/paddle —
-    # альтернативные постоянные сервисы для сравнения на GPU0.
-    pdf_parser_backend: str = "mineru"  # mineru | dots_mocr | paddle_vl
+    # с middle.json-геометрией для bbox/цитат); paddle_vl → PaddleOCR-VL 1.6
+    # (0.9B), альтернативный постоянный сервис на GPU0.
+    pdf_parser_backend: Literal["mineru", "paddle_vl"] = "mineru"
     parser_quality_shadow_enabled: bool = False
     # Постраничная маршрутизация пока только scaffold: off не вычисляет решения,
     # shadow пишет обезличенные сигналы, canary в будущем ограничивается allowlist.
@@ -353,14 +352,6 @@ class Settings(BaseSettings):
     structured_model_max_tokens: int = 4096
     structured_job_lease_s: int = 240
     structured_job_max_attempts: int = 3
-    # dots.mocr: постоянный vLLM-сервис на GPU0 (deploy/dots-mocr.service) + CLI parser.py
-    dots_url: str = "http://127.0.0.1:8120"
-    dots_model_name: str = "model"
-    dots_repo: str = "/root/parser_trials/dots.mocr"
-    dots_venv_python: str = "/root/parser_trials/dots.mocr/.venv_client/bin/python"
-    dots_prompt: str = "prompt_layout_all_en"
-    dots_num_thread: int = 8
-    dots_timeout_s: int = 1800
     # PaddleOCR-VL-0.9B: VLM-инференс на ПОСТОЯННОМ genai vLLM-сервере (paddlex_
     # genai_server, GPU0:8118 — on-demand в 3.7 виснет без inference-движка);
     # layout-детекция локально на paddle_device. Изолированный paddle-venv

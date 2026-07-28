@@ -20,7 +20,6 @@ vLLM и CUDA-зависимости у них одинаковы, а отдел�
 | Qwen3-Embedding-8B | 4 | 18002 | конечные векторы, dim 4096 до MRL, recall@5; сохранить eager+fp16 | `vllm-embedding` |
 | Qwen3-Reranker-4B | 4 | 18003 | index-aware EN/RU/ZH/числовые пары с официальным ручным шаблоном, Gold ranking; все пары обязаны иметь gap ≥ 0,05 | `vllm-reranker` |
 | Qwen3-VL-Embedding-8B | 2 | 18007 | реальные страницы, отсутствие NaN, visual recall; сохранить eager+fp16 | `vllm-visual-embedding` |
-| dots.mocr | 0 | 18120 | закрытый parser-корпус и сложные таблицы | `dots-mocr` |
 | MinerU 3.4.4 | 5 | не меняется | контрольный parse после окна | отдельный vLLM 0.21, не обновлять |
 | PaddleOCR-VL 1.6 | 0 | не меняется | контрольный parse после окна | отдельный vLLM 0.10.2, не обновлять |
 
