@@ -184,7 +184,7 @@ SELECT count(*) FILTER (
            WHERE CAST(:last_id AS uuid) IS NOT NULL
              AND c.id <= CAST(:last_id AS uuid)
        )::bigint AS count_through_id,
-       max(c.id)::text AS max_eligible_id,
+       max(c.id::text) AS max_eligible_id,
        coalesce(bool_or(
            CAST(:last_id AS uuid) IS NOT NULL
            AND c.id = CAST(:last_id AS uuid)
@@ -264,7 +264,7 @@ SELECT count(*) FILTER (
            WHERE CAST(:last_id AS uuid) IS NOT NULL
              AND id <= CAST(:last_id AS uuid)
        )::bigint AS count_through_id,
-       max(id)::text AS max_eligible_id,
+       max(id::text) AS max_eligible_id,
        coalesce(bool_or(
            CAST(:last_id AS uuid) IS NOT NULL
            AND id = CAST(:last_id AS uuid)
