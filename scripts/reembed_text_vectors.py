@@ -153,7 +153,7 @@ SELECT c.id::text AS id, coalesce({source}, '') AS source_text
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
 WHERE d.status = 'done'
-  AND (:after_id IS NULL OR c.id > CAST(:after_id AS uuid))
+  AND (CAST(:after_id AS uuid) IS NULL OR c.id > CAST(:after_id AS uuid))
 ORDER BY c.id
 LIMIT :limit
 """
@@ -181,11 +181,13 @@ WHERE d.status = 'done'
 
 _CHUNK_RESUME = """
 SELECT count(*) FILTER (
-           WHERE :last_id IS NOT NULL AND c.id <= CAST(:last_id AS uuid)
+           WHERE CAST(:last_id AS uuid) IS NOT NULL
+             AND c.id <= CAST(:last_id AS uuid)
        )::bigint AS count_through_id,
        max(c.id)::text AS max_eligible_id,
        coalesce(bool_or(
-           :last_id IS NOT NULL AND c.id = CAST(:last_id AS uuid)
+           CAST(:last_id AS uuid) IS NOT NULL
+           AND c.id = CAST(:last_id AS uuid)
        ), false) AS cursor_exists
 FROM chunks c
 JOIN documents d ON d.id = c.document_id
@@ -237,7 +239,7 @@ WHERE {eligibility}
 SELECT id::text AS id, coalesce({source}, '') AS source_text
 FROM {table}
 WHERE {eligibility}
-  AND (:after_id IS NULL OR id > CAST(:after_id AS uuid))
+  AND (CAST(:after_id AS uuid) IS NULL OR id > CAST(:after_id AS uuid))
 ORDER BY id
 LIMIT :limit
 """,
@@ -259,11 +261,13 @@ WHERE {eligibility}
 """,
         resume_sql=f"""
 SELECT count(*) FILTER (
-           WHERE :last_id IS NOT NULL AND id <= CAST(:last_id AS uuid)
+           WHERE CAST(:last_id AS uuid) IS NOT NULL
+             AND id <= CAST(:last_id AS uuid)
        )::bigint AS count_through_id,
        max(id)::text AS max_eligible_id,
        coalesce(bool_or(
-           :last_id IS NOT NULL AND id = CAST(:last_id AS uuid)
+           CAST(:last_id AS uuid) IS NOT NULL
+           AND id = CAST(:last_id AS uuid)
        ), false) AS cursor_exists
 FROM {table}
 WHERE {eligibility}

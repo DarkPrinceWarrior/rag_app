@@ -23,6 +23,16 @@ sys.modules[_SPEC.name] = target
 _SPEC.loader.exec_module(target)
 
 
+def test_nullable_uuid_bind_parameters_are_typed_before_null_checks() -> None:
+    """asyncpg cannot infer ``$1`` from ``$1 IS NULL`` even if it is cast later."""
+
+    for item in target.TARGETS:
+        assert ":after_id IS NULL" not in item.fetch_sql
+        assert ":last_id IS NOT NULL" not in item.resume_sql
+        assert "CAST(:after_id AS uuid) IS NULL" in item.fetch_sql
+        assert "CAST(:last_id AS uuid) IS NOT NULL" in item.resume_sql
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
