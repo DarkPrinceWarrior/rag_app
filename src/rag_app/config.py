@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     embed_model: str = "qwen3-embedding-8b"
     embed_dim: int = 1024  # MRL-усечение выхода эмбеддера (нативный 8B = 4096)
     embed_batch_size: int = 32
+    # Формат входа зависит от семейства модели: Qwen3 использует инструкцию только
+    # для запросов, Nemotron-3 — обязательные query:/passage: префиксы.
+    embed_input_profile: Literal["qwen3", "nemotron3"] = "qwen3"
     # Серия Qwen3-Embedding instruction-aware: запрос идёт с инструкцией
     # («Instruct: …\nQuery: …»), документы — без; пустая строка отключает префикс
     # (так работал BGE-M3).

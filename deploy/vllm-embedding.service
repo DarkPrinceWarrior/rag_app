@@ -1,11 +1,11 @@
-# Эмбеддинги Qwen3-Embedding-8B (выход 4096 → MRL-усечение клиентом до 1024,
-# схема pgvector не меняется) — GPU4, порт 8002. Принят 2026-06-19 по retrieval-A/B
-# на реальной библиотеке (recall@5 0.975 vs 0.887 у 0.6B). КЛЮЧЕВОЕ: на Ampere
-# (A100) ОБЯЗАТЕЛЬНЫ --enforce-eager и --dtype float16. Профиль повторно
-# квалифицирован на immutable vLLM 0.24.0. Память 0.45 (~18 ГБ) — GPU4 делит с
-# direct reranker-4B.
+# Эмбеддинги Nemotron-3-Embed-8B-BF16 (выход 4096 → MRL-усечение клиентом до
+# 1024, схема pgvector не меняется) — GPU4, порт 8002. Принят 2026-07-28 по
+# парному RU retrieval-A/B на очищенном production-корпусе: recall@5
+# 0.9625 против 0.9125 у Qwen3-Embedding-8B, MRR@10 0.8907 против 0.8048.
+# На A100 квалифицирован vLLM 0.26.0, BF16 и eager; фактическая память
+# ~18.7 ГиБ, GPU4 по-прежнему делится с direct reranker-4B.
 [Unit]
-Description=vLLM Qwen3-Embedding-8B (GPU4, :8002)
+Description=vLLM Nemotron-3-Embed-8B-BF16 (GPU4, :8002)
 After=network-online.target
 Wants=network-online.target
 
@@ -15,18 +15,23 @@ Environment=CUDA_VISIBLE_DEVICES=4
 Environment=NCCL_P2P_DISABLE=1
 Environment=NCCL_IB_DISABLE=1
 Environment=CUDA_HOME=/usr/local/cuda
-Environment=PATH=/root/services/vllm-main-0.24.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=PATH=/root/services/vllm-0.26.0/.venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # GPU4 — NUMA node1
 ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 \
-    /root/services/vllm-main-0.24.0/.venv/bin/vllm serve /root/models/Qwen3-Embedding-8B \
-    --served-model-name qwen3-embedding-8b \
+    /root/services/vllm-0.26.0/.venv/bin/vllm serve /root/models/Nemotron-3-Embed-8B-BF16 \
+    --served-model-name nemotron-3-embed-8b \
     --runner pooling \
+    --convert embed \
     --host 127.0.0.1 \
     --port 8002 \
-    --gpu-memory-utilization 0.45 \
+    --gpu-memory-utilization 0.48 \
     --max-model-len 8192 \
+    --max-num-batched-tokens 8192 \
+    --max-num-seqs 8 \
     --enforce-eager \
-    --dtype float16
+    --dtype bfloat16 \
+    --seed 20260728
 Restart=always
 RestartSec=10
 TimeoutStartSec=600

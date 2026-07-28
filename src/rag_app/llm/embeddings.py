@@ -21,6 +21,8 @@ from rag_app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_EMBED_BODY_MAX_CHARS = 8000
+
 
 def _mrl(vec: list[float], dim: int) -> list[float]:
     """MRL-усечение вектора до dim + L2-нормировка. Текстовая Qwen3-Embedding
@@ -31,6 +33,42 @@ def _mrl(vec: list[float], dim: int) -> list[float]:
     return [x / n for x in v]
 
 
+def _embedding_body(text: str) -> str:
+    """Нормализовать и ограничить только пользовательскую часть входа."""
+
+    return text.strip()[:_EMBED_BODY_MAX_CHARS] or "."
+
+
+def _nemotron_input(text: str, kind: str) -> str:
+    """Добавить канонический Nemotron-префикс ровно один раз."""
+
+    marker = f"{kind}:"
+    raw = text.strip()
+    if raw.casefold().startswith(marker):
+        raw = raw[len(marker) :].lstrip()
+    body = _embedding_body(raw)
+    return f"{marker} {body}"
+
+
+def _document_input(text: str) -> str:
+    if settings.embed_input_profile == "nemotron3":
+        return _nemotron_input(text, "passage")
+    return _embedding_body(text)
+
+
+def _query_input(query: str) -> str:
+    if settings.embed_input_profile == "nemotron3":
+        return _nemotron_input(query, "query")
+    if settings.embed_query_instruction:
+        prefix = f"Instruct: {settings.embed_query_instruction}\nQuery: "
+        raw = query.strip()
+        if raw.startswith(prefix):
+            raw = raw[len(prefix) :]
+        body = _embedding_body(raw)
+        return f"{prefix}{body}"
+    return _embedding_body(query)
+
+
 class Embedder:
     def __init__(self) -> None:
         self.client = AsyncOpenAI(
@@ -38,21 +76,27 @@ class Embedder:
         )
 
     async def embed(self, texts: list[str], batch: int | None = None) -> list[list[float]]:
-        """Эмбеддинги ДОКУМЕНТОВ (без инструкции). Пустые строки → точка."""
+        """Эмбеддинги документов: raw для Qwen3, ``passage:`` для Nemotron-3.
+
+        Пустое тело заменяется точкой, пользовательская часть ограничивается до
+        добавления служебного префикса выбранного профиля.
+        """
         out: list[list[float]] = []
         batch = batch or settings.embed_batch_size
         for i in range(0, len(texts), batch):
-            chunk = [t.strip()[:8000] or "." for t in texts[i : i + batch]]
+            chunk = [_document_input(text) for text in texts[i : i + batch]]
             resp = await self.client.embeddings.create(model=settings.embed_model, input=chunk)
-            out.extend(_mrl(d.embedding, settings.embed_dim) for d in resp.data)
+            data = sorted(resp.data, key=lambda item: item.index)
+            out.extend(_mrl(item.embedding, settings.embed_dim) for item in data)
         return out
 
     async def embed_query(self, query: str) -> list[float]:
-        """Эмбеддинг ЗАПРОСА — с инструкцией (instruction-aware серии теряют
-        1–5% без неё; пустая настройка отключает префикс)."""
-        text = query.strip()[:8000] or "."
-        if settings.embed_query_instruction:
-            text = f"Instruct: {settings.embed_query_instruction}\nQuery: {text}"
+        """Эмбеддинг запроса в формате выбранного профиля.
+
+        Qwen3 получает настраиваемую инструкцию (пустая отключает её), Nemotron-3
+        — обязательный ``query:``. Тело ограничивается до добавления префикса.
+        """
+        text = _query_input(query)
         resp = await self.client.embeddings.create(model=settings.embed_model, input=[text])
         return _mrl(resp.data[0].embedding, settings.embed_dim)
 

@@ -31,6 +31,8 @@ def test_runtime_flags_are_declarative_and_non_secret() -> None:
         "RAG_TRANSLATION_ENTITY_GUARD_MODE=shadow",
         "RAG_TRANSLATION_MEMORY_MODE=enforce",
         "RAG_TRANSLATION_MEMORY_NEAREST_TOP_K=0",
+        "RAG_EMBED_MODEL=nemotron-3-embed-8b",
+        "RAG_EMBED_INPUT_PROFILE=nemotron3",
         "RAG_QUEUE_ROLLOUT_MODE=split",
     }
 
@@ -211,14 +213,17 @@ def test_vllm_candidate_profiles_cannot_target_parser_environments() -> None:
     assert "paddle)" not in runner
 
 
-def test_gpu4_profiles_use_pinned_runtime_and_direct_reranker() -> None:
+def test_gpu4_profiles_use_qualified_runtimes_and_direct_reranker() -> None:
     embedding = _read("deploy/vllm-embedding.service")
     reranker = _read("deploy/vllm-reranker.service")
     runner = _read("deploy/vllm/run_candidate.sh")
 
-    assert "/root/services/vllm-main-0.24.0/.venv/bin/vllm" in embedding
+    assert "/root/services/vllm-0.26.0/.venv/bin/vllm" in embedding
+    assert "/root/models/Nemotron-3-Embed-8B-BF16" in embedding
+    assert "--served-model-name nemotron-3-embed-8b" in embedding
     assert "--enforce-eager" in embedding
-    assert "--dtype float16" in embedding
+    assert "--dtype bfloat16" in embedding
+    assert "--convert embed" in embedding
     assert "/root/services/vllm-main-0.24.0/.venv/bin/uvicorn" in reranker
     assert "direct_qwen3_reranker_server:app" in reranker
     assert "DIRECT_RERANK_DTYPE=bfloat16" in reranker
