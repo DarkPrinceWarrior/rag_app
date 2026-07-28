@@ -74,7 +74,8 @@ open-weight модели, ни один байт документов не по�
 2. **Браузерное расширение (WXT, MV3)** — перевод выделения/страницы.
 3. **Бэкенд-платформа** — пайплайн: парсинг (MinerU/PaddleOCR-VL) → перевод
    (vLLM: Hunyuan-MT-7B / Hy-MT2) → реконструкция (reflow из DOCX / OOXML /
-   python-docx) → индексация (pgvector, BGE-M3) → adaptive agentic-RAG-чат.
+   python-docx) → индексация (pgvector, Nemotron-3-Embed-8B +
+   Qwen3-Reranker-4B) → adaptive agentic-RAG-чат.
 
 Ключевые компоненты и точки входа:
 - `src/rag_app/api/main.py` — FastAPI (REST + SSE; отдаёт React-SPA из `web/dist`).
@@ -103,25 +104,30 @@ EN/RU/ZH (§4.3); экстракция таблиц встроена в чат (
 выбор области чата — папка / набор документов (`ChatIn.document_ids`); строгие
 confirm-модалки во вьювере; фикс логаута (Keycloak end-session) и переполнения
 окна Qwen3.5 (16384). Детали — память `docragenslate-session-2026-06-24`.
-LLM-сервисы на a100 (раскладка на 2026-06-18, roadmap § 12.1 + журнал):
+LLM-сервисы на a100 (раскладка на 2026-07-28, roadmap § 12.1 + журнал):
 **Qwen3.5-35B-A3B GPU3 `:8006`** (RAG-чат + анализ + описание картинок/схем,
 мультимодальный — берёт image_url; GPTQ-Int4 no-eager; `--max-model-len 16384`
 + FP8 KV — поднят с 8192 на 2026-06-24, т.к. multi-hop-чат переполнял окно;
 **НЕ переводчик документов**);
 **Hy-MT2-7B GPU1 `:8005` — ВЕСЬ перевод** (документы `HyMTDocTranslator` +
 быстрый контур виджета; спец-MT, принят 2026-06-19 по COMET-A/B; bf16 — FP8 на A100
-даёт мусор; `doc_translate_backend=hymt2`, без Qwen-фолбэка); **Qwen3-Embedding-8B**
-GPU4 `:8002` (dim 1024 MRL, `--enforce-eager --dtype float16` обязательны на Ampere;
-recall@5 0.975 vs 0.887 у 0.6B на реальной библиотеке), Qwen3-Reranker-4B GPU4
-`:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5 `:30010` (дефолт) + постоянные
+даёт мусор; `doc_translate_backend=hymt2`, без Qwen-фолбэка);
+**Nemotron-3-Embed-8B-BF16** GPU4 `:8002` (vLLM 0.26.0; native dim 4096 →
+MRL 1024; профиль `nemotron3` добавляет `query:`/`passage:`; на парном QA v3
+80 вопросов R@1/R@5/MRR@10/nDCG@10 = `0.8375/0.9625/0.89065476/0.91698233`
+против `0.7250/0.9125/0.80480655/0.84048804` у Qwen3-Embedding-8B;
+Qwen-веса и прежняя unit/runtime-конфигурация сохранены для отката),
+Qwen3-Reranker-4B GPU4 `:8003`; парсинг pdf_text — MinerU2.5-Pro GPU5
+`:30010` (дефолт) + постоянные
 dots.mocr GPU0 `:8120` и PaddleOCR-VL 1.6 GPU0 `:8118` (альтернативы по
 `parser_backend`). На GPU2 совместно с приложением Alma активен визуальный
 контур: Qwen3-VL-Embedding-8B `:8007` + Qwen3-VL-Reranker-2B `:8009`;
 генеративный Qwen3-VL-8B `:8008` погашен, его роль выполняет мультимодальный
 Qwen3.5 на GPU3. Фактическая раскладка: GPU0 — dots/Paddle, GPU1 — Hy-MT2,
 GPU2 — visual embed/rerank, GPU3 — Qwen3.5, GPU4 — text embed/rerank, GPU5 —
-MinerU. Правило выбора моделей:
-**on-prem+коммерция → только Apache-2.0** (jina-v4/Nemotron — non-commercial, мимо).
+MinerU. По прямому решению владельца лицензия модели фиксируется в реестре, но
+не блокирует техническую квалификацию и выбор production-модели; решают
+качество, стабильность и вместимость на доступных A100.
 systemd-юниты из `deploy/`; история замен моделей — roadmap § 12.1.
 Инфраструктура: compose в корне (Postgres `:5433`, Redis, MinIO `:9000`,
 Keycloak `:8180`) + `deploy/langfuse/` (`:8200`) + `deploy/monitoring/`
