@@ -32,7 +32,7 @@ export interface Document {
   has_view?: boolean // PDF-рендер OOXML готов целиком (оригинал И перевод)
   has_view_orig?: boolean // рендер оригинала готов (рано, после парсинга)
   has_view_ru?: boolean // рендер перевода готов (на экспорте)
-  parser_backend?: string | null // движок парсинга pdf_text: mineru | dots_mocr | paddle_vl
+  parser_backend?: string | null // движок разбора: mineru | dots_mocr | paddle_vl | native_ooxml
   source_lang?: string | null // язык-источник, определён автоматически (ru|en|zh|auto); цель всегда ru
   source_type?: string // file | web (ТЗ §4.7.2)
   project_object?: string | null // объект строительства (ТЗ §4.7.2/§4.7.3)
@@ -88,6 +88,8 @@ export interface Segment {
   page_size?: number[] | null
   table_cells?: TableCell[][] | null
   table_cells_ru?: TableCell[][] | null
+  /** DOCX table dimensions [rows, columns], including empty cells. */
+  table_size?: number[] | null
   caption?: string | null
   caption_ru?: string | null
   image_url?: string | null
@@ -319,7 +321,7 @@ export const api = {
   async uploadDocument(file: File, parserBackend?: string): Promise<Document> {
     // Направление перевода не выбирается: язык-источник определяется
     // автоматически, цель всегда русский (ТЗ §4.3). parserBackend — движок
-    // парсинга pdf_text, выбирается на странице «Загрузка» (страница /upload).
+    // парсинга PDF; для Office-файлов параметр не передаётся.
     const fd = new FormData()
     fd.append('file', file)
     if (parserBackend) fd.append('parser_backend', parserBackend)

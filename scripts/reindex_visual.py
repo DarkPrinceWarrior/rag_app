@@ -38,7 +38,10 @@ async def main() -> None:
         )
     for doc in docs:
         await pool.enqueue_job(
-            "index_pages_visual", str(doc.id), _job_id=f"vindex:{doc.id}:{uuid.uuid4().hex[:8]}"
+            "index_pages_visual",
+            str(doc.id),
+            doc.parse_revision,
+            _job_id=f"vindex:{doc.id}:{doc.parse_revision}:{uuid.uuid4().hex[:8]}",
         )
         print(f"queued: {doc.filename} ({doc.id})")
     await engine.dispose()

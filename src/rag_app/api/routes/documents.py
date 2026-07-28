@@ -19,7 +19,7 @@ from rag_app.api.audit import audit
 from rag_app.api.auth import User, require_user
 from rag_app.api.schemas import DocumentOut
 from rag_app.config import settings
-from rag_app.db.models import Document, DocumentStatus, DocumentTranslation, Segment
+from rag_app.db.models import Document, DocumentKind, DocumentStatus, DocumentTranslation, Segment
 from rag_app.pipeline import ooxml
 from rag_app.rag.memory.rls import apply_scope_guc
 from rag_app.workers.recovery import (
@@ -85,8 +85,7 @@ async def _queue_reparse(
                     parse_quality=None,
                     parse_revision=Document.parse_revision + 1,
                     **changes,
-                )
-                .returning(Document.parse_revision)
+                ).returning(Document.parse_revision)
             )
         ).scalar_one_or_none()
         if revision is None:
@@ -138,6 +137,7 @@ def _render_pdf_preview_png(pdf_bytes: bytes) -> bytes:
     out = io.BytesIO()
     image.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
 
 # ТЗ §4.2: PDF (текст/скан), OOXML, изображения документов (JPG/PNG → OCR-ветка),
 # plain-текст (TXT). Изображения оборачиваются в 1-страничный PDF на загрузке.
@@ -243,11 +243,7 @@ async def list_documents(
                     continue
                 col = func.date(Document.created_at)
                 stmt = stmt.where(col >= d if op == ">=" else col <= d)
-        docs = (
-            (await session.execute(stmt.order_by(Document.created_at.desc()).limit(200)))
-            .scalars()
-            .all()
-        )
+        docs = (await session.execute(stmt.order_by(Document.created_at.desc()).limit(200))).scalars().all()
         reviews = dict(
             (
                 await session.execute(
@@ -289,9 +285,17 @@ async def describe_document(request: Request, doc_id: uuid.UUID) -> dict:
     doc = await _get_or_404(request, doc_id)
     if not settings.vl_enabled:
         raise HTTPException(409, "VL-описание выключено (vl_enabled=false)")
-    await request.app.state.arq.enqueue_job(
-        "describe_images", str(doc_id), _job_id=f"vl:{doc_id}:{uuid.uuid4().hex[:8]}"
+    job = await request.app.state.arq.enqueue_job(
+        "describe_images",
+        str(doc_id),
+        doc.parse_revision,
+        _job_id=f"vl:{doc_id}:{doc.parse_revision}",
     )
+    if job is None:
+        raise HTTPException(
+            409,
+            "VL-описание уже запущено или выполнено для текущей ревизии",
+        )
     await audit(request, "describe", "document", str(doc_id))
     return {"status": "queued", "kind": doc.kind}
 
@@ -301,10 +305,22 @@ class ReparseOcrIn(BaseModel):
     lang: str = "east_slavic"
 
 
+async def _require_pdf_reparse_target(request: Request, doc_id: uuid.UUID) -> None:
+    """Проверить доступ к документу и допустимость OCR/VLM-переразбора."""
+    doc = await _get_or_404(request, doc_id)
+    kind = doc.kind.value if hasattr(doc.kind, "value") else doc.kind
+    if kind not in (DocumentKind.pdf_text.value, DocumentKind.pdf_scan.value):
+        raise HTTPException(
+            409,
+            "смена OCR/VLM-парсера доступна только для PDF; Office-документы разбираются по структуре OOXML",
+        )
+
+
 @router.post("/{doc_id}/reparse-ocr")
 async def reparse_ocr(request: Request, doc_id: uuid.UUID, body: ReparseOcrIn) -> dict:
     """Переразбор через форс-OCR — восстановление PDF с битым ToUnicode-cmap
     текстового слоя (MinerU `-m ocr -l <lang>`); выбор сохраняется на документе."""
+    await _require_pdf_reparse_target(request, doc_id)
     await _queue_reparse(
         request,
         doc_id,
@@ -329,6 +345,7 @@ async def reparse(request: Request, doc_id: uuid.UUID, body: ReparseIn) -> dict:
     paddle_vl). Выбор сохраняется на документе и переживает retry/reexport."""
     if body.backend not in _PARSER_BACKENDS:
         raise HTTPException(422, f"неизвестный backend: {body.backend}")
+    await _require_pdf_reparse_target(request, doc_id)
     await _queue_reparse(
         request,
         doc_id,
@@ -446,6 +463,7 @@ async def document_preview(request: Request, doc_id: uuid.UUID) -> Response:
 
 # --- Доп. переводы документа (ТЗ §4.3): RU→EN / RU→ZH по запросу --------------
 
+
 class TranslationIn(BaseModel):
     target_lang: str  # en | ru | zh
 
@@ -480,9 +498,8 @@ async def create_translation(request: Request, doc_id: uuid.UUID, body: Translat
             row = DocumentTranslation(document_id=doc_id, target_lang=target, status="translating")
             db.add(row)
         else:
-            if (
-                row.status in RECOVERABLE_TRANSLATION_STATUSES
-                and (row.updated_at is None or row.updated_at >= stale_status_cutoff())
+            if row.status in RECOVERABLE_TRANSLATION_STATUSES and (
+                row.updated_at is None or row.updated_at >= stale_status_cutoff()
             ):
                 raise HTTPException(409, f"перевод уже выполняется (статус {row.status})")
             previous = {
@@ -541,11 +558,7 @@ async def list_translations(request: Request, doc_id: uuid.UUID) -> list[dict]:
     await _get_or_404(request, doc_id)
     async with request.app.state.sessionmaker() as db:
         rows = (
-            (
-                await db.execute(
-                    select(DocumentTranslation).where(DocumentTranslation.document_id == doc_id)
-                )
-            )
+            (await db.execute(select(DocumentTranslation).where(DocumentTranslation.document_id == doc_id)))
             .scalars()
             .all()
         )
@@ -587,7 +600,8 @@ async def download_translation(request: Request, doc_id: uuid.UUID, lang: str) -
     await audit(request, "download_translation", "document", str(doc_id), {"lang": lang})
     name = Path(key).name.encode("ascii", "ignore").decode() or f"translation.{lang}"
     return Response(
-        content=data, media_type=media,
+        content=data,
+        media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
 
@@ -808,12 +822,14 @@ async def document_slides(request: Request, doc_id: uuid.UUID) -> dict:
         raise HTTPException(400, "структура слайдов только для pptx")
     async with request.app.state.sessionmaker() as session:
         segs = (
-            await session.execute(
-                select(Segment).where(
-                    Segment.document_id == doc_id, Segment.translated_text.is_not(None)
+            (
+                await session.execute(
+                    select(Segment).where(Segment.document_id == doc_id, Segment.translated_text.is_not(None))
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     trans = {
         ooxml.location_key(s.meta["location"]): s.translated_text
         for s in segs

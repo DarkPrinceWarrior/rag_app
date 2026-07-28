@@ -61,6 +61,7 @@ function Viewer() {
   // подсветка цели при переходе по клику между панелями (кросс-навигация)
   const [leftHi, setLeftHi] = useState<Highlight | null>(null)
   const [rightHi, setRightHi] = useState<Highlight | null>(null)
+  const [crossSelectedSegId, setCrossSelectedSegId] = useState<string | null>(null)
   // правая панель PDF: вёрстка (переведённый PDF от BabelDOC) или текст (рендер)
   const [rightText, setRightText] = useState(false)
   // «текст»-режим (Figma 41:1317): выделение сегмента гасит остальные (для
@@ -70,6 +71,20 @@ function Viewer() {
   const [assistantOpen, setAssistantOpen] = useState(false)
   const sourceColRef = useRef<HTMLDivElement>(null)
   const translatedColRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function clearSelectedSegment(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      setSelectedSegId(null)
+      setCrossSelectedSegId(null)
+      setLeftHi(null)
+      setRightHi(null)
+      setActive(null)
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    }
+    window.addEventListener('keydown', clearSelectedSegment)
+    return () => window.removeEventListener('keydown', clearSelectedSegment)
+  }, [])
 
   const docQ = useQuery({ queryKey: ['document', id], queryFn: () => api.getDocument(id) })
   const segsQ = useQuery({ queryKey: ['segments', id], queryFn: () => api.getSegments(id) })
@@ -100,11 +115,17 @@ function Viewer() {
   const defKindRef = useRef<string | null>(null)
   useEffect(() => {
     const k = docQ.data?.kind
-    if (k && defKindRef.current !== k) {
-      defKindRef.current = k
+    const documentKindKey = k ? `${id}:${k}` : null
+    if (k && defKindRef.current !== documentKindKey) {
+      defKindRef.current = documentKindKey
       setRightText(k === 'pdf_text')
+      setSelectedSegId(null)
+      setCrossSelectedSegId(null)
+      setLeftHi(null)
+      setRightHi(null)
+      setActive(null)
     }
-  }, [docQ.data?.kind])
+  }, [docQ.data?.kind, id])
 
   // переход от цитаты/поиска: страница + bbox + подсветка в тексте
   useEffect(() => {
@@ -287,7 +308,7 @@ function Viewer() {
               // контентом (RU объёмнее — номер не совпадает), а не сбрасывать на 1
               const rp = rightPageForLeft(page)
               if (rp != null) setDocPage(rp)
-              setRightText(false)
+              changeViewerMode(false)
             }}
             title="Переведённый документ как PDF: заголовки, абзацы и таблицы с переносом (собран из перевода). Своя пагинация — для постраничного сравнения с оригиналом удобнее «текст»."
             className={'px-2.5 py-1 max-md:min-h-11 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
@@ -295,7 +316,7 @@ function Viewer() {
             документ (PDF)
           </button>
           <button
-            onClick={() => setRightText(true)}
+            onClick={() => changeViewerMode(true)}
             title="Интерактивный перевод постранично, синхронно с оригиналом: заголовки, абзацы, таблицы, сноски без переполнения. Рекомендуется."
             className={'px-2.5 py-1 max-md:min-h-11 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
@@ -309,7 +330,7 @@ function Viewer() {
             onClick={() => {
               const rp = rightPageForLeft(page)
               if (rp != null) setRuPage(rp)
-              setRightText(false)
+              changeViewerMode(false)
             }}
             title="Переведённый документ с сохранённой вёрсткой Word (LibreOffice-рендер). Точная раскладка оригинала."
               className={'px-2.5 py-1 max-md:min-h-11 ' + (!rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
@@ -317,7 +338,7 @@ function Viewer() {
             как в Microsoft
           </button>
           <button
-            onClick={() => setRightText(true)}
+            onClick={() => changeViewerMode(true)}
             title="Интерактивный перевод постранично, синхронно с оригиналом: абзацы, таблицы, картинки."
               className={'px-2.5 py-1 max-md:min-h-11 ' + (rightText ? 'bg-primary text-primary-foreground' : 'hover:bg-accent')}
           >
@@ -325,11 +346,11 @@ function Viewer() {
           </button>
         </div>
       )}
-      {(isPdfDoc || docQ.data?.kind === 'docx') && (
+      {isPdfDoc && (
         <select
           value={docQ.data?.parser_backend || 'mineru'}
           onChange={(e) => askReparseBackend(e.target.value)}
-          title="Движок парсинга: переразобрать документ выбранным парсером"
+          title="Движок парсинга PDF: переразобрать документ выбранным парсером"
           className="min-h-8 max-w-full rounded-md border bg-background px-2 py-1 text-xs max-md:min-h-11 max-md:flex-1"
         >
           <option value="mineru">парсер: MinerU+добор</option>
@@ -402,18 +423,49 @@ function Viewer() {
         : []
     })
   const crossToRight = (segId: string, setRight: (p: number) => void) => {
+    if (crossSelectedSegId === segId) {
+      clearCrossSelection()
+      return
+    }
     const s = segs.find((x) => x.id === segId)
     if (s?.loc_right && s.loc_right.bbox?.length === 4) {
+      setCrossSelectedSegId(segId)
+      setLeftHi(null)
       setRight(s.loc_right.page + 1)
       setRightHi({ page: s.loc_right.page + 1, bbox: s.loc_right.bbox, pageSize: s.loc_right.pagesize })
     }
   }
   const crossToLeft = (segId: string) => {
+    if (crossSelectedSegId === segId) {
+      clearCrossSelection()
+      return
+    }
     const s = segs.find((x) => x.id === segId)
     if (s?.loc_left && s.loc_left.bbox?.length === 4) {
+      setCrossSelectedSegId(segId)
+      setRightHi(null)
       setPage(s.loc_left.page + 1)
       setLeftHi({ page: s.loc_left.page + 1, bbox: s.loc_left.bbox, pageSize: s.loc_left.pagesize })
     }
+  }
+  function clearCrossSelection() {
+    setCrossSelectedSegId(null)
+    setLeftHi(null)
+    setRightHi(null)
+    setActive(null)
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  }
+  function clearAllSelection() {
+    setSelectedSegId(null)
+    clearCrossSelection()
+  }
+  function changeTextPage(nextPage: number) {
+    clearAllSelection()
+    setPage(nextPage)
+  }
+  function changeViewerMode(textMode: boolean) {
+    clearAllSelection()
+    setRightText(textMode)
   }
   // --- «текст»-режим (Figma 41:1317): выделение сегмента с обеих сторон сразу
   // (для сравнения/навигации); правка перевода — на отдельном экране сегмента. ---
@@ -449,13 +501,13 @@ function Viewer() {
         <div className="flex h-[calc(100vh-97px)] flex-col max-md:h-auto">
           {textMode && (
             <div className="flex items-center gap-2 border-b bg-card px-4 py-1.5 text-sm">
-              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => changeTextPage(page - 1)}>
                 ←
               </Button>
               <span className="text-muted-foreground">
                 стр. {page} / {maxPage}
               </span>
-              <Button variant="ghost" size="sm" disabled={page >= maxPage} onClick={() => setPage(page + 1)}>
+              <Button variant="ghost" size="sm" disabled={page >= maxPage} onClick={() => changeTextPage(page + 1)}>
                 →
               </Button>
             </div>
@@ -480,8 +532,13 @@ function Viewer() {
                   page={page}
                   fitWidth
                   highlight={leftHi || active}
-                  onPageChange={setPage}                  regions={hasTransPdf ? regionsFor('left', page) : undefined}
+                  onPageChange={(nextPage) => {
+                    clearCrossSelection()
+                    setPage(nextPage)
+                  }}
+                  regions={hasTransPdf ? regionsFor('left', page) : undefined}
                   onRegionClick={(sid) => crossToRight(sid, setDocPage)}
+                  onBackgroundClick={clearCrossSelection}
                 />
               )}
             </div>
@@ -516,9 +573,13 @@ function Viewer() {
                   fitWidth
                   page={docPage}
                   highlight={rightHi}
-                  onPageChange={setDocPage}
+                  onPageChange={(nextPage) => {
+                    clearCrossSelection()
+                    setDocPage(nextPage)
+                  }}
                   regions={regionsFor('right', docPage)}
                   onRegionClick={crossToLeft}
+                  onBackgroundClick={clearCrossSelection}
                 />
               )}
             </div>
@@ -563,13 +624,13 @@ function Viewer() {
         <div className="flex h-[calc(100vh-97px)] flex-col max-md:h-auto">
           {textMode && (
             <div className="flex items-center gap-2 border-b bg-card px-4 py-1.5 text-sm">
-              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+              <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => changeTextPage(page - 1)}>
                 ←
               </Button>
               <span className="text-muted-foreground">
                 стр. {page} / {maxPage}
               </span>
-              <Button variant="ghost" size="sm" disabled={page >= maxPage} onClick={() => setPage(page + 1)}>
+              <Button variant="ghost" size="sm" disabled={page >= maxPage} onClick={() => changeTextPage(page + 1)}>
                 →
               </Button>
             </div>
@@ -601,8 +662,13 @@ function Viewer() {
                   fitWidth
                   page={page}
                   highlight={leftHi}
-                  onPageChange={setPage}                  regions={regionsFor('left', page)}
+                  onPageChange={(nextPage) => {
+                    clearCrossSelection()
+                    setPage(nextPage)
+                  }}
+                  regions={regionsFor('left', page)}
                   onRegionClick={(sid) => crossToRight(sid, setRuPage)}
+                  onBackgroundClick={clearCrossSelection}
                 />
               )}
             </div>
@@ -625,9 +691,13 @@ function Viewer() {
                     fitWidth
                     page={ruPage}
                     highlight={rightHi}
-                    onPageChange={setRuPage}
+                    onPageChange={(nextPage) => {
+                      clearCrossSelection()
+                      setRuPage(nextPage)
+                    }}
                     regions={regionsFor('right', ruPage)}
                     onRegionClick={crossToLeft}
+                    onBackgroundClick={clearCrossSelection}
                   />
                 ) : (
                   <ViewPending text="Перевод «как в Microsoft» ещё готовится — выберите «текст» или подождите." />
@@ -1009,11 +1079,23 @@ export function DocRead({
         cells.push(segs[i])
         i++
       }
-      const maxR = Math.max(0, ...cells.map((c) => c.location?.r ?? 0))
-      const maxC = Math.max(0, ...cells.map((c) => c.location?.c ?? 0))
-      const grid: string[][] = Array.from({ length: maxR + 1 }, () => Array(maxC + 1).fill(''))
+      const rowIndexes = cells.flatMap((c) => (c.location?.r != null ? [c.location.r] : []))
+      // DOCX-таблица может продолжаться на другой физической странице. Полное
+      // table_size нужно для пустых колонок, но не для строк текущего pageSegs:
+      // иначе на каждой странице рисовалась вся таблица с пустыми строками до/после.
+      const minR = rowIndexes.length ? Math.min(...rowIndexes) : 0
+      const maxR = rowIndexes.length ? Math.max(...rowIndexes) : minR
+      const maxC = Math.max(
+        0,
+        ...cells.flatMap((c) => (c.location?.c != null ? [c.location.c] : [])),
+        ...cells.map((c) => (c.table_size?.[1] ?? 0) - 1),
+      )
+      const grid: string[][] = Array.from(
+        { length: maxR - minR + 1 },
+        () => Array(maxC + 1).fill(''),
+      )
       for (const c of cells) {
-        const r = c.location?.r ?? 0
+        const r = (c.location?.r ?? minR) - minR
         const col = c.location?.c ?? 0
         const txt = textOf(c, field) || textOf(c, field === 'source' ? 'translated' : 'source')
         grid[r][col] = grid[r][col] ? grid[r][col] + '\n' + txt : txt
@@ -1023,7 +1105,10 @@ export function DocRead({
           <table className="border-collapse text-sm">
             <tbody>
               {grid.map((row, ri) => (
-                <tr key={ri} className={ri === 0 ? 'bg-muted/50 font-medium' : ''}>
+                <tr
+                  key={ri}
+                  className={minR === 0 && ri === 0 ? 'bg-muted/50 font-medium' : ''}
+                >
                   {row.map((cell, ci) => (
                     <td key={ci} className="whitespace-pre-line border border-border px-2.5 py-1 align-top">
                       {cell}
@@ -1155,6 +1240,7 @@ export function DocRead({
             dimmed={selectedId != null && selectedId !== s.id}
             editing={editingId === s.id}
             pendingText={pendingText}
+            onSelect={() => onSelectSeg?.(s.id)}
             onStartEdit={() => onStartEdit?.(s)}
             onPendingTextChange={(t) => onPendingTextChange?.(t)}
           />
@@ -1183,6 +1269,7 @@ export function DocRead({
           dimmed={selectedId != null && selectedId !== s.id}
           editing={editingId === s.id}
           pendingText={pendingText}
+          onSelect={() => onSelectSeg?.(s.id)}
           onStartEdit={() => onStartEdit?.(s)}
           onPendingTextChange={(t) => onPendingTextChange?.(t)}
         />
@@ -1221,6 +1308,7 @@ function TranslatedBlock({
   dimmed = false,
   editing,
   pendingText,
+  onSelect,
   onStartEdit,
   onPendingTextChange,
 }: {
@@ -1232,6 +1320,7 @@ function TranslatedBlock({
   dimmed?: boolean
   editing: boolean
   pendingText: string
+  onSelect: () => void
   onStartEdit: () => void
   onPendingTextChange: (t: string) => void
 }) {
@@ -1250,6 +1339,7 @@ function TranslatedBlock({
       data-seg={s.id}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={onSelect}
       className={cn(
         'relative my-2 rounded-lg transition-opacity',
         dimmed && 'opacity-30',

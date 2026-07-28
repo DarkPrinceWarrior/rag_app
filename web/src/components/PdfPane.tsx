@@ -39,6 +39,7 @@ export function PdfPane({
   fitWidth = false,
   regions,
   onRegionClick,
+  onBackgroundClick,
 }: {
   docId: string
   page: number
@@ -52,6 +53,7 @@ export function PdfPane({
   fitWidth?: boolean // вписывать страницу по ширине панели (для широких слайдов)
   regions?: Region[] // кликабельные сегменты на текущей странице (кросс-навигация)
   onRegionClick?: (segId: string) => void
+  onBackgroundClick?: () => void // снять кросс-подсветку кликом вне сегмента
 }) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -171,7 +173,11 @@ export function PdfPane({
       {hideToolbar && (
         <div className="border-b bg-muted/40 px-3 py-1 text-xs font-medium text-muted-foreground">{label}</div>
       )}
-      <div ref={containerRef} className="flex-1 overflow-auto bg-muted/40 p-3">
+      <div
+        ref={containerRef}
+        onClick={onBackgroundClick}
+        className="flex-1 overflow-auto bg-muted/40 p-3"
+      >
         <div className="relative mx-auto w-fit shadow">
           <canvas ref={canvasRef} className="block" />
           {/* кликабельные регионы сегментов — кросс-навигация на другую панель */}
@@ -181,7 +187,10 @@ export function PdfPane({
                 <button
                   key={r.segId}
                   title="Найти этот фрагмент на другой стороне"
-                  onClick={() => onRegionClick?.(r.segId)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onRegionClick?.(r.segId)
+                  }}
                   className="absolute cursor-pointer rounded-sm transition-colors hover:bg-primary/20 hover:ring-1 hover:ring-primary"
                   style={{
                     left: (r.bbox[0] * vp.w) / r.pageSize[0],

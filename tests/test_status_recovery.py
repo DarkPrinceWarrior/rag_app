@@ -113,9 +113,7 @@ def test_parse_claim_reclaims_only_same_revision_and_parse_failures() -> None:
     assert "documents.status IN" in sql_text
     assert "documents.error LIKE" in sql_text
     reclaim_statuses = next(
-        value
-        for value in params.values()
-        if isinstance(value, list) and DocumentStatus.uploaded in value
+        value for value in params.values() if isinstance(value, list) and DocumentStatus.uploaded in value
     )
     assert reclaim_statuses == [DocumentStatus.uploaded, DocumentStatus.parsing]
     assert DocumentStatus.error in params.values()
@@ -213,9 +211,7 @@ def test_parse_cancelled_error_is_persisted(monkeypatch: pytest.MonkeyPatch) -> 
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
-            tasks.parse_document(
-                {"storage": _Storage(), "sessionmaker": lambda: _Session()}, str(doc_id), 4
-            )
+            tasks.parse_document({"storage": _Storage(), "sessionmaker": lambda: _Session()}, str(doc_id), 4)
         )
 
     assert status.await_args.args[2] == DocumentStatus.error
@@ -342,12 +338,83 @@ def test_parse_enqueue_refusal_sets_error_and_returns_503() -> None:
     assert DocumentStatus.error in params.values()
 
 
+def test_office_document_cannot_use_pdf_parser_backend() -> None:
+    doc_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=doc_id,
+        kind=DocumentKind.docx,
+        owner_sub="user-a",
+    )
+    arq = _Arq()
+    request = _request(lambda: _Session(document=document), arq)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            documents.reparse(
+                request,
+                doc_id,
+                documents.ReparseIn(backend="paddle_vl"),
+            )
+        )
+
+    assert caught.value.status_code == 409
+    assert "только для PDF" in caught.value.detail
+    assert arq.calls == []
+
+
+def test_office_document_cannot_force_pdf_ocr() -> None:
+    doc_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=doc_id,
+        kind=DocumentKind.pptx,
+        owner_sub="user-a",
+    )
+    arq = _Arq()
+    request = _request(lambda: _Session(document=document), arq)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            documents.reparse_ocr(
+                request,
+                doc_id,
+                documents.ReparseOcrIn(),
+            )
+        )
+
+    assert caught.value.status_code == 409
+    assert "Office-документы" in caught.value.detail
+    assert arq.calls == []
+
+
+def test_office_reparse_keeps_document_ownership_hidden() -> None:
+    doc_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=doc_id,
+        kind=DocumentKind.docx,
+        owner_sub="user-b",
+    )
+    arq = _Arq()
+    request = _request(lambda: _Session(document=document), arq)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            documents.reparse(
+                request,
+                doc_id,
+                documents.ReparseIn(backend="paddle_vl"),
+            )
+        )
+
+    assert caught.value.status_code == 404
+    assert arq.calls == []
+
+
 def test_parse_stage_enqueue_refusal_moves_document_to_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     doc_id = uuid.uuid4()
     status = AsyncMock()
-    session = _Session([_ScalarResult(), _ScalarResult(rowcount=1)])
+    session = _Session([_ScalarResult(), _ScalarResult(), _ScalarResult(rowcount=1)])
 
     async def claim(ctx: dict, value: uuid.UUID, revision: int | None) -> int:
         return 5
@@ -543,3 +610,55 @@ def test_delete_document_cleans_complete_export_prefix(monkeypatch: pytest.Monke
 
     assert (documents.settings.bucket_artifacts, doc_id) in storage.prefixes
     assert (documents.settings.bucket_exports, doc_id) in storage.prefixes
+
+
+def test_describe_document_enqueues_current_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc_id = uuid.uuid4()
+    doc = SimpleNamespace(
+        id=doc_id,
+        kind=DocumentKind.pdf_scan,
+        owner_sub="user-a",
+        parse_revision=7,
+    )
+    arq = _Arq(result=object())
+    request = _request(lambda: _Session(document=doc), arq)
+    monkeypatch.setattr(documents.settings, "vl_enabled", True)
+
+    result = asyncio.run(documents.describe_document(request, doc_id))
+
+    assert result == {"status": "queued", "kind": DocumentKind.pdf_scan}
+    assert arq.calls == [
+        (
+            ("describe_images", str(doc_id), 7),
+            {"_job_id": f"vl:{doc_id}:7"},
+        )
+    ]
+
+
+def test_describe_document_enqueue_refusal_returns_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc_id = uuid.uuid4()
+    doc = SimpleNamespace(
+        id=doc_id,
+        kind=DocumentKind.pdf_scan,
+        owner_sub="user-a",
+        parse_revision=7,
+    )
+    arq = _Arq(result=None)
+    request = _request(lambda: _Session(document=doc), arq)
+    monkeypatch.setattr(documents.settings, "vl_enabled", True)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(documents.describe_document(request, doc_id))
+
+    assert caught.value.status_code == 409
+    assert "уже запущено или выполнено" in caught.value.detail
+    assert arq.calls == [
+        (
+            ("describe_images", str(doc_id), 7),
+            {"_job_id": f"vl:{doc_id}:7"},
+        )
+    ]

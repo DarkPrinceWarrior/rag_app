@@ -93,7 +93,7 @@ class Document(Base):
     # на документе, чтобы переживать retry/reexport.
     parse_force_ocr: Mapped[bool] = mapped_column(Boolean, default=False)
     ocr_lang: Mapped[str | None] = mapped_column(String(16), default=None)
-    # Выбор парсера pdf_text на документе (null → settings.pdf_parser_backend).
+    # Выбор парсера PDF (включая image-only сканы; null → settings.pdf_parser_backend).
     # mineru | dots_mocr | paddle_vl. Переживает retry/reexport.
     parser_backend: Mapped[str | None] = mapped_column(String(16), default=None)
     # Монотонная ревизия parse job: защищает от дублей и запоздавших задач ARQ.
@@ -152,9 +152,7 @@ class Segment(Base):
     __tablename__ = "segments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     idx: Mapped[int] = mapped_column(Integer)  # порядок в документе
     page_idx: Mapped[int | None] = mapped_column(Integer, default=None)
     kind: Mapped[SegmentKind] = mapped_column(Enum(SegmentKind, name="segment_kind"))
@@ -177,12 +175,8 @@ class SegmentVersion(Base):
     __tablename__ = "segment_versions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    segment_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("segments.id", ondelete="CASCADE"), index=True
-    )
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    segment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("segments.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     old_text: Mapped[str | None] = mapped_column(Text, default=None)
     new_text: Mapped[str | None] = mapped_column(Text, default=None)
     editor_sub: Mapped[str | None] = mapped_column(String(64), default=None)
@@ -236,9 +230,7 @@ class TranslationMemory(Base):
     source_normalized: Mapped[str] = mapped_column(Text)
     source_hash: Mapped[str] = mapped_column(String(64))
     approved_translation: Mapped[str] = mapped_column(Text)
-    source_embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(EMBEDDING_DIM), default=None
-    )
+    source_embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), default=None)
     source_lang: Mapped[str] = mapped_column(String(8))
     target_lang: Mapped[str] = mapped_column(String(8))
     domain: Mapped[str] = mapped_column(String(128), default="technical")
@@ -281,9 +273,7 @@ class DocumentTranslation(Base):
     __table_args__ = (UniqueConstraint("document_id", "target_lang", name="uq_doc_translation"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     target_lang: Mapped[str] = mapped_column(String(8))  # en | ru | zh
     # translating | exporting | done | error (строка, не SQL-enum)
     status: Mapped[str] = mapped_column(String(16), default="translating")
@@ -337,13 +327,11 @@ class DocumentStructuredArtifact(Base):
             name="ck_structured_request_options_object",
         ),
         CheckConstraint(
-            "length(model_revision) > 0 AND length(protocol_version) > 0"
-            " AND length(source_key) > 0",
+            "length(model_revision) > 0 AND length(protocol_version) > 0 AND length(source_key) > 0",
             name="ck_structured_request_identity",
         ),
         CheckConstraint(
-            "attempt_count >= 0 AND max_attempts BETWEEN 1 AND 10"
-            " AND attempt_count <= max_attempts",
+            "attempt_count >= 0 AND max_attempts BETWEEN 1 AND 10 AND attempt_count <= max_attempts",
             name="ck_structured_attempt_bounds",
         ),
         CheckConstraint(
@@ -398,9 +386,7 @@ class DocumentStructuredArtifact(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     parse_revision: Mapped[int] = mapped_column(Integer)
     page_idx: Mapped[int] = mapped_column(Integer)
     artifact_type: Mapped[str] = mapped_column(String(16))
@@ -459,9 +445,7 @@ class Chunk(Base):
     __tablename__ = "chunks"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     idx: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(16), default="section")  # section | table
     heading_path: Mapped[str] = mapped_column(Text, default="")  # «4 → 4.3 → Таблица 2»
@@ -483,9 +467,7 @@ class PageEmbedding(Base):
     __table_args__ = (UniqueConstraint("document_id", "page_idx", name="uq_page_embeddings_doc_page"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     page_idx: Mapped[int] = mapped_column(Integer)
     emb: Mapped[list[float] | None] = mapped_column(Vector(4096), default=None)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
@@ -503,14 +485,10 @@ class ChatSession(Base):
     # Область из нескольких документов должна переживать перезагрузку браузера.
     # FK на элементы массива PostgreSQL не поддерживает; доступ к каждому id
     # проверяется до записи сессии в API.
-    document_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=None
-    )
+    document_ids: Mapped[list[uuid.UUID] | None] = mapped_column(ARRAY(UUID(as_uuid=True)), default=None)
     # Несколько папок можно комбинировать с отдельными документами. Папки
     # разворачиваются в актуальный набор документов на каждом ходе чата.
-    folder_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=None
-    )
+    folder_ids: Mapped[list[uuid.UUID] | None] = mapped_column(ARRAY(UUID(as_uuid=True)), default=None)
     # RBAC + субстрат памяти (Этап 0): обязательный OIDC sub владельца сессии
     # и папка библиотеки (project scope треда для слоя памяти, §15.0).
     owner_sub: Mapped[str] = mapped_column(String(64), index=True)
@@ -620,9 +598,7 @@ class MemoryItem(Base):
     kind: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
     structured: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
-    source_event_ids: Mapped[list[uuid.UUID]] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=list
-    )
+    source_event_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     source_document_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=None
     )
@@ -631,9 +607,7 @@ class MemoryItem(Base):
     sensitivity: Mapped[str] = mapped_column(Text, default="normal")
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-    supersedes: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("memory_items.id"), default=None
-    )
+    supersedes: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("memory_items.id"), default=None)
     status: Mapped[str] = mapped_column(Text, default="active")
     fingerprint: Mapped[str | None] = mapped_column(Text, default=None)
     memory_provider: Mapped[str] = mapped_column(Text, default="internal")
@@ -680,9 +654,7 @@ class MemoryCandidate(Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     thread_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     action: Mapped[str] = mapped_column(Text)
-    target_item_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("memory_items.id"), default=None
-    )
+    target_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("memory_items.id"), default=None)
     proposed: Mapped[dict[str, Any]] = mapped_column(JSONB)
     confidence: Mapped[float] = mapped_column(Float)
     rationale: Mapped[str | None] = mapped_column(Text, default=None)

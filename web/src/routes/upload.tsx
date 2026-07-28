@@ -12,10 +12,11 @@ export const Route = createFileRoute('/upload')({ component: UploadPage })
 // ТЗ §4.2 (совпадает с ALLOWED_EXTENSIONS на бэкенде, documents.py)
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.pptx', '.jpg', '.jpeg', '.png', '.txt']
 const ACCEPT = ALLOWED_EXTENSIONS.join(',')
+const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx'])
+const PARSER_INPUT_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png'])
 
-// Парсер выбирается сразу на загрузке (Figma 41:854/41:1029) — на одном
-// документе или на всех документах пачки сразу, вместо переразбора постфактум
-// из вьювера (тот же набор бэкендов, см. view.$id.tsx PARSER_NAMES).
+// OCR/VLM-парсер относится к PDF и изображениям (backend преобразует JPG/PNG
+// в одностраничный PDF). Office-файлы всегда разбираются напрямую по OOXML.
 const PARSER_OPTIONS = [
   { value: '', label: 'Автоматически (по умолчанию)' },
   { value: 'mineru', label: 'MinerU + добор' },
@@ -46,6 +47,8 @@ function UploadPage() {
   const [dragOver, setDragOver] = useState(false)
   const [rejected, setRejected] = useState<string[]>([])
   const [batchIds, setBatchIds] = useState<string[]>([])
+  const hasParserInput = files.some((file) => PARSER_INPUT_EXTENSIONS.has(fileExt(file.name)))
+  const hasOffice = files.some((file) => OFFICE_EXTENSIONS.has(fileExt(file.name)))
 
   const addFiles = useCallback((list: FileList | File[]) => {
     const incoming = Array.from(list)
@@ -60,7 +63,16 @@ function UploadPage() {
 
   const upload = useMutation({
     mutationFn: async () => {
-      const created = await Promise.all(files.map((f) => api.uploadDocument(f, parserBackend || undefined)))
+      const created = await Promise.all(
+        files.map((file) =>
+          api.uploadDocument(
+            file,
+            PARSER_INPUT_EXTENSIONS.has(fileExt(file.name))
+              ? parserBackend || undefined
+              : undefined,
+          ),
+        ),
+      )
       return created.map((d) => d.id)
     },
     onSuccess: (ids) => {
@@ -210,15 +222,41 @@ function UploadPage() {
             <h2 className="text-[23px] font-semibold leading-[1.3] text-[#222226]">Настройки</h2>
             <div>
               <p className="mb-1 text-[11.11px] font-medium text-[#c1c1c1]">
-                Парсер {files.length > 1 ? 'для всех документов' : 'документа'}
+                Парсер PDF и изображений
               </p>
-              <Select
-                value={parserBackend}
-                onChange={setParserBackend}
-                options={PARSER_OPTIONS}
-                className="w-full justify-between rounded-lg border-0 bg-[#f3f3f3] px-4 py-3 text-base font-medium text-[#424247] hover:bg-[#eeeeee]"
-              />
+              {files.length === 0 || hasParserInput ? (
+                <>
+                  <Select
+                    value={parserBackend}
+                    onChange={setParserBackend}
+                    options={PARSER_OPTIONS}
+                    className="w-full justify-between rounded-lg border-0 bg-[#f3f3f3] px-4 py-3 text-base font-medium text-[#424247] hover:bg-[#eeeeee]"
+                  />
+                  <p className="mt-2 text-xs leading-5 text-[#77777e]">
+                    Настройка применяется только к PDF, JPG и PNG.
+                  </p>
+                </>
+              ) : (
+                <div className="rounded-lg bg-[#f3f3f3] px-4 py-3 text-sm font-medium text-[#77777e]">
+                  В выбранном наборе нет PDF или изображений
+                </div>
+              )}
             </div>
+            {hasOffice && (
+              <div
+                data-testid="office-parser-info"
+                className="rounded-xl border border-[#dedee4] bg-white px-4 py-3.5"
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold text-[#222226]">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-[#4b4ce6]" />
+                  Встроенный OOXML-разбор
+                </div>
+                <p className="mt-2 text-xs leading-5 text-[#77777e]">
+                  Word, Excel и PowerPoint разбираются напрямую: сохраняются абзацы, таблицы,
+                  ячейки и слайды. OCR-парсер выбирать не нужно.
+                </p>
+              </div>
+            )}
           </div>
           <div className="flex flex-col items-center gap-2">
             <button

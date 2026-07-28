@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document as DocxDocument
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt, Twips
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
@@ -40,6 +42,7 @@ def location_key(location: dict[str, Any]) -> str:
 
 # ------------------------------------------------------------------ DOCX
 
+
 def _docx_set_paragraph_text(paragraph: Any, text: str) -> None:
     """Перевод в первый run, включая очистку текста внутри гиперссылок."""
     if not paragraph.runs:
@@ -55,6 +58,129 @@ def _docx_set_paragraph_text(paragraph: Any, text: str) -> None:
     for text_node in paragraph._p.xpath(".//w:t"):
         if text_node not in first_text_nodes:
             text_node.text = ""
+
+
+def _docx_table_grid_widths(table: Any) -> list[int]:
+    """Ширины gridCol в twip; пустой список для нестандартной/битой таблицы."""
+    result: list[int] = []
+    for column in table._tbl.xpath("./w:tblGrid/w:gridCol"):
+        raw = column.get(qn("w:w"))
+        try:
+            result.append(int(raw))
+        except (TypeError, ValueError):
+            return []
+    return result
+
+
+def _adapt_sparse_translated_table(
+    table: Any,
+    original_rows: list[list[str]],
+) -> bool:
+    """Точечно адаптировать таблицу с широкой пустой колонкой под более объёмный RU.
+
+    Реальный Annex выявил узкий, но воспроизводимый класс: ≥4 строк, одна широкая
+    колонка занимает ≥45% таблицы и полностью пуста во всех строках данных, а
+    перевод соседней содержательной колонки заметно длиннее оригинала. В
+    исходной сетке пустая Conclusion
+    занимала 68%, поэтому русский текст в Topics разрывал одну логическую строку
+    между страницами.
+
+    Для этого класса немного перераспределяем только существующую ширину
+    (содержательной колонке до 32%, пустой остаётся не менее 45%), убираем
+    исходные минимальные высоты строк, ставим 11 pt только содержательным
+    абзацам данных и запрещаем межстраничный разрыв строки. Остальные таблицы
+    остаются байт-в-байт по параметрам раскладки.
+    """
+    widths = _docx_table_grid_widths(table)
+    if len(widths) < 3 or len(original_rows) < 4 or any(len(row) != len(widths) for row in original_rows):
+        return False
+    # Для merged cells одна и та же w:tc покрывает несколько gridCol. Простая
+    # запись ширины отдельной колонки тогда перетирает суммарную ширину merge.
+    if table._tbl.xpath(".//w:gridSpan") or table._tbl.xpath(".//w:vMerge"):
+        return False
+    # Строки фиксированной высоты характерны для бланков и мест ручного
+    # заполнения. Их нельзя растягивать/сжимать эвристикой переноса текста.
+    if any(
+        height.get(qn("w:hRule")) == "exact"
+        for row in table.rows
+        for height in row._tr.xpath("./w:trPr/w:trHeight")
+    ):
+        return False
+    total_width = sum(widths)
+    if total_width <= 0:
+        return False
+
+    body_rows = original_rows[1:]
+    donor_candidates = [
+        ci
+        for ci, width in enumerate(widths)
+        if width / total_width >= 0.45 and not any(row[ci].strip() for row in body_rows)
+    ]
+    if not donor_candidates:
+        return False
+    donor = max(donor_candidates, key=widths.__getitem__)
+
+    target_candidates: list[tuple[int, int]] = []
+    for ci, width in enumerate(widths):
+        if ci == donor or width / total_width >= 0.32:
+            continue
+        translated_chars = sum(
+            len(row.cells[ci].text.strip()) for row in table.rows[1:] if ci < len(row.cells)
+        )
+        original_chars = sum(len(row[ci].strip()) for row in body_rows)
+        changed = any(
+            row.cells[ci].text.strip() != body_rows[ri][ci].strip() for ri, row in enumerate(table.rows[1:])
+        )
+        # Даже умеренное суммарное удлинение по нескольким строкам способно
+        # вытолкнуть строку на следующую страницу (реальный Annex: +14 / 182).
+        minimum_expansion = original_chars + max(8, original_chars // 20)
+        if changed and original_chars >= 20 and translated_chars >= minimum_expansion:
+            target_candidates.append((translated_chars, ci))
+    if not target_candidates:
+        return False
+    target = max(target_candidates)[1]
+
+    desired_target = round(total_width * 0.32)
+    minimum_donor = round(total_width * 0.45)
+    transfer = min(desired_target - widths[target], widths[donor] - minimum_donor)
+    if transfer <= 0:
+        return False
+    widths[target] += transfer
+    widths[donor] -= transfer
+
+    grid_columns = table._tbl.xpath("./w:tblGrid/w:gridCol")
+    for ci in (target, donor):
+        grid_columns[ci].set(qn("w:w"), str(widths[ci]))
+        seen_cells: set[int] = set()
+        for row in table.rows:
+            cell = row.cells[ci]
+            identity = id(cell._tc)
+            if identity in seen_cells:
+                continue
+            seen_cells.add(identity)
+            cell.width = Twips(widths[ci])
+
+    for row in table.rows:
+        tr_properties = row._tr.get_or_add_trPr()
+        for height in list(tr_properties.findall(qn("w:trHeight"))):
+            if height.get(qn("w:hRule")) == "atLeast":
+                tr_properties.remove(height)
+        if tr_properties.find(qn("w:cantSplit")) is None:
+            tr_properties.append(OxmlElement("w:cantSplit"))
+
+    for row in table.rows[1:]:
+        for paragraph in row.cells[target].paragraphs:
+            if not paragraph.text.strip():
+                continue
+            for run in paragraph.runs:
+                # Не увеличиваем шрифт документов, где он уже 11 pt или меньше;
+                # у Annex 12 pt наследуются от paragraph style, а не заданы run.
+                effective_size = run.font.size
+                if effective_size is None and paragraph.style is not None:
+                    effective_size = paragraph.style.font.size
+                if run.text and effective_size is not None and effective_size > Pt(11):
+                    run.font.size = Pt(11)
+    return True
 
 
 def _docx_paragraph_images(paragraph: Any, images_dir: Path, drafts: list[SegmentDraft]) -> None:
@@ -85,7 +211,13 @@ def extract_docx(path: Path, images_dir: Path | None = None) -> list[SegmentDraf
     doc = DocxDocument(str(path))
     drafts: list[SegmentDraft] = []
 
-    def add(text: str, location: dict[str, Any], style_name: str) -> None:
+    def add(
+        text: str,
+        location: dict[str, Any],
+        style_name: str,
+        *,
+        table_size: list[int] | None = None,
+    ) -> None:
         text = text.strip()
         if not text:
             return
@@ -97,13 +229,19 @@ def extract_docx(path: Path, images_dir: Path | None = None) -> list[SegmentDraf
                 level = int(style_name.split()[-1])
             except ValueError:
                 level = 1
+        meta: dict[str, Any] = {"location": location}
+        if table_size is not None:
+            # Пустые ячейки не становятся переводимыми сегментами, поэтому без
+            # размера таблицы viewer вычислял ширину только по непустым колонкам
+            # и полностью терял, например, пустую колонку Conclusion.
+            meta["table_size"] = table_size
         drafts.append(
             SegmentDraft(
                 idx=len(drafts),
                 kind=kind,
                 source_text=text,
                 heading_level=level,
-                meta={"location": location},
+                meta=meta,
             )
         )
 
@@ -121,16 +259,26 @@ def extract_docx(path: Path, images_dir: Path | None = None) -> list[SegmentDraf
             p_idx += 1
         elif child.tag == qn("w:tbl"):
             table = Table(child, doc)
+            table_size = [
+                len(table.rows),
+                max((len(row.cells) for row in table.rows), default=0),
+            ]
             for ri, row in enumerate(table.rows):
                 for ci, cell in enumerate(row.cells):
                     for pi, cp in enumerate(cell.paragraphs):
-                        add(cp.text, {"t": t_idx, "r": ri, "c": ci, "p": pi}, "")
+                        add(
+                            cp.text,
+                            {"t": t_idx, "r": ri, "c": ci, "p": pi},
+                            "",
+                            table_size=table_size,
+                        )
             t_idx += 1
     return drafts
 
 
 def inject_docx(src: Path, dst: Path, translations: dict[str, str]) -> int:
     doc = DocxDocument(str(src))
+    original_table_rows = [[[cell.text for cell in row.cells] for row in table.rows] for table in doc.tables]
     applied = 0
 
     def apply(paragraph: Any, location: dict[str, Any]) -> None:
@@ -147,6 +295,11 @@ def inject_docx(src: Path, dst: Path, translations: dict[str, str]) -> int:
             for ci, cell in enumerate(row.cells):
                 for pi, p in enumerate(cell.paragraphs):
                     apply(p, {"t": ti, "r": ri, "c": ci, "p": pi})
+        if _adapt_sparse_translated_table(table, original_table_rows[ti]):
+            logger.info(
+                "DOCX table %d: адаптирована широкая пустая колонка для перевода",
+                ti,
+            )
     doc.save(str(dst))
     return applied
 

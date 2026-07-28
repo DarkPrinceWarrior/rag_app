@@ -41,6 +41,9 @@ class SegmentOut(BaseModel):
     # table_cells — оригинал, table_cells_ru — перевод по позиции ячейки
     table_cells: list[list[dict]] | None = None
     table_cells_ru: list[list[dict]] | None = None
+    # DOCX: полный размер таблицы, включая полностью пустые строки/колонки,
+    # которые не представлены отдельными переводимыми сегментами.
+    table_size: list[int] | None = None
     caption: str | None = None
     caption_ru: str | None = None
     # URL картинки сегмента-рисунка (извлечена из оригинала) — для MD-просмотра
@@ -61,6 +64,7 @@ class SegmentOut(BaseModel):
         out.page_size = meta.get("page_size_pt")
         out.table_cells = meta.get("table_cells")
         out.table_cells_ru = meta.get("table_cells_ru")
+        out.table_size = meta.get("table_size")
         out.caption = meta.get("caption")
         out.caption_ru = meta.get("caption_ru")
         out.location = meta.get("location")
@@ -98,10 +102,7 @@ async def list_segments(
         segments = (
             (
                 await session.execute(
-                    select(Segment)
-                    .where(Segment.document_id == doc_id)
-                    .order_by(Segment.idx)
-                    .limit(limit)
+                    select(Segment).where(Segment.document_id == doc_id).order_by(Segment.idx).limit(limit)
                 )
             )
             .scalars()
@@ -176,7 +177,10 @@ async def patch_segment(request: Request, segment_id: uuid.UUID, body: SegmentPa
         await session.commit()
         await session.refresh(seg)
     await audit(
-        request, "segment_edit", "segment", str(segment_id),
+        request,
+        "segment_edit",
+        "segment",
+        str(segment_id),
         {
             "document_id": str(seg.document_id),
             "changed": changed,

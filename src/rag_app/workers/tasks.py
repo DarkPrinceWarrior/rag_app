@@ -139,9 +139,7 @@ async def _claim_parse(ctx: dict, doc_id: uuid.UUID, parse_revision: int | None)
             )
         claimed = (
             await session.execute(
-                stmt.values(status=DocumentStatus.parsing, error=None).returning(
-                    Document.parse_revision
-                )
+                stmt.values(status=DocumentStatus.parsing, error=None).returning(Document.parse_revision)
             )
         ).scalar_one_or_none()
         await session.commit()
@@ -210,6 +208,7 @@ async def _upload_segment_images(
 
 
 # ---------------------------------------------------------------- parse
+
 
 def _parser_backend(doc: Document) -> str:
     """Выбранный движок парсинга pdf_text: на документе или дефолт из settings."""
@@ -362,16 +361,17 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 backend = _parser_backend(doc)
                 quality_backend = backend
                 out_dir = tmp_path / "parser_out"
-                if not doc.parse_force_ocr and has_text and backend in ("dots_mocr", "paddle_vl"):
-                    # альтернативный VLM-движок (сравнение парсеров): свой формат
-                    # вывода → SegmentDraft напрямую, без mineru content_list/geo
-                    kind = DocumentKind.pdf_text
+                if not doc.parse_force_ocr and backend in ("dots_mocr", "paddle_vl"):
+                    # Альтернативный VLM-движок должен получать и PDF с текстовым
+                    # слоем, и image-only сканы. Раньше `has_text` молча отправлял
+                    # любой скан обратно в MinerU, хотя в документе/аудите оставался
+                    # явно выбранный Paddle/dots backend.
+                    # Вывод → SegmentDraft напрямую, без mineru content_list/geo.
+                    kind = DocumentKind.pdf_text if has_text else DocumentKind.pdf_scan
                     drafts = await _vlm_segments(backend, local_file, out_dir)
                     raw_parser_drafts = list(drafts)
                     if settings.parser_quality_shadow_enabled or router_allowed:
-                        native_text_by_page = await asyncio.to_thread(
-                            read_pdf_text_by_page, local_file
-                        )
+                        native_text_by_page = await asyncio.to_thread(read_pdf_text_by_page, local_file)
                     # PaddleOCR-VL вырезает рисунки в файлы (dots — нет) → грузим в
                     # img_s3, чтобы они появились в текст-просмотре (как у MinerU)
                     if backend == "paddle_vl":
@@ -395,14 +395,33 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                         content_list_path = await run_mineru(local_file, out_dir)
                     items = load_content_list(content_list_path)
                     drafts = content_list_to_segments(items)
+                    if kind == DocumentKind.pdf_scan and not drafts and not doc.parse_force_ocr:
+                        # `auto`/VLM может вернуть валидный, но пустой content_list
+                        # для image-only PDF. Один раз повторяем тем же проверенным
+                        # контуром, который использует ручное «Переразобрать (OCR)».
+                        # Это не даёт обычной загрузке скана завершиться пустым
+                        # документом, хотя принудительный OCR способен его прочитать.
+                        logger.warning(
+                            "parse %s: MinerU вернул пустой скан — повтор с force OCR",
+                            doc_id,
+                        )
+                        out_dir = tmp_path / "parser_ocr_fallback"
+                        content_list_path = await run_mineru(
+                            local_file,
+                            out_dir,
+                            backend=settings.mineru_force_ocr_backend,
+                            method="ocr",
+                            lang=doc.ocr_lang,
+                        )
+                        items = load_content_list(content_list_path)
+                        drafts = content_list_to_segments(items)
+                        quality_backend = "mineru_ocr_fallback"
                     raw_parser_drafts = list(drafts)
                     # pdf_text: VLM местами роняет/прореживает целые страницы —
                     # достраиваем их абзацами из текстового слоя (истина для PDF
                     # с текстом), дедуп против VLM. Сканам слой не поможет (no-op).
                     if kind == DocumentKind.pdf_text:
-                        native_text_by_page = await asyncio.to_thread(
-                            read_pdf_text_by_page, local_file
-                        )
+                        native_text_by_page = await asyncio.to_thread(read_pdf_text_by_page, local_file)
                         drafts, backfilled_pages = await asyncio.to_thread(
                             backfill_text_layer,
                             local_file,
@@ -415,6 +434,12 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                                 doc_id,
                                 backfilled_pages,
                             )
+                    if not drafts:
+                        raise RuntimeError(
+                            "OCR-парсер не извлёк ни одного текстового или структурного блока"
+                            if kind == DocumentKind.pdf_scan
+                            else "парсер не извлёк ни одного блока"
+                        )
                     # геометрия в пунктах из middle.json — для оверлея сканов и
                     # подсветки цитат (этап 3); content_list-bbox в другом масштабе
                     geo = load_block_geometry(content_list_path)
@@ -445,38 +470,17 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                     await _upload_segment_images(storage, doc_id, content_list_path.parent, drafts)
             elif ext in ("docx", "xlsx", "pptx"):
                 kind = DocumentKind(ext)
-                backend = _parser_backend(doc)
-                if (
-                    ext == "docx"
-                    and not doc.parse_force_ocr
-                    and backend in ("dots_mocr", "paddle_vl")
-                    and settings.office_render_enabled
-                ):
-                    # DOCX через VLM-движок (сравнение парсеров): рендерим в PDF
-                    # (LibreOffice) и парсим его — «текст» покажет VLM-сегменты,
-                    # «как в Microsoft» рендерится отдельным job'ом ниже. Round-trip
-                    # перевода обратно в .docx для этого пути недоступен (нет
-                    # location-ключей) — это режим сравнения, не продакшен-экспорт.
-                    rendered = await render_to_pdf(
-                        local_file, tmp_path, settings.office_render_timeout_s
-                    )
-                    rpdf = tmp_path / "rendered.pdf"
-                    rpdf.write_bytes(rendered)
-                    out_dir = tmp_path / "parser_out"
-                    drafts = await _vlm_segments(backend, rpdf, out_dir)
-                    if backend == "paddle_vl":
-                        await _upload_segment_images(storage, doc_id, out_dir, drafts)
-                    n_pages, _ = await asyncio.to_thread(pdf_info, rpdf)
-                else:
-                    # DOCX: встроенные картинки извлекаем в tmp и грузим в MinIO
-                    # (для MD-просмотра); xlsx/pptx картинок-сегментов не дают
-                    img_dir = tmp_path / "ooxml_img"
-                    img_dir.mkdir(exist_ok=True)
-                    drafts = await asyncio.to_thread(ooxml.extract, ext, local_file, img_dir)
-                    if ext == "docx":
-                        await _upload_segment_images(storage, doc_id, img_dir, drafts)
-                    page_indices = [d.page_idx for d in drafts if d.page_idx is not None]
-                    n_pages = max(page_indices) + 1 if ext == "pptx" and page_indices else None
+                # Office всегда разбираем нативно по OOXML location. VLM-разбор
+                # DOCX через промежуточный PDF не имеет адресов {t,r,c,p}: в
+                # production он показывал текст, но экспорт применял 0 переводов
+                # и всё равно завершался `done`. VLM остаётся только для PDF.
+                img_dir = tmp_path / "ooxml_img"
+                img_dir.mkdir(exist_ok=True)
+                drafts = await asyncio.to_thread(ooxml.extract, ext, local_file, img_dir)
+                if ext == "docx":
+                    await _upload_segment_images(storage, doc_id, img_dir, drafts)
+                page_indices = [d.page_idx for d in drafts if d.page_idx is not None]
+                n_pages = max(page_indices) + 1 if ext == "pptx" and page_indices else None
             elif ext == "txt":
                 # plain-текст (ТЗ §4.2): абзацы (разделённые пустой строкой) → сегменты
                 kind = DocumentKind.text
@@ -528,8 +532,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 )
                 fallback_summary: dict[str, Any] | None = None
                 fallback_attempts = sum(
-                    decision.role == RouteRole.parser_fallback
-                    for decision in routing_plan.selected
+                    decision.role == RouteRole.parser_fallback for decision in routing_plan.selected
                 )
                 if page_fallback_allowed(
                     enabled=settings.parser_page_fallback_enabled,
@@ -578,8 +581,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 if fallback_summary is not None:
                     quality_payload["page_fallback"] = fallback_summary
                 logger.info(
-                    "page_routing_shadow doc=%s mode=%s eligible=%s selected=%s "
-                    "types=%s roles=%s",
+                    "page_routing_shadow doc=%s mode=%s eligible=%s selected=%s types=%s roles=%s",
                     doc_id,
                     settings.parser_page_router_mode,
                     routing_summary["eligible_page_count"],
@@ -604,17 +606,21 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
             )
 
         if not drafts:
-            # скан без распознаваемого текста (OCR дал мусор и его отфильтровали,
-            # либо страница — чистый рисунок): не валим документ — кладём
-            # плейсхолдер-картинку, describe_images (VL) обогатит его описанием.
-            if kind == DocumentKind.pdf_scan:
-                drafts = [SegmentDraft(0, SegmentKind.image, "", 0)]
-                logger.info("parse %s: скан без текста — плейсхолдер-картинка (ждём VL)", doc_id)
-            else:
-                raise RuntimeError("парсер не извлёк ни одного блока")
+            # Пустой placeholder раньше переводился в пустую строку, был невидим
+            # во viewer и всё равно переводил документ в `done`. Сохранять такой
+            # разбор нельзя: текущие хорошие сегменты должны остаться нетронутыми,
+            # а пользователь должен увидеть явную ошибку OCR.
+            raise RuntimeError(
+                "OCR-парсер не извлёк ни одного текстового или структурного блока"
+                if kind == DocumentKind.pdf_scan
+                else "парсер не извлёк ни одного блока"
+            )
 
         async with ctx["sessionmaker"]() as session:
             await session.execute(delete(Segment).where(Segment.document_id == doc_id))
+            # Новая ревизия сегментов и старый RAG-индекс не должны сосуществовать:
+            # удаляем chunks атомарно с заменой сегментов, а не ждём отдельный job.
+            await session.execute(delete(Chunk).where(Chunk.document_id == doc_id))
             session.add_all(
                 Segment(
                     document_id=doc_id,
@@ -634,9 +640,14 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
                 "page_count": n_pages,
                 "segment_count": len(drafts),
                 "translated_count": 0,
+                "chunk_count": 0,
+                "indexed_at": None,
+                "index_error": None,
                 "s3_key_content_list": artifact_key,
                 "parse_quality": quality_payload,
             }
+            if ext in ("docx", "xlsx", "pptx"):
+                document_values["parser_backend"] = "native_ooxml"
             updated = await session.execute(
                 update(Document)
                 .where(
@@ -693,6 +704,7 @@ async def parse_document(ctx: dict, doc_id_str: str, parse_revision: int | None 
 
 
 # ---------------------------------------------------------------- translate
+
 
 async def _translate_validated(
     translator: Translator, text: str, context: SegmentContext
@@ -815,14 +827,8 @@ def _context_with_memory(
     match = memory_matches.get(text) if memory_matches else None
     if match is None:
         return context
-    exact = (
-        (str(match.exact.entry_id), match.exact.translation)
-        if match.exact is not None
-        else None
-    )
-    examples = [
-        (item.source_text, item.translation, item.score) for item in match.nearest
-    ]
+    exact = (str(match.exact.entry_id), match.exact.translation) if match.exact is not None else None
+    examples = [(item.source_text, item.translation, item.score) for item in match.nearest]
     return replace(
         context,
         translation_memory_exact=exact,
@@ -840,10 +846,7 @@ def _translation_unit_texts(seg: Segment) -> list[str]:
         values.append(caption)
     values.extend(cell for row in (meta.get("table_rows") or []) for cell in row if cell)
     values.extend(
-        cell.get("text", "")
-        for row in (meta.get("table_cells") or [])
-        for cell in row
-        if cell.get("text")
+        cell.get("text", "") for row in (meta.get("table_cells") or []) for cell in row if cell.get("text")
     )
     return list(dict.fromkeys(values))
 
@@ -898,18 +901,10 @@ async def _translate_segment(
                 if vr.translation_memory is not None:
                     memory_aggregate["observations"] += 1
                     origin = vr.translation_memory["origin"]
-                    memory_aggregate["origins"][origin] = (
-                        memory_aggregate["origins"].get(origin, 0) + 1
-                    )
-                    memory_aggregate["exact_candidates"] += int(
-                        vr.translation_memory["exact_candidate"]
-                    )
-                    memory_aggregate["exact_rejected"] += int(
-                        vr.translation_memory["exact_rejected"]
-                    )
-                    memory_aggregate["nearest_candidates"] += vr.translation_memory[
-                        "nearest_candidates"
-                    ]
+                    memory_aggregate["origins"][origin] = memory_aggregate["origins"].get(origin, 0) + 1
+                    memory_aggregate["exact_candidates"] += int(vr.translation_memory["exact_candidate"])
+                    memory_aggregate["exact_rejected"] += int(vr.translation_memory["exact_rejected"])
+                    memory_aggregate["nearest_candidates"] += vr.translation_memory["nearest_candidates"]
                 if not vr.ok and loc is not None:
                     failures.append({**loc, **vr.as_dict()})
             return cache[text]
@@ -947,9 +942,7 @@ async def _translate_segment(
         if guard_aggregate["observations"]:
             protected_total = guard_aggregate["protected_total"]
             guard_aggregate["unconfirmed_rate"] = (
-                guard_aggregate["unconfirmed_total"] / protected_total
-                if protected_total
-                else 0.0
+                guard_aggregate["unconfirmed_total"] / protected_total if protected_total else 0.0
             )
             validation["entity_guard"] = guard_aggregate
         if memory_aggregate["observations"]:
@@ -974,9 +967,7 @@ async def _translate_segment(
     }
 
 
-async def translate_document(
-    ctx: dict, doc_id_str: str, parse_revision: int | None = None
-) -> str:
+async def translate_document(ctx: dict, doc_id_str: str, parse_revision: int | None = None) -> str:
     doc_id = uuid.UUID(doc_id_str)
     translator: Translator = ctx["translator"]
     t_task = time.monotonic()
@@ -1043,8 +1034,11 @@ async def translate_document(
             prev_text = None
             continue
         contexts[seg.id] = SegmentContext(
-            heading=cur_heading, prev_text=prev_text, glossary=terms,
-            source_lang=src_lang, target_lang=tgt_lang,
+            heading=cur_heading,
+            prev_text=prev_text,
+            glossary=terms,
+            source_lang=src_lang,
+            target_lang=tgt_lang,
         )
         if seg.kind == SegmentKind.paragraph:
             prev_text = seg.source_text
@@ -1056,9 +1050,7 @@ async def translate_document(
         memory_texts = list(
             dict.fromkeys(text for seg in todo for text in _translation_unit_texts(seg) if text.strip())
         )
-        memory_matches = await TranslationMemoryService(
-            ctx["sessionmaker"], ctx["embedder"]
-        ).lookup_batch(
+        memory_matches = await TranslationMemoryService(ctx["sessionmaker"], ctx["embedder"]).lookup_batch(
             memory_texts,
             source_lang=src_lang,
             target_lang=tgt_lang,
@@ -1076,9 +1068,7 @@ async def translate_document(
     async def work(seg: Segment) -> tuple[uuid.UUID, dict[str, Any]] | None:
         async with sem:
             try:
-                return seg.id, await _translate_segment(
-                    translator, seg, contexts[seg.id], memory_matches
-                )
+                return seg.id, await _translate_segment(translator, seg, contexts[seg.id], memory_matches)
             except Exception as exc:
                 failures.append(f"сегмент {seg.idx}: {exc}")
                 logger.error("translate %s seg %d: %s", doc_id, seg.idx, exc)
@@ -1158,6 +1148,7 @@ async def translate_document(
 
 # ------------------------------------------- translate-to (доп. язык, ТЗ §4.3)
 
+
 async def _set_translation_status(
     ctx: dict, doc_id: uuid.UUID, target_lang: str, status: str, **fields: Any
 ) -> None:
@@ -1171,9 +1162,7 @@ async def _set_translation_status(
             )
         ).scalar_one_or_none()
         if row is None:
-            row = DocumentTranslation(
-                document_id=doc_id, target_lang=target_lang, status=status, **fields
-            )
+            row = DocumentTranslation(document_id=doc_id, target_lang=target_lang, status=status, **fields)
             session.add(row)
         else:
             row.status = status
@@ -1221,7 +1210,12 @@ async def _export_translation(
             src = tmp_path / Path(doc.filename).name
             dst = tmp_path / f"{stem}.{target_lang}.{ext}"
             await storage.download_to(settings.bucket_originals, doc.s3_key_original, src)
-            await asyncio.to_thread(ooxml.inject, ext, src, dst, translations)
+            applied = await asyncio.to_thread(ooxml.inject, ext, src, dst, translations)
+            if translations and applied == 0:
+                raise RuntimeError(
+                    "OOXML-экспорт не применил ни одного перевода: "
+                    "структурные адреса сегментов не совпадают с оригиналом"
+                )
             key = f"{doc.id}/{target_lang}/{dst.name}"
             await storage.put_bytes(settings.bucket_exports, key, dst.read_bytes(), _OOXML_MIME[ext])
             out["s3_key_source"] = key
@@ -1251,8 +1245,13 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
 
     todo = [s for s in segments if s.kind in TRANSLATABLE_KINDS]
     await _set_translation_status(
-        ctx, doc_id, target_lang, "translating",
-        segment_count=len(todo), translated_count=0, error=None,
+        ctx,
+        doc_id,
+        target_lang,
+        "translating",
+        segment_count=len(todo),
+        translated_count=0,
+        error=None,
     )
 
     contexts: dict[uuid.UUID, SegmentContext] = {}
@@ -1275,9 +1274,7 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
         memory_texts = list(
             dict.fromkeys(text for seg in todo for text in _translation_unit_texts(seg) if text.strip())
         )
-        memory_matches = await TranslationMemoryService(
-            ctx["sessionmaker"], ctx["embedder"]
-        ).lookup_batch(
+        memory_matches = await TranslationMemoryService(ctx["sessionmaker"], ctx["embedder"]).lookup_batch(
             memory_texts,
             source_lang=src_lang,
             target_lang=target_lang,
@@ -1294,9 +1291,7 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
     async def work(seg: Segment) -> tuple[uuid.UUID, dict[str, Any]] | None:
         async with sem:
             try:
-                return seg.id, await _translate_segment(
-                    translator, seg, contexts[seg.id], memory_matches
-                )
+                return seg.id, await _translate_segment(translator, seg, contexts[seg.id], memory_matches)
             except Exception as exc:
                 failures.append(f"сегмент {seg.idx}: {exc}")
                 logger.error("translate %s->%s seg %d: %s", doc_id, target_lang, seg.idx, exc)
@@ -1335,12 +1330,21 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
         await _set_translation_status(ctx, doc_id, target_lang, "exporting", data=data)
         export_keys = await _export_translation(ctx, doc, segments, target_lang)
         await _set_translation_status(
-            ctx, doc_id, target_lang, "done",
-            translated_count=len(data), needs_review_count=review, data=data, **export_keys,
+            ctx,
+            doc_id,
+            target_lang,
+            "done",
+            translated_count=len(data),
+            needs_review_count=review,
+            data=data,
+            **export_keys,
         )
         logger.info(
             "translate %s->%s: %d сегм. за %.1fс",
-            doc_id, target_lang, len(data), time.monotonic() - t_task,
+            doc_id,
+            target_lang,
+            len(data),
+            time.monotonic() - t_task,
         )
         return f"translated {doc_id}->{target_lang}: {len(data)} segments"
     except asyncio.CancelledError:
@@ -1355,20 +1359,29 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
         raise
     except Exception as exc:
         logger.exception("translate %s->%s failed", doc_id, target_lang)
-        await _set_translation_status(
-            ctx, doc_id, target_lang, "error", error=str(exc)[:500], data=data
-        )
+        await _set_translation_status(ctx, doc_id, target_lang, "error", error=str(exc)[:500], data=data)
         raise
 
 
 # ---------------------------------------------------------------- index (RAG, этап 3)
 
-async def index_document(ctx: dict, doc_id_str: str) -> str:
+
+async def index_document(
+    ctx: dict,
+    doc_id_str: str,
+    parse_revision: int | None = None,
+) -> str:
     """Чанкинг по структуре → эмбеддинги EN/RU → chunks (roadmap § 5).
 
     Не влияет на статус перевода: ошибки идут в documents.index_error.
     """
     doc_id = uuid.UUID(doc_id_str)
+    if parse_revision is None:
+        # Legacy job до revision-aware контура нельзя безопасно сопоставить с
+        # конкретным снимком Segment: reparse повышает revision раньше замены
+        # строк. Такой job пропускаем; все текущие enqueue передают ревизию явно.
+        logger.warning("index %s skipped: parse_revision отсутствует", doc_id)
+        return "skipped index: missing parse_revision"
     embedder: Embedder = ctx["embedder"]
     try:
         async with ctx["sessionmaker"]() as session:
@@ -1389,6 +1402,20 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
         emb_ru = await embedder.embed([d.text_ru for d in drafts])
 
         async with ctx["sessionmaker"]() as session:
+            if parse_revision is not None:
+                current_revision = (
+                    await session.execute(
+                        select(Document.parse_revision).where(Document.id == doc_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if current_revision != parse_revision:
+                    logger.info(
+                        "index %s revision=%s skipped (current=%s)",
+                        doc_id,
+                        parse_revision,
+                        current_revision,
+                    )
+                    return f"skipped index revision={parse_revision}: current={current_revision}"
             await session.execute(delete(Chunk).where(Chunk.document_id == doc_id))
             session.add_all(
                 Chunk(
@@ -1413,38 +1440,76 @@ async def index_document(ctx: dict, doc_id_str: str) -> str:
             )
             await session.commit()
         logger.info("index %s: %d чанков", doc_id, len(drafts))
-        # pdf_scan (скан/чертёж/P&ID): дообогащаем VL-описанием смысла изображения
-        # и переиндексируем. Маркер meta.vl_describe на сегментах не даёт зациклиться.
-        if settings.vl_enabled and not any((s.meta or {}).get("vl_describe") for s in segments):
-            doc = await _get_doc(ctx, doc_id)
-            if doc.kind == DocumentKind.pdf_scan.value:
-                await ctx["redis"].enqueue_job(
-                    "describe_images", doc_id_str, _job_id=f"vl:{doc_id}:{uuid.uuid4().hex[:8]}"
-                )
-        # визуальный индекс (Этап 2): эмбеддинги страниц-рисунков для визуального
-        # retrieval — авто для pdf_scan (все страницы) и любых доков с вырезанными
-        # рисунками (img_s3). index_pages_visual сам отфильтрует страницы.
-        if settings.visual_enabled:
-            vdoc = await _get_doc(ctx, doc_id)
-            vkind = vdoc.kind if isinstance(vdoc.kind, str) else vdoc.kind.value
-            if vkind == DocumentKind.pdf_scan.value or any(
-                (s.meta or {}).get("img_s3") for s in segments
-            ):
-                await ctx["redis"].enqueue_job(
-                    "index_pages_visual", doc_id_str, _job_id=f"vis:{doc_id}:{uuid.uuid4().hex[:8]}"
-                )
+        try:
+            # pdf_scan (скан/чертёж/P&ID): дообогащаем VL-описанием смысла изображения
+            # и переиндексируем. Маркер meta.vl_describe на сегментах не даёт зациклиться.
+            if settings.vl_enabled and not any((s.meta or {}).get("vl_describe") for s in segments):
+                doc = await _get_doc(ctx, doc_id)
+                if doc.kind == DocumentKind.pdf_scan.value:
+                    await ctx["redis"].enqueue_job(
+                        "describe_images",
+                        doc_id_str,
+                        parse_revision,
+                        _job_id=f"vl:{doc_id}:{parse_revision}",
+                    )
+            # Визуальный индекс — отдельное необязательное обогащение. Ошибка чтения
+            # документа/Redis после COMMIT не должна откатывать уже корректные chunks.
+            if settings.visual_enabled:
+                vdoc = await _get_doc(ctx, doc_id)
+                vkind = vdoc.kind if isinstance(vdoc.kind, str) else vdoc.kind.value
+                if vkind == DocumentKind.pdf_scan.value or any(
+                    (s.meta or {}).get("img_s3") for s in segments
+                ):
+                    await ctx["redis"].enqueue_job(
+                        "index_pages_visual",
+                        doc_id_str,
+                        parse_revision,
+                        _job_id=f"vis:{doc_id}:{uuid.uuid4().hex[:8]}",
+                    )
+        except Exception as exc:  # noqa: BLE001 — основной текстовый индекс уже записан
+            logger.warning(
+                "index %s: необязательное VL/visual-обогащение не поставлено в очередь: %s",
+                doc_id,
+                exc,
+            )
         return f"indexed: {len(drafts)} chunks"
     except Exception as exc:
         logger.exception("index %s failed", doc_id)
         async with ctx["sessionmaker"]() as session:
+            if parse_revision is not None:
+                current_revision = (
+                    await session.execute(
+                        select(Document.parse_revision).where(Document.id == doc_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if current_revision != parse_revision:
+                    logger.info(
+                        "index cleanup %s revision=%s skipped (current=%s)",
+                        doc_id,
+                        parse_revision,
+                        current_revision,
+                    )
+                    return f"skipped failed index revision={parse_revision}: current={current_revision}"
+            # После переразбора прежние chunks относятся к другой ревизии
+            # сегментов. Оставлять их при сбое нового индексирования опаснее, чем
+            # временно исключить документ из RAG: поиск иначе цитирует уже
+            # отсутствующий текст.
+            await session.execute(delete(Chunk).where(Chunk.document_id == doc_id))
             await session.execute(
-                update(Document).where(Document.id == doc_id).values(index_error=str(exc)[:1000])
+                update(Document)
+                .where(Document.id == doc_id)
+                .values(
+                    chunk_count=0,
+                    indexed_at=None,
+                    index_error=str(exc)[:1000],
+                )
             )
             await session.commit()
         raise
 
 
 # ---------------------------------------------------------------- VL: описание рисунков
+
 
 def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, scale: float) -> list[tuple[int, bytes]]:
     """Страницы PDF → PNG (pypdfium2). pdfium не потокобезопасен — под общим локом."""
@@ -1475,9 +1540,7 @@ def _norm_match(s: str) -> str:
     return " ".join(_MATCH_NOISE.sub(" ", s or "").lower().split())
 
 
-def _locate_in_pdf(
-    pdf_bytes: bytes, items: list[tuple[uuid.UUID, str]]
-) -> dict[uuid.UUID, dict[str, Any]]:
+def _locate_in_pdf(pdf_bytes: bytes, items: list[tuple[uuid.UUID, str]]) -> dict[uuid.UUID, dict[str, Any]]:
     """Сегмент (по его тексту) → положение в PDF: {page, bbox (top-left, pt), pagesize}.
     Для кросс-навигации панелей: клик по абзацу слева подсвечивает его справа и наоборот.
     Кандидат-страница — по нормализованному совпадению, bbox — поиском pypdfium2 по
@@ -1552,9 +1615,7 @@ async def _store_cross_locs(
     if not left and not right:
         return
     async with ctx["sessionmaker"]() as session:
-        rows = (
-            await session.execute(select(Segment).where(Segment.document_id == doc_id))
-        ).scalars().all()
+        rows = (await session.execute(select(Segment).where(Segment.document_id == doc_id))).scalars().all()
         for s in rows:
             meta = dict(s.meta or {})
             meta["loc_left"] = left.get(s.id)
@@ -1631,7 +1692,11 @@ def _assign_pdf_pages(pdf_bytes: bytes, segments: list[Segment]) -> tuple[dict[u
     return out, n
 
 
-async def describe_images(ctx: dict, doc_id_str: str) -> str:
+async def describe_images(
+    ctx: dict,
+    doc_id_str: str,
+    parse_revision: int | None = None,
+) -> str:
     """VL-обогащение СКАНОВ (pdf_scan): вся страница — рисунок (P&ID/чертёж/фото) →
     Qwen3.5-VL раскрывает смысл по-русски → сегменты-описания (kind=image) →
     переиндексация. Нужно для сканов без текстового слоя (искомость в чате).
@@ -1642,8 +1707,13 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
     if not settings.vl_enabled:
         return "vl disabled"
     doc_id = uuid.UUID(doc_id_str)
+    if parse_revision is None:
+        logger.warning("describe_images %s skipped: parse_revision отсутствует", doc_id)
+        return "skipped VL: missing parse_revision"
     storage: Storage = ctx["storage"]
     doc = await _get_doc(ctx, doc_id)
+    if doc.parse_revision != parse_revision:
+        return f"skipped VL revision={parse_revision}: current={doc.parse_revision}"
     kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
     if kind != DocumentKind.pdf_scan.value:
         return f"skip: kind={kind} (рисунки описываются on-demand в чате)"
@@ -1668,6 +1738,19 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
             return "vl: нет описаний"
 
         async with ctx["sessionmaker"]() as session:
+            current_revision = (
+                await session.execute(
+                    select(Document.parse_revision).where(Document.id == doc_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if current_revision != parse_revision:
+                logger.info(
+                    "describe_images mutation %s revision=%s skipped (current=%s)",
+                    doc_id,
+                    parse_revision,
+                    current_revision,
+                )
+                return f"skipped VL revision={parse_revision}: current={current_revision}"
             # идемпотентность: убрать прежние VL-описания этого документа
             await session.execute(
                 delete(Segment).where(
@@ -1677,9 +1760,7 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
             )
             base_idx = (
                 await session.execute(
-                    select(func.coalesce(func.max(Segment.idx), 0)).where(
-                        Segment.document_id == doc_id
-                    )
+                    select(func.coalesce(func.max(Segment.idx), 0)).where(Segment.document_id == doc_id)
                 )
             ).scalar_one()
             for i, (pidx, desc) in enumerate(described, 1):
@@ -1708,7 +1789,10 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
             ).scalar_one()
             await session.execute(
                 update(Document)
-                .where(Document.id == doc_id)
+                .where(
+                    Document.id == doc_id,
+                    Document.parse_revision == parse_revision,
+                )
                 .values(segment_count=cnt, translated_count=trc)
             )
             await session.commit()
@@ -1716,7 +1800,8 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
         await ctx["redis"].enqueue_job(
             "index_document",
             doc_id_str,
-            _job_id=f"index:{doc_id}:{doc.parse_revision}:vl",
+            parse_revision,
+            _job_id=f"index:{doc_id}:{parse_revision}:vl",
         )
         return f"vl: {len(described)} описаний на {len(pages)} стр."
     except Exception as exc:  # noqa: BLE001 — VL необязателен, не валим документ
@@ -1726,34 +1811,48 @@ async def describe_images(ctx: dict, doc_id_str: str) -> str:
 
 # ------------------------------------------------- визуальный индекс (§ 12.1 шаг 4)
 
+
 async def _figure_pages(ctx: dict, doc_id: uuid.UUID) -> set[int]:
     """Страницы документа, на которых есть вырезанный рисунок (img_s3) — их и
     эмбеддим визуально для pdf_text/docx/pptx (чисто текстовые покрывает текст-поиск)."""
     async with ctx["sessionmaker"]() as session:
         rows = (
-            await session.execute(
-                select(Segment.page_idx)
-                .where(
-                    Segment.document_id == doc_id,
-                    Segment.kind == SegmentKind.image,
-                    Segment.meta.op("->>")("img_s3").isnot(None),
-                    Segment.page_idx.isnot(None),
+            (
+                await session.execute(
+                    select(Segment.page_idx)
+                    .where(
+                        Segment.document_id == doc_id,
+                        Segment.kind == SegmentKind.image,
+                        Segment.meta.op("->>")("img_s3").isnot(None),
+                        Segment.page_idx.isnot(None),
+                    )
+                    .distinct()
                 )
-                .distinct()
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return {p for p in rows if p is not None}
 
 
-async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
+async def index_pages_visual(
+    ctx: dict,
+    doc_id_str: str,
+    parse_revision: int | None = None,
+) -> str:
     """Эмбеддинги страниц-картинок (Qwen3-VL-Embedding-8B) для визуального retrieval:
     печати/штампы/чертежи/схемы, где текстовый контур слаб. pdf_scan — все страницы
     (вся страница = визуал); pdf_text/docx/pptx — только страницы с вырезанными
     рисунками (img_s3), остальное берёт текстовый поиск."""
     doc_id = uuid.UUID(doc_id_str)
+    if parse_revision is None:
+        logger.warning("visual index %s skipped: parse_revision отсутствует", doc_id)
+        return "skipped visual index: missing parse_revision"
     if not settings.visual_enabled:
         return "visual disabled"
     doc = await _get_doc(ctx, doc_id)
+    if doc.parse_revision != parse_revision:
+        return f"skipped visual revision={parse_revision}: current={doc.parse_revision}"
     kind = doc.kind if isinstance(doc.kind, str) else doc.kind.value
     storage: Storage = ctx["storage"]
     visual: VisualEmbedder = ctx["visual"]
@@ -1805,13 +1904,28 @@ async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
             embs.append((pidx, await visual.embed_page(jpeg)))
 
         async with ctx["sessionmaker"]() as session:
+            current_revision = (
+                await session.execute(
+                    select(Document.parse_revision).where(Document.id == doc_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if current_revision != parse_revision:
+                logger.info(
+                    "visual index mutation %s revision=%s skipped (current=%s)",
+                    doc_id,
+                    parse_revision,
+                    current_revision,
+                )
+                return f"skipped visual revision={parse_revision}: current={current_revision}"
             await session.execute(delete(PageEmbedding).where(PageEmbedding.document_id == doc_id))
-            session.add_all(
-                PageEmbedding(document_id=doc_id, page_idx=p, emb=e) for p, e in embs
-            )
+            session.add_all(PageEmbedding(document_id=doc_id, page_idx=p, emb=e) for p, e in embs)
             await session.execute(
                 update(Document)
-                .where(Document.id == doc_id, Document.index_error.like("visual:%"))
+                .where(
+                    Document.id == doc_id,
+                    Document.parse_revision == parse_revision,
+                    Document.index_error.like("visual:%"),
+                )
                 .values(index_error=None)
             )
             await session.commit()
@@ -1820,9 +1934,25 @@ async def index_pages_visual(ctx: dict, doc_id_str: str) -> str:
     except Exception as exc:
         logger.exception("visual index %s failed", doc_id)
         async with ctx["sessionmaker"]() as session:
+            current_revision = (
+                await session.execute(
+                    select(Document.parse_revision).where(Document.id == doc_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if current_revision != parse_revision:
+                logger.info(
+                    "visual index cleanup %s revision=%s skipped (current=%s)",
+                    doc_id,
+                    parse_revision,
+                    current_revision,
+                )
+                return f"skipped failed visual revision={parse_revision}: current={current_revision}"
             await session.execute(
                 update(Document)
-                .where(Document.id == doc_id)
+                .where(
+                    Document.id == doc_id,
+                    Document.parse_revision == parse_revision,
+                )
                 .values(index_error=f"visual: {str(exc)[:500]}")
             )
             await session.commit()
@@ -1843,9 +1973,7 @@ async def _export_pdf_layout(ctx: dict, doc: Document, local_pdf: Path, tmp: Pat
     """BabelDOC: PDF с сохранённой вёрсткой (mono + dual). Недоступен — не фейл."""
     # утверждённую терминологию отдаём и в PDF-контур (раньше только в DOCX)
     async with ctx["sessionmaker"]() as session:
-        terms = (
-            await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))
-        ).all()
+        terms = (await session.execute(select(GlossaryTerm.en_term, GlossaryTerm.ru_term))).all()
     glossary_file = write_glossary_csv([(t.en_term, t.ru_term) for t in terms], tmp / "glossary.csv")
     try:
         mono, dual = await run_babeldoc(
@@ -1893,9 +2021,7 @@ async def render_original_view(ctx: dict, doc_id_str: str) -> str:
             key = f"{doc_id}/view_orig.pdf"
             await storage.put_bytes(settings.bucket_exports, key, pdf, "application/pdf")
         async with ctx["sessionmaker"]() as session:
-            await session.execute(
-                update(Document).where(Document.id == doc_id).values(s3_key_view_orig=key)
-            )
+            await session.execute(update(Document).where(Document.id == doc_id).values(s3_key_view_orig=key))
             await session.commit()
         return f"view_orig ready: {key}"
     except Exception as exc:  # noqa: BLE001 — рендер необязателен
@@ -1903,9 +2029,7 @@ async def render_original_view(ctx: dict, doc_id_str: str) -> str:
         return f"failed: {exc}"
 
 
-async def export_document(
-    ctx: dict, doc_id_str: str, parse_revision: int | None = None
-) -> str:
+async def export_document(ctx: dict, doc_id_str: str, parse_revision: int | None = None) -> str:
     doc_id = uuid.UUID(doc_id_str)
     storage: Storage = ctx["storage"]
     doc = await _get_doc(ctx, doc_id)
@@ -1957,17 +2081,11 @@ async def export_document(
                 if doc.kind == DocumentKind.pdf_scan:
                     # BabelDOC сканы не переводит (нет текстового слоя) —
                     # собственный оверлей по bbox (roadmap § 9, запасной путь)
-                    mono_data, dual_data = await asyncio.to_thread(
-                        build_scan_overlay, local_pdf, segments
-                    )
+                    mono_data, dual_data = await asyncio.to_thread(build_scan_overlay, local_pdf, segments)
                     mono_key = f"{doc_id}/{stem}.ru.pdf"
                     dual_key = f"{doc_id}/{stem}.en-ru.pdf"
-                    await storage.put_bytes(
-                        settings.bucket_exports, mono_key, mono_data, "application/pdf"
-                    )
-                    await storage.put_bytes(
-                        settings.bucket_exports, dual_key, dual_data, "application/pdf"
-                    )
+                    await storage.put_bytes(settings.bucket_exports, mono_key, mono_data, "application/pdf")
+                    await storage.put_bytes(settings.bucket_exports, dual_key, dual_data, "application/pdf")
                     values["s3_key_export_pdf"] = mono_key
                     values["s3_key_export_pdf_dual"] = dual_key
                 elif settings.translated_pdf_from_docx:
@@ -1980,9 +2098,7 @@ async def export_document(
                     try:
                         docx_path = tmp_path / f"{stem}.ru.docx"
                         docx_path.write_bytes(data)
-                        pdf_bytes = await render_to_pdf(
-                            docx_path, tmp_path, settings.office_render_timeout_s
-                        )
+                        pdf_bytes = await render_to_pdf(docx_path, tmp_path, settings.office_render_timeout_s)
                         pdf_key = f"{doc_id}/{stem}.ru.pdf"
                         await storage.put_bytes(
                             settings.bucket_exports, pdf_key, pdf_bytes, "application/pdf"
@@ -1990,9 +2106,7 @@ async def export_document(
                         values["s3_key_export_pdf"] = pdf_key
                         # кросс-навигация: положение сегмента в оригинале (слева) и
                         # reflow-PDF перевода (справа) — клик подсвечивает на др. стороне
-                        await _store_cross_locs(
-                            ctx, doc_id, segments, local_pdf.read_bytes(), pdf_bytes
-                        )
+                        await _store_cross_locs(ctx, doc_id, segments, local_pdf.read_bytes(), pdf_bytes)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "export %s: reflow-PDF из DOCX не собрался (%s) — оставляем DOCX",
@@ -2023,9 +2137,7 @@ async def export_document(
                 # inject_xlsx применяет перевод ПО ИСХОДНОМУ ТЕКСТУ ячейки → ключ
                 # словаря = source_text, перевод раскладывается на все дубликаты.
                 translations = {
-                    s.source_text: s.translated_text
-                    for s in segments
-                    if s.translated_text is not None
+                    s.source_text: s.translated_text for s in segments if s.translated_text is not None
                 }
             else:
                 translations = {
@@ -2040,6 +2152,11 @@ async def export_document(
                 await storage.download_to(settings.bucket_originals, doc.s3_key_original, src)
                 applied = await asyncio.to_thread(ooxml.inject, ext, src, dst, translations)
                 logger.info("export %s: %d сегментов записано в %s", doc_id, applied, dst.name)
+                if translations and applied == 0:
+                    raise RuntimeError(
+                        "OOXML-экспорт не применил ни одного перевода: "
+                        "структурные адреса сегментов не совпадают с оригиналом"
+                    )
                 source_key = f"{doc_id}/{dst.name}"
                 await storage.put_bytes(
                     settings.bucket_exports, source_key, dst.read_bytes(), _OOXML_MIME[ext]
@@ -2060,9 +2177,7 @@ async def export_document(
                         # (LibreOffice-PDF) → правый «текст»-просмотр листается
                         # синхронно с оригиналом, как у PDF (page_idx был null).
                         if ext == "docx":
-                            page_map, n_pages = await asyncio.to_thread(
-                                _assign_pdf_pages, orig_pdf, segments
-                            )
+                            page_map, n_pages = await asyncio.to_thread(_assign_pdf_pages, orig_pdf, segments)
                             if page_map:
                                 async with ctx["sessionmaker"]() as session:
                                     await session.execute(
@@ -2089,11 +2204,13 @@ async def export_document(
         await ctx["redis"].enqueue_job(
             "index_document",
             doc_id_str,
+            parse_revision,
             _job_id=f"index:{doc_id}:{parse_revision}",
         )
         await ctx["redis"].enqueue_job(
             "index_pages_visual",
             doc_id_str,
+            parse_revision,
             _job_id=f"vindex:{doc_id}:{parse_revision}",
         )
         return f"exported: {', '.join(k for k in values if k.startswith('s3_'))}"
