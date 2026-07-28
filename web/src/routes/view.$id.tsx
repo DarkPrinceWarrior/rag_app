@@ -148,7 +148,10 @@ function Viewer() {
           clearTimeout(t2)
         }
       }
-    } else if (pageParam != null) {
+    }
+    // Внутренние RAG-сегменты намеренно отсутствуют в публичном API. Их цитата
+    // всё равно должна открыть исходную страницу по page_start.
+    if (pageParam != null) {
       if (isPdf) setPage(pageParam)
       else document.getElementById(`page-${pageParam}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     }

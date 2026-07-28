@@ -31,8 +31,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.sql.elements import ColumnElement
 
 EMBEDDING_DIM = 1024  # BGE-M3 dense
+VL_DESCRIPTION_META_KEY = "vl_describe"
 
 
 class Base(DeclarativeBase):
@@ -166,6 +168,18 @@ class Segment(Base):
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
     document: Mapped[Document] = relationship(back_populates="segments")
+
+
+def is_document_segment(segment: Segment) -> bool:
+    """Пользовательский сегмент документа, а не внутренний контекст для RAG."""
+
+    return (getattr(segment, "meta", None) or {}).get(VL_DESCRIPTION_META_KEY) is not True
+
+
+def document_segment_filter() -> ColumnElement[bool]:
+    """SQL-предикат публичных сегментов с поддержкой старых VL-записей."""
+
+    return Segment.meta.op("->>")(VL_DESCRIPTION_META_KEY).is_distinct_from("true")
 
 
 class SegmentVersion(Base):

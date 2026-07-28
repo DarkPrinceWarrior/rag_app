@@ -32,6 +32,8 @@ from rag_app.db.models import (
     PageEmbedding,
     Segment,
     SegmentKind,
+    document_segment_filter,
+    is_document_segment,
 )
 from rag_app.llm.client import (
     SegmentContext,
@@ -228,7 +230,8 @@ async def _vlm_segments(
         return await asyncio.to_thread(dots_to_segments, page_dir, pdf_path)
     if backend == "paddle_vl":
         await run_paddle(pdf_path, out_dir, timeout_s=timeout_s)
-        return await asyncio.to_thread(paddle_to_segments, out_dir)
+        page_sizes = await asyncio.to_thread(_pdf_page_sizes_from_path, pdf_path)
+        return await asyncio.to_thread(paddle_to_segments, out_dir, page_sizes)
     raise RuntimeError(f"неизвестный backend парсера: {backend}")
 
 
@@ -251,6 +254,12 @@ def _pdf_page_sizes(pdf_bytes: bytes) -> dict[int, tuple[float, float]]:
         finally:
             pdf.close()
     return result
+
+
+def _pdf_page_sizes_from_path(pdf_path: Path) -> dict[int, tuple[float, float]]:
+    """Прочитать PDF и измерить страницы вне async event loop."""
+
+    return _pdf_page_sizes(pdf_path.read_bytes())
 
 
 async def _apply_paddle_page_fallback(
@@ -292,7 +301,7 @@ async def _apply_paddle_page_fallback(
             timeout_s=settings.parser_sidecar_timeout_s,
         )
         fallback_drafts = remap_selected_page_drafts(reduced_drafts, selected_pages)
-        page_sizes = await asyncio.to_thread(_pdf_page_sizes, local_file.read_bytes())
+        page_sizes = await asyncio.to_thread(_pdf_page_sizes_from_path, local_file)
         if len(page_sizes) != n_pages:
             raise RuntimeError(
                 f"fallback PDF page count mismatch: expected={n_pages} actual={len(page_sizes)}"
@@ -994,6 +1003,7 @@ async def translate_document(ctx: dict, doc_id_str: str, parse_revision: int | N
             .scalars()
             .all()
         )
+        segments = [segment for segment in segments if is_document_segment(segment)]
 
     # Язык-источник определяем АВТОМАТИЧЕСКИ по тексту документа (домен: ru/en/zh,
     # ТЗ §4.3). Перевод ВСЕГДА на русский; русский документ не переводится
@@ -1177,6 +1187,7 @@ async def _export_translation(
     """Экспортный артефакт перевода: DOCX для pdf/text, инъекция в копию оригинала
     для OOXML. Сегменты уже гидратированы (translated_text/meta под этот язык)."""
     storage: Storage = ctx["storage"]
+    segments = [segment for segment in segments if is_document_segment(segment)]
     stem = Path(doc.filename).stem
     kind = doc.kind.value if hasattr(doc.kind, "value") else doc.kind
     out: dict[str, str] = {}
@@ -1242,6 +1253,7 @@ async def translate_to_language(ctx: dict, doc_id_str: str, target_lang: str) ->
             .scalars()
             .all()
         )
+        segments = [segment for segment in segments if is_document_segment(segment)]
 
     todo = [s for s in segments if s.kind in TRANSLATABLE_KINDS]
     await _set_translation_status(
@@ -1771,20 +1783,29 @@ async def describe_images(
                         page_idx=pidx,
                         kind=SegmentKind.image,
                         source_text=desc,
-                        translated_text=desc,  # VL уже выдаёт русский — переводить нечего
+                        # Внутренний русскоязычный контекст для RAG — не перевод
+                        # документа и не пользовательский графический фрагмент.
+                        translated_text=None,
                         meta={"vl_describe": True},
                     )
                 )
             cnt = (
                 await session.execute(
-                    select(func.count()).select_from(Segment).where(Segment.document_id == doc_id)
+                    select(func.count())
+                    .select_from(Segment)
+                    .where(Segment.document_id == doc_id)
+                    .where(document_segment_filter())
                 )
             ).scalar_one()
             trc = (
                 await session.execute(
                     select(func.count())
                     .select_from(Segment)
-                    .where(Segment.document_id == doc_id, Segment.translated_text.isnot(None))
+                    .where(
+                        Segment.document_id == doc_id,
+                        document_segment_filter(),
+                        Segment.translated_text.isnot(None),
+                    )
                 )
             ).scalar_one()
             await session.execute(
@@ -2055,6 +2076,7 @@ async def export_document(ctx: dict, doc_id_str: str, parse_revision: int | None
                 .scalars()
                 .all()
             )
+            segments = [segment for segment in segments if is_document_segment(segment)]
 
         values: dict[str, Any] = {"status": DocumentStatus.done, "error": None}
         stem = Path(doc.filename).stem

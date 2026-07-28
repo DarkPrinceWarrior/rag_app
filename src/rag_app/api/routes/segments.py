@@ -16,6 +16,8 @@ from rag_app.db.models import (
     Segment,
     SegmentVersion,
     TranslationMemory,
+    document_segment_filter,
+    is_document_segment,
 )
 from rag_app.pipeline.translation_memory import normalize_source, source_hash
 
@@ -102,18 +104,21 @@ async def list_segments(
         segments = (
             (
                 await session.execute(
-                    select(Segment).where(Segment.document_id == doc_id).order_by(Segment.idx).limit(limit)
+                    select(Segment)
+                    .where(Segment.document_id == doc_id, document_segment_filter())
+                    .order_by(Segment.idx)
+                    .limit(limit)
                 )
             )
             .scalars()
             .all()
         )
-    return [SegmentOut.from_segment(s) for s in segments]
+    return [SegmentOut.from_segment(s) for s in segments if is_document_segment(s)]
 
 
 async def _segment_or_404(session, segment_id: uuid.UUID, user: User) -> Segment:
     seg = await session.get(Segment, segment_id)
-    if seg is None:
+    if seg is None or not is_document_segment(seg):
         raise HTTPException(404, "сегмент не найден")
     doc = await session.get(Document, seg.document_id)  # RBAC §4.7.1
     if doc is None or (not user.is_admin and doc.owner_sub != user.sub):

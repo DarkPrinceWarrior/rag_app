@@ -315,6 +315,51 @@ test('text viewer toggles a segment from either column and clears it with Escape
   await expect(page).toHaveURL(new RegExp(`/view/${documentId}/segment/${segmentId}$`))
 })
 
+test('scan text viewer does not render internal VL page context', async ({ page }) => {
+  const internalDescription = {
+    ...segment,
+    id: '00000000-0000-4000-8000-000000000399',
+    idx: 1,
+    kind: 'image',
+    source_text: 'Внутреннее описание страницы для RAG',
+    translated_text: null,
+    vl_describe: true,
+  }
+  const storedSegments = [segment, internalDescription]
+
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/config')
+      return json(route, { auth_enabled: false, oidc_authority: '', oidc_client_id: '' })
+    if (path === `/api/documents/${documentId}`)
+      return json(route, {
+        ...document,
+        kind: 'pdf_scan',
+        segment_count: 1,
+        translated_count: 1,
+      })
+    if (path === `/api/documents/${documentId}/segments`)
+      return json(
+        route,
+        storedSegments.filter((item) => !('vl_describe' in item && item.vl_describe)),
+      )
+    if (path.startsWith(`/api/documents/${documentId}/download/`))
+      return route.fulfill({ contentType: 'application/pdf', path: pdfFixture })
+    if (/^\/api\/documents\/[^/]+\/translations$/.test(path)) return json(route, [])
+    return json(route, {})
+  })
+
+  await page.goto(`/view/${documentId}?seg=${internalDescription.id}&page=2`)
+  await expect(page.getByText(/^стр\. 2 \//).first()).toBeVisible()
+  await page.getByRole('button', { name: 'текст', exact: true }).click()
+  const textPager = page.getByText('стр. 2 / 1', { exact: true }).locator('..')
+  await textPager.getByRole('button', { name: '←', exact: true }).click()
+
+  await expect(page.locator(`[data-seg="${segmentId}"]`)).toHaveCount(2)
+  await expect(page.locator(`[data-seg="${internalDescription.id}"]`)).toHaveCount(0)
+  await expect(page.getByText(internalDescription.source_text, { exact: true })).toHaveCount(0)
+})
+
 test('text viewer clears selection before showing the next page', async ({ page }) => {
   await openViewerWithSegments(
     page,

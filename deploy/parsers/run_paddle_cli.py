@@ -25,7 +25,20 @@ def main() -> int:
     kwargs = {"vl_rec_backend": "vllm-server", "vl_rec_server_url": server} if server else {}
     pipeline = PaddleOCRVL(**kwargs)
     n = 0
-    for res in pipeline.predict(inp):
+    # Layout coordinates must stay in the same orientation and rectangular
+    # coordinate space as the source PDF.  Paddle's document preprocessor can
+    # otherwise rotate or unwarp the raster before layout detection, making a
+    # simple px -> PDF-point transform invalid for the translated overlay.
+    for res in pipeline.predict(
+        inp,
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+    ):
+        # Markdown is the canonical content consumed by the parser.  Keep the
+        # native block JSON alongside it so scan exports can retain Paddle's
+        # layout coordinates instead of leaving the original text as a
+        # background image.
+        res.save_to_json(save_path=out)
         res.save_to_markdown(save_path=out)
         n += 1
     print(f"paddle: {n} pages -> {out}", flush=True)
