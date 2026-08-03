@@ -25,6 +25,10 @@ Code navigation uses three MCP servers, each with one job — do not duplicate t
   `find_referencing_symbols`, `replace_symbol_body`, `insert_*`,
   `rename_symbol`, `safe_delete_symbol`). Prefer over reading whole files.
   Project language: **python** (см. `.serena/project.yml`).
+  Installed Serena `1.6.1.dev0` requires the legacy `languages` key in the
+  project YAML. Keep `languages: [python]` even if a newer generator also adds
+  `language_servers`; without it MCP exits before initialize with
+  `KeyError: 'languages'`.
 
 Cycle: locate (fff / `codegraph_search`) → understand (`codegraph_explore`) →
 assess risk (`codegraph_impact`) → read and edit (serena) → verify.
